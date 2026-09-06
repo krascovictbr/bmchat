@@ -1,4 +1,5 @@
 import datetime
+import threading
 import time
 import tkinter as tk
 from tkinter import filedialog
@@ -391,6 +392,8 @@ class App(tk.Tk):
         self._refresh_conversations()
         self.after(250, self._poll)
         self.after(1500, self._tick_status)
+        threading.Thread(target=self._auto_update_check, daemon=True,
+                         name='update-check').start()
 
         self.protocol('WM_DELETE_WINDOW', self._on_close)
 
@@ -654,6 +657,8 @@ class App(tk.Tk):
         menu.add_command(label='Apagar objetos…', command=self._wipe_objects)
         menu.add_command(label='Proxy / Darknet...', command=self._proxy_dialog)
         menu.add_command(label='Verificar POW ativos', command=self._show_pows)
+        menu.add_command(label='Verificar atualizações',
+                         command=self._check_updates_manual)
         menu.add_command(label='Legenda de confirmações',
                          command=self._confirmation_legend)
         menu.add_command(label='Sobre', command=self._about)
@@ -773,6 +778,19 @@ class App(tk.Tk):
                 text='POW %d: %.0f hashes/s' % (token, rate))
         elif kind == 'pow-cancelled':
             self.statusbar.config(text='POW cancelado')
+        elif kind == 'update-available':
+            _, behind = event
+            self._offer_update(behind)
+        elif kind == 'update-check-result':
+            _, result = event
+            self._show_update_check(result)
+        elif kind == 'update-result':
+            _, ok, message = event
+            if ok:
+                self._flash_status('Atualizado! Reiniciando…')
+                self.after(800, self._restart_after_update)
+            else:
+                dialogs.warn(self, 'Atualização', message)
 
     def _tick_status(self):
         try:
@@ -1937,6 +1955,76 @@ class App(tk.Tk):
                      'Conexões ativas: %d\nPOW em andamento: %d' % (
                          self.client.net.connection_count,
                          len(self.client._pow_stops)))
+
+    def _auto_update_check(self):
+        try:
+            from .. import update as updater
+            result = updater.check_for_updates()
+        except Exception:
+            return
+        if result.get('status') == 'update-available':
+            self.client.ui_queue.put(
+                ('update-available', result.get('behind', 0)))
+
+    def _check_updates_manual(self):
+        def worker():
+            try:
+                from .. import update as updater
+                result = updater.check_for_updates()
+            except Exception as exc:
+                result = {'status': 'error', 'error': repr(exc)}
+            self.client.ui_queue.put(('update-check-result', result))
+        threading.Thread(target=worker, daemon=True,
+                         name='update-check-manual').start()
+
+    def _show_update_check(self, result):
+        status = result.get('status')
+        if status == 'update-available':
+            self._offer_update(result.get('behind', 0))
+        elif status == 'up-to-date':
+            dialogs.info(self, 'Atualização',
+                         'Já está na versão mais nova.')
+        elif status == 'no-repo':
+            dialogs.warn(self, 'Atualização',
+                         'Cópia sem git: atualização automática indisponível.')
+        elif status == 'diverged':
+            dialogs.warn(self, 'Atualização',
+                         'Histórico local divergiu do remoto; atualize à mão '
+                         'com git pull.')
+        else:
+            dialogs.warn(self, 'Atualização',
+                         'Não foi possível verificar: %s' %
+                         result.get('error', status))
+
+    def _offer_update(self, behind):
+        try:
+            count = int(behind)
+        except (TypeError, ValueError):
+            count = 0
+        ok = dialogs.confirm(
+            self, 'Atualização disponível',
+            'Há atualização disponível (%d commit(s) novo(s)).\n'
+            'Atualizar e reiniciar agora?' % count)
+        if ok:
+            self._flash_status('Baixando atualização…')
+            threading.Thread(target=self._do_update, daemon=True,
+                             name='update-apply').start()
+
+    def _do_update(self):
+        try:
+            from .. import update as updater
+            ok, message = updater.perform_update()
+        except Exception as exc:
+            ok, message = False, repr(exc)
+        self.client.ui_queue.put(('update-result', ok, message))
+
+    def _restart_after_update(self):
+        try:
+            from .. import update as updater
+            updater.restart_program()
+        except Exception as exc:
+            dialogs.warn(self, 'Atualização',
+                         'Atualizado, mas reinicie à mão: %s' % exc)
 
     def _about(self):
         dialogs.info(

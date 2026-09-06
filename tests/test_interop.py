@@ -16,7 +16,8 @@ from bmchat.protocol import objects, packets
 from bmchat.protocol.const import MAGIC
 from bmchat.util import decode_varint
 
-REFERENCE_PROTOCOL = '/tmp/opencode/bmsrc/protocol.py'
+REFERENCE_PROTOCOL = os.environ.get(
+    'BMCHAT_REF_PROTOCOL', '/tmp/opencode/bmsrc/protocol.py')
 
 
 def _reference_pow_validator():

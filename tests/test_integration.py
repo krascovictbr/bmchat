@@ -15,7 +15,8 @@ from bmchat.protocol import packets
 from bmchat.protocol.const import OBJECT_MSG
 from bmchat.util import encode_varint
 
-REF_SRC = '/home/artix/PyBitmessage/src'
+REF_SRC = os.environ.get(
+    'BMCHAT_REF_SRC', '/home/artix/PyBitmessage/src')
 
 
 def _ref_crypto():

@@ -260,3 +260,23 @@ não há como investigar.
 Rolling release no branch `rolling-release`: cada commit é uma versão, no
 formato `AAAA.MM.DD+r<commits>.g<sha>[.dirty]`, exibida em *Sobre* e enviada
 no user-agent do protocolo. Sem repositório git, mostra `0.0.0+unknown`.
+
+## Atualizações (via `git pull`)
+
+O programa atualiza pelo próprio git, sem baixar nada de outro lugar:
+
+- Ao abrir, ele confere em segundo plano se há commits novos no remoto e
+  **avisa com uma janela** quando houver, mostrando quantos são.
+- Menu ☰ → **Verificar atualizações** faz a mesma checagem na hora (avisa
+  se já está atualizado, se não há rede ou se a cópia não tem git).
+- Aceitando, ele executa o equivalente a `git pull --ff-only`: só avança se
+  for avanço direto — **nunca cria merge nem toca em alterações locais**; se
+  você mexeu no código, ele recusa e explica.
+- Aplicada a atualização, o programa **reinicia sozinho** na nova versão.
+
+Comandos equivalentes no terminal, a partir da pasta do projeto:
+
+```bash
+git pull --ff-only   # atualiza (só avanço direto)
+python3 run.py       # abre de novo
+```
