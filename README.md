@@ -201,10 +201,27 @@ tests/          # integração, rede local, interopands (PoW/assinaturas/chans)
 
 Menu ☰ → **Suporte…**: explica o canal oficial de suporte, mostra o
 endereço com botão de copiar e tem **Conversar agora**, que cria o contato
-e abre a conversa direto. A conversa é cifrada como qualquer outra; a
-resposta pode levar minutos (prova de trabalho e retransmissão P2P levam
-tempo, e os dois lados precisam estar online e sincronizados). Se pedirem
-detalhes, envie o conteúdo de *Ver log* e do *Diagnóstico de rede*.
+e abre a conversa direto. A conversa é cifrada como qualquer outra.
+
+**Prazos realistas — leia com calma.** O suporte é atendido por pessoas,
+em fila, e cada mensagem precisa atravessar a rede Bitmessage:
+
+- **Resposta**: pode levar **horas ou dias**. Se o suporte estiver
+  investigando um bug ou erro, a conversa pode se estender por **dias ou até
+  semanas** (reproduzir o problema, testar correção, publicar atualização).
+  Reenviar a mesma pergunta não acelera — cada nova mensagem entra no fim
+  da fila e paga PoW de novo.
+- **Por que demora**: o bmchat usa **PoW (prova de trabalho) conforme o
+  protocolo demanda** — dificuldade mínima 1000/1000 por objeto,
+  inegociável. Cada envio (pedido de chave, chave, mensagem, confirmação)
+  custa de dezenas de segundos a minutos de CPU **nos dois lados**, e a
+  retransmissão P2P entre nós voluntários soma mais minutos. Some a isso
+  programa fechado, computador desligado ou rede ainda sincronizando, e o
+  ciclo de ida-e-volta de uma pergunta/resposta facilmente passa de horas.
+- **O que fazer enquanto espera**: deixe o programa aberto e conectado;
+  acompanhe o estado pelos símbolos (`…`, `✓✓`, `✓✓`) e pelo *Ver log*.
+  Se pedirem detalhes, envie o conteúdo de *Ver log* e do *Diagnóstico de
+  rede* (ambos têm botão de copiar).
 
 Abrindo a conversa do suporte aparece uma barra com **Enviar diagnóstico**
 (também na janela do Suporte): ela monta um relatório de triagem (versão,
@@ -254,6 +271,13 @@ iterativa. Ao usá-lo, assuma que:
 Se encontrar algo errado, relate com o conteúdo de *Ver log* e do
 *Diagnóstico de rede* (botões de copiar embutidos) — sem esses dados quase
 não há como investigar.
+
+## Licença
+
+**0BSD** (BSD Zero Clause) — a mais permissiva possível: pode usar, copiar,
+modificar e distribuir para qualquer fim, com ou sem custo, sem nem precisar
+manter crédito. Veja o arquivo `LICENSE` (o software é fornecido "como está",
+sem garantias).
 
 ## 12. Versionamento
 
