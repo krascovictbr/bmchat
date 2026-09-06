@@ -1,0 +1,30 @@
+# Bytecode e caches Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches de teste e ferramentas
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Dados locais do app e do usuário (nunca versionar)
+*.db
+*.db-journal
+knownnodes.dat
+bmchat-data/
+
+# Sistema e editores
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.vscode/
+.idea/

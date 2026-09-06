@@ -1,0 +1,271 @@
+import socket
+import struct
+import threading
+import time
+
+from ..protocol import packets
+from ..protocol.const import NODE_NETWORK
+from ..util import decode_varint
+
+
+class PeerConnection(threading.Thread):
+
+    def __init__(self, manager, peer, sock=None):
+        super().__init__(daemon=True, name='peer-%s:%s' % (peer.host, peer.port))
+        self.manager = manager
+        self.peer = peer
+        self.peer_key = (peer.host, peer.port)
+        self.sock = sock
+        self.established = False
+        self.their_version = None
+        self.their_services = 0
+        self.their_streams = []
+        self.their_timestamp = None
+        self.time_offset = None
+        self.got_version = False
+        self.sent_verack = False
+        self.initial_data_sent = False
+        self.write_lock = threading.Lock()
+        self.started_at = time.time()
+        self.connected_at = None
+        self.bytes_sent = 0
+        self.bytes_received = 0
+        self._closing = False
+
+    def close(self):
+        self._closing = True
+        if self.sock is not None:
+            try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+
+    def send_packet(self, command, payload=b''):
+        blob = packets.create_packet(command, payload)
+        with self.write_lock:
+            self.sock.sendall(blob)
+        self.bytes_sent += len(blob)
+
+    def send_packets(self, command, blobs):
+        buffer = b''.join(
+            packets.create_packet(command, blob) for blob in blobs)
+        with self.write_lock:
+            self.sock.sendall(buffer)
+        self.bytes_sent += len(buffer)
+
+    def _recv_exact(self, sock, size):
+        data = b''
+        while len(data) < size:
+            chunk = sock.recv(size - len(data))
+            if not chunk:
+                raise ConnectionError('conexão encerrada')
+            data += chunk
+            self.bytes_received += len(chunk)
+        return data
+
+    def run(self):
+        try:
+            if self.sock is None:
+                self.sock = self._connect()
+            self._handshake()
+            if not self.established:
+                return
+            self._read_loop()
+        except Exception as exc:
+            self.manager.log('peer %s:%s encerrou: %s' % (
+                self.peer.host, self.peer.port, exc))
+        finally:
+            self.close()
+            self.manager.connections.pop(self.peer_key, None)
+            if not self.established:
+                try:
+                    self.manager.peers.record_failure(
+                        self.peer.host, self.peer.port)
+                except Exception:
+                    pass
+            self.manager.on_log('network', 'conexão encerrada: %s' % self.peer)
+
+    def _connect(self):
+        from ..net.proxy import connect_socket
+        try:
+            connect_timeout = int(
+                self.manager.db.get_int('connect_timeout', 30))
+        except (TypeError, ValueError):
+            connect_timeout = 30
+        try:
+            recv_timeout = int(self.manager.db.get_int('recv_timeout', 60))
+        except (TypeError, ValueError):
+            recv_timeout = 60
+        sock = connect_socket(
+            self.peer.host, self.peer.port, self.manager.proxy,
+            timeout=max(5, min(connect_timeout, 300)))
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.settimeout(max(10, min(recv_timeout, 600)))
+        return sock
+
+    def _handshake(self):
+        self.send_packet(b'version', packets.assemble_version_payload(
+            self.peer.host, self.peer.port, self.manager.streams,
+            nonce=self.manager.nonce))
+        end = time.time() + 60
+        while not self._closing and time.time() < end and not self.established:
+            magic, command, length, _ = self._read_header()
+            payload = self._recv_exact(self.sock, length)
+            self._handle(command, payload)
+
+    def _read_loop(self):
+        while not self._closing:
+            try:
+                magic, command, length, _ = self._read_header()
+            except socket.timeout:
+                continue
+            if length == 0:
+                payload = b''
+            else:
+                payload = self._recv_exact(self.sock, length)
+            self._handle(command, payload)
+
+    def _read_header(self):
+        blob = self._recv_exact(self.sock, packets.HEADER_SIZE)
+        magic, command, length, checksum = packets.parse_header(blob)
+        if magic != packets.MAGIC:
+            raise ValueError('magic inválido')
+        if length > 16 * 1024 * 1024:
+            raise ValueError('comprimento excessivo')
+        return magic, command, length, checksum
+
+    def _handle(self, command, payload):
+        command = command.rstrip('\x00')
+        if command == 'version':
+            self._on_version(payload)
+        elif command == 'verack':
+            self._on_verack()
+        elif command == 'addr':
+            self._on_addr(payload)
+        elif command == 'inv':
+            self._on_inv(payload)
+        elif command == 'dinv':
+            self._on_inv(payload)
+        elif command == 'getdata':
+            self._on_getdata(payload)
+        elif command == 'object':
+            self._on_object(payload)
+        elif command == 'ping':
+            self.send_packet(b'pong')
+        elif command == 'pong':
+            pass
+        elif command == 'error':
+            self.manager.log('erro do peer %s: %s' % (self.peer, payload[:200]))
+        else:
+            self.manager.log('comando desconhecido: %s' % command)
+
+    def _on_version(self, payload):
+        self.their_version = payload
+        if len(payload) < 80:
+            return
+        version, = struct.unpack('>L', payload[0:4])
+        self.their_services, = struct.unpack('>q', payload[4:12])
+        self.their_timestamp, = struct.unpack('>q', payload[12:20])
+        try:
+            self.time_offset = self.their_timestamp - int(time.time())
+        except Exception:
+            self.time_offset = None
+        nonce = payload[72:80]
+        if nonce == self.manager.nonce:
+            self.manager.log('auto-conexão, ignorando')
+            self.close()
+            return
+        self.got_version = True
+        try:
+            streams = self._parse_streams(payload)
+            self.their_streams = streams
+        except Exception:
+            pass
+        if not self.sent_verack:
+            self.sent_verack = True
+            self.send_packet(b'verack')
+        self.manager.add_peer(self.peer.host, self.peer.port,
+                              stream=1, services=self.their_services)
+        self._maybe_send_initial_data()
+
+    def _parse_streams(self, payload):
+        position = 80
+        agent_len, agent_size = decode_varint(payload[position:])
+        position += agent_size + agent_len
+        count, count_size = decode_varint(payload[position:])
+        position += count_size
+        streams = []
+        for _ in range(min(count, 10000)):
+            stream, size = decode_varint(payload[position:])
+            position += size
+            streams.append(stream)
+        return streams
+
+    def _on_verack(self):
+        self.established = True
+        try:
+            self.manager.peers.record_success(self.peer.host, self.peer.port)
+        except Exception:
+            pass
+        if self.connected_at is None:
+            self.connected_at = time.time()
+        self.manager.on_log('network', 'conectado a %s' % self.peer)
+        self._maybe_send_initial_data()
+
+    def _maybe_send_initial_data(self):
+        if self.established and self.got_version and \
+                not self.initial_data_sent:
+            self.initial_data_sent = True
+            self._send_initial_data()
+
+    def _send_initial_data(self):
+        peers = []
+        for peer, info in self.manager.peers.best(limit=30, exclude={self.peer_key}):
+            try:
+                if len(packets.encode_host(peer.host)) != 16:
+                    continue
+            except Exception:
+                continue
+            peers.append((peer.host, peer.port,
+                          info.get('stream', 1),
+                          info.get('services', NODE_NETWORK),
+                          info.get('last_seen', int(time.time()))))
+        if peers:
+            self.send_packet(b'addr', packets.assemble_addr(peers))
+        self.manager.send_inventory(self)
+
+    def _on_addr(self, payload):
+        entries = packets.parse_addr(payload)
+        for timestamp, stream, services, ip_bytes, port in entries[:200]:
+            try:
+                host = packets.decode_host(ip_bytes)
+            except Exception:
+                host = self._fallback_host(ip_bytes)
+            if not host or not port:
+                continue
+            now = time.time()
+            if timestamp > now + 3600 or timestamp < now - 3 * 24 * 3600:
+                continue
+            self.manager.add_peer(host, port, stream=stream, services=services)
+
+    def _fallback_host(self, ip_bytes):
+        try:
+            if ip_bytes[:12] == b'\x00' * 10 + b'\xff\xff':
+                import socket as s
+                return s.inet_ntoa(ip_bytes[12:16])
+        except Exception:
+            pass
+        return None
+
+    def _on_inv(self, payload):
+        self.manager.on_inv(self, payload)
+
+    def _on_getdata(self, payload):
+        self.manager.on_getdata(self, payload)
+
+    def _on_object(self, payload):
+        self.manager.received_object(payload, self)
