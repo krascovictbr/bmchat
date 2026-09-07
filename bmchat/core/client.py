@@ -485,10 +485,12 @@ class Client:
             reverse[keys.tag] = subscription['address']
         for channel in self.db.all_identities(enabled_only=False):
             if channel['chan'] and channel['enabled']:
-                keys = self.identities.get(channel['address'])
-                if keys is not None:
-                    subscriptions.setdefault(keys.tag, keys)
-                    reverse.setdefault(keys.tag, channel['address'])
+                try:
+                    keys = AddressKeys.from_address(channel['address'])
+                except Exception:
+                    continue
+                subscriptions.setdefault(keys.tag, keys)
+                reverse.setdefault(keys.tag, channel['address'])
         if not subscriptions:
             return
         incoming = objects.process_broadcast(raw, subscriptions)
@@ -496,7 +498,9 @@ class Client:
             return
         if self.db.message_exists(incoming.inventory_hash):
             return
-        channel_address = reverse.get(parsed.data[:32], incoming.stream)
+        channel_address = reverse.get(parsed.data[:32])
+        if channel_address is None:
+            return
         body = _decode_body(incoming.encoding, incoming.message)
         self.db.add_message(
             incoming.inventory_hash, incoming.address, channel_address,
