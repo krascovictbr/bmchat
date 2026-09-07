@@ -2384,11 +2384,16 @@ class App(tk.Tk):
             if not path:
                 return
             try:
-                with open(path, 'w') as handle:
+                with open(path, 'w', encoding='utf-8') as handle:
                     handle.write(
                         'BACKUP DE IDENTIDADE BMCHAT\n'
                         'Guarde em lugar seguro. Se perder, é impossível '
                         'recuperar.\n\n' + body + '\n')
+                try:
+                    import os as _osbk
+                    _osbk.chmod(path, 0o600)
+                except Exception:
+                    pass
             except Exception as exc:
                 dialogs.warn(window, 'Backup', 'Falha ao salvar: %s' % exc)
                 return

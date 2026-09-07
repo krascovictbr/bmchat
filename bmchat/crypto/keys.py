@@ -32,6 +32,14 @@ class AddressKeys:
 
     @classmethod
     def from_private_keys(cls, signing_private, encryption_private, stream=1):
+        if len(signing_private) != 32 or len(encryption_private) != 32:
+            raise ValueError('chaves privadas devem ter 32 bytes')
+        try:
+            stream = int(stream)
+        except Exception:
+            stream = 1
+        if stream < 1:
+            raise ValueError('stream inválido')
         obj = cls()
         obj.version = 4
         obj.stream = stream
@@ -60,6 +68,8 @@ class AddressKeys:
         return obj
 
     def public_encryption_point(self):
+        if self.encryption_public is None:
+            raise ValueError('sem chave pública de cifragem')
         return ecc.decode_point_public(self.encryption_public)
 
 
@@ -78,9 +88,11 @@ def address_encryption_private(version, stream, ripe):
 
 
 def chan_keys_from_name(name, stream=1):
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError('nome do canal inválido')
     passphrase = name.encode('utf-8')
     signing_nonce, encryption_nonce = 0, 1
-    while True:
+    for _ in range(1000000):
         signing_private = sha512(
             passphrase + encode_varint(signing_nonce))[:32]
         encryption_private = sha512(
@@ -92,13 +104,16 @@ def chan_keys_from_name(name, stream=1):
                 signing_private, encryption_private, stream)
         signing_nonce += 2
         encryption_nonce += 2
+    raise RuntimeError('canal não derivável (limite excedido)')
 
 
-def generate_keys(stream=1, nullprefix=1):
+def generate_keys(stream=1, nullprefix=1, max_tries=1000000):
     if nullprefix < 0 or nullprefix > 20:
         raise ValueError('nullprefix inválido')
+    if nullprefix > 4:
+        raise ValueError('nullprefix grande demais (travamento)')
     target = b'\x00' * nullprefix
-    while True:
+    for _ in range(max_tries):
         signing_private = os.urandom(32)
         encryption_private = os.urandom(32)
         signing_public = ecc.point_mult(signing_private)
@@ -109,9 +124,12 @@ def generate_keys(stream=1, nullprefix=1):
                 signing_private, encryption_private, stream)
             if encode_address(4, stream, ripe) == result.address:
                 return result
+    raise RuntimeError('não foi possível gerar chaves (limite excedido)')
 
 
 def wif_encode(private):
+    if len(private) != 32:
+        raise ValueError('chave privada deve ter 32 bytes')
     data = b'\x80' + private
     return encode_base58(data + double_sha256(data)[:4])
 

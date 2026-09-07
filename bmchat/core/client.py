@@ -135,15 +135,7 @@ class Client:
         return [r['to_address'] for r in rows if r['to_address']]
 
     def _retry_awaiting(self):
-        # B7: não queima PoW offline + limite de paralelismo
-        try:
-            established = sum(
-                1 for c in list(self.net.connections.values())
-                if getattr(c, 'established', False))
-        except Exception:
-            established = 0
-        if established == 0:
-            return
+        # B7: limite de paralelismo (20/vez) evita fork-bomb
         for address in self._awaiting_addresses()[:20]:
             if not self.started:
                 return

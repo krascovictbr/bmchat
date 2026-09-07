@@ -2,7 +2,7 @@ import hashlib
 import secrets
 
 from ecdsa import SECP256k1
-from ecdsa.ellipticcurve import Point, PointJacobi
+from ecdsa.ellipticcurve import Point
 from ecdsa.util import (
     sigdecode_der, sigdecode_string, sigencode_der,
 )
@@ -25,7 +25,11 @@ def random_private_key():
 
 
 def point_mult(secret):
-    value = int.from_bytes(secret, 'big') % ORDER
+    if len(secret) != 32:
+        raise ValueError('chave privada deve ter 32 bytes')
+    value = int.from_bytes(secret, 'big')
+    if not 1 <= value < ORDER:
+        raise ValueError('chave privada fora do intervalo')
     point = GENERATOR * value
     return encode_point_public(point)
 
@@ -37,20 +41,35 @@ def encode_point_public(point):
 def decode_point_public(pub):
     if len(pub) != 65 or pub[0] != 4:
         raise ValueError('invalid uncompressed public key')
-    return Point(
+    point = Point(
         CURVE,
         int.from_bytes(pub[1:33], 'big'),
         int.from_bytes(pub[33:65], 'big'))
+    try:
+        if not CURVE.contains_point(point.x(), point.y()):
+            raise ValueError('ponto fora da curva')
+    except Exception as exc:
+        raise ValueError('ponto inválido: %s' % exc)
+    return point
 
 
 def point_from_secret(secret):
-    return GENERATOR * (int.from_bytes(secret, 'big') % ORDER)
+    if len(secret) != 32:
+        raise ValueError('chave privada deve ter 32 bytes')
+    value = int.from_bytes(secret, 'big')
+    if not 1 <= value < ORDER:
+        raise ValueError('chave privada fora do intervalo')
+    return GENERATOR * value
 
 
 def ecdh_point(private, point):
     if isinstance(point, bytes):
         point = decode_point_public(point)
-    scalar = int.from_bytes(private, 'big') % ORDER
+    if len(private) != 32:
+        raise ValueError('chave privada deve ter 32 bytes')
+    scalar = int.from_bytes(private, 'big')
+    if not 1 <= scalar < ORDER:
+        raise ValueError('chave privada fora do intervalo')
     result = point * scalar
     return result
 

@@ -8,7 +8,11 @@ import time
 class Database:
 
     def __init__(self, data_dir):
-        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(data_dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(data_dir, 0o700)
+        except Exception:
+            pass
         self.path = os.path.join(data_dir, 'bmchat.db')
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -79,7 +83,12 @@ CREATE TABLE IF NOT EXISTS pubkeys (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(from_address);
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_address);
+CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status, direction);
+CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_objects_type ON objects(type);
+CREATE INDEX IF NOT EXISTS idx_objects_expires ON objects(expires);
+CREATE INDEX IF NOT EXISTS idx_objects_type_ver_exp ON objects(type, version, expires);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_hash IS NOT NULL;
 ''')
             self.conn.commit()
         self._migrate_message_timestamps()
@@ -222,7 +231,7 @@ CREATE INDEX IF NOT EXISTS idx_objects_type ON objects(type);
             INSERT INTO subscriptions(address, label, added, name)
             VALUES(?,?,?,?)
             ON CONFLICT(address) DO UPDATE SET label=excluded.label,
-                name=excluded.name
+                name=COALESCE(NULLIF(excluded.name,''), subscriptions.name)
         ''', (address, label or '', int(time.time()), name or ''))
 
     def set_subscription_name(self, address, name):
@@ -291,12 +300,23 @@ CREATE INDEX IF NOT EXISTS idx_objects_type ON objects(type);
             return self.query(
                 'SELECT * FROM messages WHERE to_address=? OR from_address=? '
                 'ORDER BY timestamp, id', (address, address))
+        try:
+            limit = max(1, min(int(limit), 1000))
+        except Exception:
+            limit = 200
         return self.query(
             'SELECT * FROM (SELECT * FROM messages WHERE to_address=? OR '
             'from_address=? ORDER BY timestamp DESC, id DESC LIMIT ?) '
-            'ORDER BY timestamp, id', (address, address, int(limit)))
+            'ORDER BY timestamp, id', (address, address, limit))
+
+    _VALID_STATUSES = frozenset([
+        'awaiting-pubkey', 'sending', 'sent', 'ackreceived', 'received',
+        'read', 'ack-failed',
+    ])
 
     def set_message_status(self, message_id, status):
+        if status not in self._VALID_STATUSES:
+            raise ValueError('status inválido: %r' % (status,))
         self.execute('UPDATE messages SET status=? WHERE id=?',
                      (status, message_id))
 

@@ -15,10 +15,12 @@ def encode_address(version, stream, ripe):
     stored = encode_varint(version) + encode_varint(stream)
     if version == 4:
         body = ripe.lstrip(b'\x00')
+    elif ripe[:2] == b'\x00\x00':
+        body = ripe[2:]
+    elif ripe[:1] == b'\x00':
+        body = ripe[1:]
     else:
-        body = ripe[2:] if ripe[:2] == b'\x00\x00' else ripe
-        if ripe[:1] == b'\x00':
-            body = ripe[1:]
+        body = ripe
     data = stored + body
     checksum = double_sha512(data)[:CHECKSUM_LEN]
     return 'BM-' + encode_base58(data + checksum)
@@ -41,7 +43,7 @@ def decode_address(address):
         version, version_len = decode_varint(data[:9])
     except Exception:
         return 'varintmalformed', 0, 0, None
-    if version == 0:
+    if version == 0 or version == 1:
         return 'versiontoohigh', 0, 0, None
     if version > MAX_ADDRESS_VERSION:
         return 'versiontoohigh', 0, 0, None
@@ -49,6 +51,8 @@ def decode_address(address):
         stream, stream_len = decode_varint(data[version_len:])
     except Exception:
         return 'varintmalformed', 0, 0, None
+    if stream == 0:
+        return 'versiontoohigh', 0, 0, None
     embedded = data[version_len + stream_len:]
     if len(embedded) > 20:
         return 'ripetoolong', 0, 0, None

@@ -109,7 +109,10 @@ class NetworkManager:
             time.sleep(max(2, min(interval, 120)))
 
     def _ensure_connections(self):
-        max_connections = self.db.get_int('max_connections', 8)
+        try:
+            max_connections = max(1, min(int(self.db.get_int('max_connections', 8)), 50))
+        except Exception:
+            max_connections = 8
         with self.lock:
             current = set(c.peer_key for c in self.connections.values())
         missing = max_connections - len(current)
@@ -124,7 +127,10 @@ class NetworkManager:
             missing -= 1
 
     def _prune_connections(self):
-        max_connections = self.db.get_int('max_connections', 8)
+        try:
+            max_connections = max(1, min(int(self.db.get_int('max_connections', 8)), 50))
+        except Exception:
+            max_connections = 8
         for connection in list(self.connections.values()):
             if not connection.is_alive():
                 with self.lock:

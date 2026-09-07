@@ -43,11 +43,17 @@ class ProxyProfile:
 
     @classmethod
     def from_dict(cls, data):
+        try:
+            port = int((data or {}).get('port', 0))
+        except Exception:
+            port = 0
+        port = max(0, min(port, 65535))
+        data = data or {}
         return cls(
             data.get('name', 'Direto'),
             data.get('proxy_type', 'none'),
             data.get('host', ''),
-            int(data.get('port', 0)),
+            port,
             data.get('username', ''),
             data.get('password', ''),
         )
@@ -63,9 +69,9 @@ DARKNET_PRESETS = [
 
 def connect_socket(host, port, proxy=None, timeout=30):
     if proxy is None or proxy.is_direct():
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect((host, port))
+        if str(host).endswith(('.onion', '.i2p')):
+            raise ValueError('host darknet exige proxy (Tor/I2P)')
+        sock = socket.create_connection((host, port), timeout=timeout)
         return sock
     sock = socks.socksocket()
     sock.set_proxy(
@@ -78,8 +84,9 @@ def connect_socket(host, port, proxy=None, timeout=30):
 
 
 def resolve_hostname(host, proxy=None, timeout=10):
-    if proxy is not None and not proxy.is_direct() and host.endswith('.onion'):
-        return host
-    if proxy is not None and not proxy.is_direct() and host.endswith('.i2p'):
-        return host
+    host = str(host)
+    if host.endswith(('.onion', '.i2p')):
+        if proxy is not None and not proxy.is_direct():
+            return host
+        raise ValueError('host darknet exige proxy (Tor/I2P)')
     return socket.gethostbyname(host)

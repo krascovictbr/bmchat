@@ -93,13 +93,17 @@ def assemble_version(remote_host, remote_port, participating_streams, **kw):
 
 
 def assemble_addr(peers):
+    from ..util import encode_varint as _ev
     if not peers:
-        return b''
+        return _ev(0)
     payload = encode_varint(len(peers))
     for host, port, stream, services, timestamp in peers:
         payload += struct.pack('>Q', timestamp)
         payload += struct.pack('>I', stream)
-        payload += struct.pack('>q', 1)
+        try:
+            payload += struct.pack('>q', int(services))
+        except Exception:
+            payload += struct.pack('>q', 1)
         payload += encode_host(host)
         payload += struct.pack('>H', port)
     return payload
@@ -120,7 +124,10 @@ def assemble_getdata(hashes):
 
 
 def parse_inventory(payload):
+    from .const import MAX_OBJECT_COUNT
     count, position = decode_varint(payload)
+    if count > MAX_OBJECT_COUNT:
+        count = MAX_OBJECT_COUNT
     result = []
     for _ in range(count):
         if len(payload) < position + 32:
@@ -131,7 +138,10 @@ def parse_inventory(payload):
 
 
 def parse_addr(payload):
+    from .const import MAX_ADDR_COUNT
     count, position = decode_varint(payload)
+    if count > MAX_ADDR_COUNT:
+        count = MAX_ADDR_COUNT
     result = []
     for _ in range(count):
         if len(payload) < position + 38:
