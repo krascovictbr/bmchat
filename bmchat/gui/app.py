@@ -1118,9 +1118,36 @@ class App(tk.Tk):
     def _refresh_conversations(self):
         self._conv_meta = []
         self._conv_labels = []
-        for contact in self.client.db.all_contacts():
+        try:
+            contacts = self.client.db.all_contacts()
+        except Exception:
+            contacts = []
+        for contact in contacts:
             self._conv_meta.append(('contact', contact['address']))
             self._conv_labels.append(contact['label'] or contact['address'])
+        try:
+            subs = self.client.db.all_subscriptions()
+        except Exception:
+            subs = []
+        for sub in subs:
+            addr = sub['address']
+            if any(a == addr for _, a in self._conv_meta):
+                continue
+            self._conv_meta.append(('channel', addr))
+            self._conv_labels.append(
+                '# ' + ((sub.get('name') or sub.get('label')) or addr))
+        try:
+            for ident in self.client.db.all_identities(enabled_only=False):
+                if not ident.get('chan'):
+                    continue
+                addr = ident['address']
+                if any(a == addr for _, a in self._conv_meta):
+                    continue
+                self._conv_meta.append(('channel', addr))
+                self._conv_labels.append(
+                    '# ' + (ident.get('chan_label') or ident.get('label') or addr))
+        except Exception:
+            pass
         if self._conv_selected is not None and \
                 self._conv_selected >= len(self._conv_meta):
             self._conv_selected = None
@@ -1135,8 +1162,9 @@ class App(tk.Tk):
     def _unread_counts(self):
         try:
             rows = self.client.db.query(
-                "SELECT from_address AS address, COUNT(*) AS n FROM "
-                "messages WHERE status='received' GROUP BY from_address")
+                "SELECT CASE WHEN to_address LIKE 'BM-%' AND from_address != to_address "
+                "THEN to_address ELSE from_address END AS address, COUNT(*) AS n FROM "
+                "messages WHERE status='received' GROUP BY address")
         except Exception:
             return {}
         try:
@@ -1445,12 +1473,26 @@ class App(tk.Tk):
             self._refresh_conversations()
 
     def _remove_entry(self, kind, address, label):
-        ok = dialogs.confirm(
-            self, 'Remover',
-            'Remover %s dos contatos e apagar a conversa?' % label)
-        if not ok:
-            return
-        self.client.remove_contact(address)
+        if kind == 'channel':
+            ok = dialogs.confirm(
+                self, 'Remover',
+                'Remover inscrição no canal %s e apagar a conversa?' % label)
+            if not ok:
+                return
+            try:
+                self.client.unsubscribe(address)
+            except Exception:
+                try:
+                    self.client.db.delete_conversation(address)
+                except Exception:
+                    pass
+        else:
+            ok = dialogs.confirm(
+                self, 'Remover',
+                'Remover %s dos contatos e apagar a conversa?' % label)
+            if not ok:
+                return
+            self.client.remove_contact(address)
         if getattr(self, 'current_address', None) == address:
             self._show_welcome()
         else:
@@ -1495,6 +1537,25 @@ class App(tk.Tk):
                 status = 'chave pública conhecida'
             else:
                 status = 'aguardando chave pública…'
+        elif kind == 'channel':
+            row = None
+            try:
+                row = self.client.db.get_subscription(address)
+            except Exception:
+                row = None
+            if row:
+                label = (row.get('name') or row.get('label')) or address
+                label = '# ' + label
+            else:
+                try:
+                    ident = self.client.db.get_identity(address)
+                except Exception:
+                    ident = None
+                if ident:
+                    label = '# ' + ((ident.get('chan_label') or ident.get('label')) or address)
+                else:
+                    label = '# ' + address
+            status = 'canal Bitmessage (broadcast)'
         else:
             row = self.client.db.get_contact(address)
             label = (row['label'] if row else '') or address
@@ -2171,12 +2232,33 @@ class App(tk.Tk):
             if not body:
                 self._flash_status('Digite uma mensagem antes de enviar.')
                 return
+            if len(body.encode('utf-8')) > 5000:
+                dialogs.warn(self, 'Mensagem longa',
+                             'Mensagem acima de 5000 caracteres; encurte antes de enviar.')
+                return
             identity = self._current_identity()
             if not identity or identity not in self.client.identities:
                 dialogs.warn(self, 'Identidade ausente',
                              'Crie ou selecione uma identidade válida antes '
                              'de enviar.')
                 self._refresh_identity_menu()
+                return
+            if getattr(self, 'current_kind', 'contact') == 'channel':
+                try:
+                    sub = self.client.db.get_subscription(self.current_address)
+                except Exception:
+                    sub = None
+                if sub is None:
+                    dialogs.warn(self, 'Canal ausente',
+                                 'Inscrição do canal não encontrada.')
+                    self._refresh_conversations()
+                    return
+                self.input_var.set('')
+                self._set_placeholder()
+                status, error = self.client.broadcast_chan(
+                    self.current_address, body)
+                if status != 'success':
+                    dialogs.warn(self, 'Canal', error or status)
                 return
             if self.client.db.get_contact(self.current_address) is None:
                 dialogs.warn(self, 'Conversa encerrada',
