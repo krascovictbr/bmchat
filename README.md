@@ -1,3 +1,9 @@
+# Bem-vindo ao bmchat
+
+![bmchat](https://img.shields.io/badge/status-experimental-orange)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![License](https://img.shields.io/badge/license-0BSD-green)
+
 # bmchat
 
 Cliente de chat estilo Telegram que usa **somente o protocolo Bitmessage**
