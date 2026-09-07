@@ -537,13 +537,27 @@ class Client:
                 row['body'], row['encoding'])
 
     def send_message(self, identity_address, to_address, subject, body,
-                     encoding=BITMESSAGE_ENCODING_TRIVIAL):
+                      encoding=BITMESSAGE_ENCODING_TRIVIAL):
+        from ..protocol.const import MAX_OBJECT_LENGTH
         status, version, stream, ripe = addr_module.decode_address(to_address)
         if status != 'success':
             return status, 'endereço inválido'
-        contact_keys = AddressKeys.from_address(to_address)
+        if version != 4:
+            return 'unsupported', 'somente endereços versão 4 são suportados'
+        try:
+            contact_keys = AddressKeys.from_address(to_address)
+        except Exception:
+            return 'invalid', 'endereço inválido'
+        body = body or ''
+        # B2: subject nunca trafegava no wire — prefixa para não haver perda silenciosa
+        wire_body = ('Subject: %s\n\n%s' % (subject, body)) if (subject or '').strip() else body
+        try:
+            if len(wire_body.encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
+                return 'too-large', 'mensagem grande demais para um objeto'
+        except Exception:
+            return 'invalid', 'corpo de mensagem inválido'
         message_id = self.db.add_message(
-            None, identity_address, to_address, subject or '', body or '',
+            None, identity_address, to_address, subject or '', body,
             encoding, int(time.time()), 'out', 'awaiting-pubkey')
         self.ui_queue.put(('status', message_id, 'sending'))
         if to_address in self.pubkeys:
@@ -554,7 +568,10 @@ class Client:
             int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
         target = calculate_target(1000, 1000, len(unsigned) + 8,
                                   GETPUBKEY_TTL)
-        self._pow_and_publish(unsigned, target)
+        # A1: antes o PoW era descartado (sem done_cb) — agora anuncia
+        self._pow_and_publish(
+            unsigned, target,
+            done_cb=lambda complete, nonce: self.net.announce_object(complete))
         return 'success', None
 
     def _pow_and_publish_message(self, message_id, identity_address,
@@ -572,12 +589,28 @@ class Client:
 
         def worker():
             ack_packet, watch = self._build_ack_packet(stream)
-            if watch:
-                with self._lock:
-                    self._ack_watch[watch] = message_id
+            if not watch:
+                # B3 parcial (bloco 2 completa): sem ACK não envia degradado silencioso
+                self.db.set_message_status(message_id, 'ack-failed')
+                self.ui_queue.put(('status', message_id, 'ack-failed'))
+                return
+            with self._lock:
+                self._ack_watch[watch] = message_id
+            # B2: inclui subject no wire (retry lê do DB via _send_queued)
+            try:
+                rows = self.db.query(
+                    "SELECT subject FROM messages WHERE id=?", (message_id,))
+                subj = (rows[0]['subject'] if rows else '') or ''
+            except Exception:
+                subj = ''
+            wire = ('Subject: %s\n\n%s' % (subj, body)) if subj.strip() else (body or '')
+            try:
+                wire_bytes = wire.encode('utf-8')
+            except Exception:
+                return
             unsigned = objects.build_msg_unsigned(
                 expires, stream, keys, pub['encryption_public'], ripe,
-                body.encode('utf-8'), encoding, ack_packet)
+                wire_bytes, encoding, ack_packet)
             target = calculate_target(
                 pub['nonce_trials_per_byte'],
                 pub['payload_length_extra_bytes'],
@@ -671,9 +704,15 @@ class Client:
             event.set()
 
     def broadcast(self, identity_address, body,
-                  encoding=BITMESSAGE_ENCODING_TRIVIAL):
+                   encoding=BITMESSAGE_ENCODING_TRIVIAL):
+        from ..protocol.const import MAX_OBJECT_LENGTH
         keys = self.identities.get(identity_address)
         if keys is None:
+            return 'error'
+        try:
+            if len((body or '').encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
+                return 'too-large'
+        except Exception:
             return 'error'
         expires = int(time.time()) + MSG_TTL
         unsigned = objects.build_broadcast_unsigned(
@@ -719,7 +758,13 @@ class Client:
         return self._derive_chan_keys(address, stored.strip(), stream)
 
     def broadcast_chan(self, address, body,
-                       encoding=BITMESSAGE_ENCODING_TRIVIAL, name=None):
+                        encoding=BITMESSAGE_ENCODING_TRIVIAL, name=None):
+        from ..protocol.const import MAX_OBJECT_LENGTH
+        try:
+            if len((body or '').encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
+                return 'too-large', 'mensagem grande demais para um objeto'
+        except Exception:
+            return 'error', 'corpo inválido'
         explicit = name is not None
         keys = self._chan_posting_keys(address, name)
         if keys is None:
