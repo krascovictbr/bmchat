@@ -97,6 +97,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
         now = int(time.time())
         future = now + 3600
         with self.lock:
+            try:
+                probe = self.conn.execute(
+                    'SELECT 1 FROM messages WHERE timestamp > ? LIMIT 1',
+                    (future,)).fetchone()
+            except Exception:
+                return
+            if probe is None:
+                return
             self.conn.execute('''
                 UPDATE messages SET timestamp = (
                     SELECT received FROM objects

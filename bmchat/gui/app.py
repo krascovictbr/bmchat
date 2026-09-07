@@ -380,16 +380,27 @@ class App(tk.Tk):
     def __init__(self, data_dir):
         super().__init__()
         # Item 1 — startup percebido: começa escondida, mostra uma casca
-        # mínima (~50 ms) e monta o pesado via after_idle encadeado.
-        # Um único update() bombeia toda a cadeia, então após App()+update()
-        # todos os métodos/atributos externos existem como antes.
+        # mínima e monta o pesado em etapas (after), com a rede em thread.
+        # A cadeia completa exige bombear o loop (update + esperas dos
+        # after); ver _startup_step_*.
         try:
             self.withdraw()
         except Exception:
             pass
         self.data_dir = data_dir
         self.client = Client(data_dir)
-        self.client.start()
+        # Startup: rede/DB pesado roda em thread; a janela pinta antes.
+        self._client_started = False
+        self._client_start_error = None
+        try:
+            threading.Thread(target=self._start_client_bg, daemon=True,
+                             name='client-start').start()
+        except Exception:
+            try:
+                self.client.start()
+                self._client_started = True
+            except Exception as exc:
+                self._client_start_error = exc
 
         self.title('bmchat')
         self.geometry('1100x700')
@@ -456,8 +467,70 @@ class App(tk.Tk):
 
     # -------------------------------------------------- startup diferido (item 1)
 
+    def _start_client_bg(self):
+        try:
+            self.client.start()
+            self._client_started = True
+        except Exception as exc:
+            self._client_start_error = exc
+
     def _startup_step_build(self):
         self._startup_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._build_widgets_left()
+        except Exception:
+            pass
+        if getattr(self, '_closed', False):
+            return
+        try:
+            boot = getattr(self, '_boot_label', None)
+            if boot is not None:
+                try:
+                    boot.config(text='Abrindo bmchat… montando conversa…')
+                except Exception:
+                    pass
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            # after(ms) em vez de after_idle: dá chance de paint entre fatias
+            # (idle callbacks esgotariam no mesmo update()).
+            self._startup_after = self.after(30, self._startup_step_build_left_b)
+        except Exception:
+            self._startup_after = None
+
+    def _startup_step_build_left_b(self):
+        self._startup_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._build_widgets_left_b()
+        except Exception:
+            pass
+        if getattr(self, '_closed', False):
+            return
+        try:
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
+            self._startup_after = self.after(30, self._startup_step_build_right)
+        except Exception:
+            self._startup_after = None
+
+    def _startup_step_build_right(self):
+        self._startup_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._build_widgets_right()
+        except Exception:
+            pass
         if getattr(self, '_closed', False):
             return
         try:
@@ -471,12 +544,6 @@ class App(tk.Tk):
         except Exception:
             pass
         try:
-            self._build_widgets()
-        except Exception:
-            pass
-        if getattr(self, '_closed', False):
-            return
-        try:
             self._startup_after = self.after_idle(self._startup_step_data)
         except Exception:
             self._startup_after = None
@@ -485,6 +552,20 @@ class App(tk.Tk):
         self._startup_after = None
         if getattr(self, '_closed', False):
             return
+        if not getattr(self, '_client_started', False):
+            if getattr(self, '_client_start_error', None) is not None:
+                try:
+                    boot = getattr(self, '_boot_label', None)
+                    if boot is not None:
+                        boot.config(text='Falha ao iniciar rede local; tentando…')
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._startup_after = self.after(100, self._startup_step_data)
+                except Exception:
+                    self._startup_after = None
+                return
         try:
             if not self.client.identities:
                 self.client.create_identity('Minha identidade')
@@ -527,6 +608,12 @@ class App(tk.Tk):
     # -------------------------------------------------- widgets
 
     def _build_widgets(self):
+        # Compat: monta tudo de uma vez (startup usa as partes fatiadas).
+        self._build_widgets_left()
+        self._build_widgets_left_b()
+        self._build_widgets_right()
+
+    def _build_widgets_left(self):
         self.name_font = tkfont.Font(family='TkDefaultFont', size=11,
                                      weight='bold')
         self.preview_font = tkfont.Font(family='TkDefaultFont', size=10)
@@ -594,7 +681,8 @@ class App(tk.Tk):
         self.conv_canvas.bind('<Configure>',
                               lambda _e: self._schedule_conv_redraw())
 
-        # ---- compose FAB ----
+    def _build_widgets_left_b(self):
+        # Segunda fatia da esquerda: FAB + linha de identidade.
         self.fab = tk.Canvas(self.left, width=56, height=56,
                              highlightthickness=0, bd=0, bg=PANEL_BG)
         self.fab.place(relx=1.0, rely=1.0, x=-76, y=-76, anchor='center')
@@ -625,7 +713,9 @@ class App(tk.Tk):
                   bg=PANEL_BG, fg=TEXT_INK, relief='solid', bd=1,
                   font=self.small_font).pack(side='left', padx=(4, 0))
 
-        # ---- right header ----
+    def _build_widgets_right(self):
+        # Segunda metade: cabeçalho/chat/input/statusbar (roda no próximo idle).
+        # Pré-condição: _build_widgets_left já criou panes/right + fontes.
         self.chat_header = tk.Frame(self.right, bg=HEADER_BG, height=52)
         self.chat_header.grid(row=0, column=0, sticky='ew')
         self.chat_header.grid_propagate(False)
