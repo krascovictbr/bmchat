@@ -1,8 +1,7 @@
-import os
 import struct
 
 from ..util import (
-    encode_varint, decode_varint, double_sha512, sha512, ripemd160,
+    encode_varint, decode_varint, double_sha512,
 )
 from ..crypto import ecc, ecies
 from .const import (
@@ -179,6 +178,8 @@ def _parse_msg_plaintext(plain, obj, identity):
     if len(plain) < position + 4:
         return None
     position += 4
+    if len(plain) < position + 128:
+        return None
     pub_signing = b'\x04' + plain[position:position + 64]
     position += 64
     pub_encryption = b'\x04' + plain[position:position + 64]
@@ -186,6 +187,10 @@ def _parse_msg_plaintext(plain, obj, identity):
     if sender_version >= 3:
         ntpb, position = _take_varint(plain, position)
         eb, position = _take_varint(plain, position)
+        if ntpb < 1000 or eb < 1000 or ntpb > 1000000 or eb > 1000000:
+            return None
+    if len(plain) < position + 20:
+        return None
     to_ripe = plain[position:position + 20]
     position += 20
     if to_ripe != identity.ripe:
@@ -313,7 +318,6 @@ def process_broadcast(raw, subscriptions):
     position += 64
     ntpb, position = _take_varint(plain, position)
     eb, position = _take_varint(plain, position)
-    end_of_pubkey = position
     encoding, position = _take_varint(plain, position)
     if encoding == 0:
         return None

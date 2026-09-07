@@ -45,17 +45,21 @@ class PeerConnection(threading.Thread):
                 pass
 
     def send_packet(self, command, payload=b''):
+        if self.sock is None or self._closing:
+            raise ConnectionError('conexão fechada')
         blob = packets.create_packet(command, payload)
         with self.write_lock:
             self.sock.sendall(blob)
-        self.bytes_sent += len(blob)
+            self.bytes_sent += len(blob)
 
     def send_packets(self, command, blobs):
+        if self.sock is None or self._closing:
+            raise ConnectionError('conexão fechada')
         buffer = b''.join(
             packets.create_packet(command, blob) for blob in blobs)
         with self.write_lock:
             self.sock.sendall(buffer)
-        self.bytes_sent += len(buffer)
+            self.bytes_sent += len(buffer)
 
     def _recv_exact(self, sock, size):
         data = b''
@@ -111,30 +115,58 @@ class PeerConnection(threading.Thread):
         self.send_packet(b'version', packets.assemble_version_payload(
             self.peer.host, self.peer.port, self.manager.streams,
             nonce=self.manager.nonce))
+        from ..util.hashing import sha512 as _sha512hs
         end = time.time() + 60
         while not self._closing and time.time() < end and not self.established:
-            magic, command, length, _ = self._read_header()
+            magic, command, length, checksum = self._read_header()
             payload = self._recv_exact(self.sock, length)
-            self._handle(command, payload)
+            try:
+                if _sha512hs(payload)[:4] != checksum:
+                    continue
+            except Exception:
+                continue
+            try:
+                self._handle(command, payload)
+            except Exception as exc:
+                try:
+                    self.manager.log('peer %s handshake %r falhou: %s' % (
+                        self.peer, command, exc))
+                except Exception:
+                    pass
 
     def _read_loop(self):
         while not self._closing:
             try:
-                magic, command, length, _ = self._read_header()
+                magic, command, length, checksum = self._read_header()
             except socket.timeout:
                 continue
             if length == 0:
                 payload = b''
             else:
                 payload = self._recv_exact(self.sock, length)
-            self._handle(command, payload)
+            from ..util.hashing import sha512 as _sha512
+            try:
+                if _sha512(payload)[:4] != checksum:
+                    continue
+            except Exception:
+                continue
+            try:
+                self._handle(command, payload)
+            except Exception as exc:
+                try:
+                    self.manager.log('peer %s comando %r falhou: %s' % (
+                        self.peer, command, exc))
+                except Exception:
+                    pass
 
     def _read_header(self):
-        blob = self._recv_exact(self.sock, packets.HEADER_SIZE)
+        from ..protocol.const import MAX_OBJECT_LENGTH
+        from ..protocol.packets import HEADER_SIZE
+        blob = self._recv_exact(self.sock, HEADER_SIZE)
         magic, command, length, checksum = packets.parse_header(blob)
         if magic != packets.MAGIC:
             raise ValueError('magic inválido')
-        if length > 16 * 1024 * 1024:
+        if length > MAX_OBJECT_LENGTH + 64 + HEADER_SIZE:
             raise ValueError('comprimento excessivo')
         return magic, command, length, checksum
 

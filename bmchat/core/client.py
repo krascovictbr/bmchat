@@ -35,6 +35,9 @@ class Client:
         self._pow_stops = {}
         self._pow_sequencer = 0
         self._ack_watch = {}
+        self._msg_in_flight = set()
+        self._getpubkey_last = {}
+        self._threads = []
         self._log_lines = collections.deque(maxlen=200)
         self._lock = threading.RLock()
         self.net = NetworkManager(
@@ -44,24 +47,70 @@ class Client:
     # ------------------------------------------------------------------
 
     def start(self):
+        import os as _os
+        try:
+            _os.makedirs(self.data_dir, exist_ok=True)
+            self._lock_path = _os.path.join(self.data_dir, 'bmchat.lock')
+            try:
+                fd = _os.open(self._lock_path,
+                              _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
+                _os.write(fd, str(_os.getpid()).encode())
+                _os.close(fd)
+            except FileExistsError:
+                try:
+                    with open(self._lock_path, 'r') as fh:
+                        _pid = fh.read().strip()
+                except Exception:
+                    _pid = '?'
+                self._log('rede', 'aviso: outra instância pode estar usando %s (pid %s)' % (
+                    self.data_dir, _pid))
+        except Exception:
+            pass
         self._load_identities()
         self._load_pubkeys()
         streams = self._participating_streams()
         self.net.start(streams)
         self.started = True
+        self._threads = []
         retry = threading.Thread(target=self._retry_loop, daemon=True,
                                  name='client-retry')
         retry.start()
-        reannounce = threading.Thread(target=self._reannounce_pubkeys,
+        self._threads.append(retry)
+        reannounce = threading.Thread(target=self._reannounce_loop,
                                       daemon=True, name='client-reannounce')
         reannounce.start()
+        self._threads.append(reannounce)
 
     def stop(self):
         self.started = False
-        for event in self._pow_stops.values():
-            event.set()
-        self.net.stop()
-        self.db.close()
+        for event in list(self._pow_stops.values()):
+            try:
+                event.set()
+            except Exception:
+                pass
+        try:
+            self.net.stop()
+        except Exception:
+            pass
+        for thread in getattr(self, '_threads', []):
+            try:
+                thread.join(timeout=5)
+            except Exception:
+                pass
+        try:
+            import os as _os2
+            _lp = getattr(self, '_lock_path', None)
+            if _lp:
+                try:
+                    _os2.unlink(_lp)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self.db.close()
+        except Exception:
+            pass
 
     def _retry_loop(self):
         while self.started:
@@ -86,7 +135,8 @@ class Client:
         return [r['to_address'] for r in rows if r['to_address']]
 
     def _retry_awaiting(self):
-        for address in self._awaiting_addresses():
+        # B7: limite de paralelismo (20/vez) evita fork-bomb
+        for address in self._awaiting_addresses()[:20]:
             if not self.started:
                 return
             if address in self.pubkeys:
@@ -94,7 +144,10 @@ class Client:
                 continue
             self._log('rede', 'republicando pedido de chave para %s' %
                       address[:18])
-            self.request_pubkey(address)
+            try:
+                self.request_pubkey(address)
+            except Exception:
+                continue
 
     def _log(self, level, message):
         line = '[%s] %s' % (time.strftime('%H:%M:%S'), message)
@@ -110,8 +163,7 @@ class Client:
         if self.started:
             streams = self._participating_streams()
             self.net.streams = sorted(set(streams))
-            for connection in list(self.net.connections.values()):
-                connection.their_streams = self.net.streams
+            # NOTE: não tocar em connection.their_streams (são os streams do par)
 
     def _participating_streams(self):
         streams = set()
@@ -163,10 +215,12 @@ class Client:
     def create_channel(self, name, stream=1, label=None):
         name = (name or '').strip()
         if not name:
-            return None
+            return 'invalid', 'nome do canal vazio'
         try:
             stream = int(stream)
         except (TypeError, ValueError):
+            stream = 1
+        if stream < 1:
             stream = 1
         keys = chan_keys_from_name(name, stream)
         self.db.add_identity(
@@ -180,7 +234,7 @@ class Client:
             self.identities[keys.address] = keys
         self._refresh_streams()
         self.ui_queue.put(('channel-created', keys.address, label))
-        return keys.address
+        return 'success', keys.address
 
     def export_identity(self, address):
         keys = self.identities.get(address)
@@ -336,7 +390,7 @@ class Client:
         self.db.remove_contact(address_text)
         self.db.delete_conversation(address_text)
         self._refresh_streams()
-        self.ui_queue.put(('contact-added', address_text, ''))
+        self.ui_queue.put(('contact-removed', address_text, ''))
 
     def subscribe(self, name_or_address, label=None, stream=1):
         status, _version, _stream, _ripe = addr_module.decode_address(
@@ -385,19 +439,36 @@ class Client:
         if parsed.object_type != OBJECT_MSG or parsed.version != 1:
             return
         try:
-            key = parsed.raw[16:]
-            message_id = self._ack_watch.get(key)
+            key = bytes(parsed.raw[16:])
+            with self._lock:
+                message_id = self._ack_watch.pop(key, None)
         except Exception:
             return
         if message_id:
-            self.db.set_message_status(message_id, 'ackreceived')
+            try:
+                self.db.set_message_status(message_id, 'ackreceived')
+            except Exception:
+                return
             self._log('rede', 'confirmação (ACK) recebida: mensagem entregue')
             self.ui_queue.put(('ack', message_id))
 
     def _on_getpubkey(self, parsed):
         tag = parsed.data[:32]
+        now = time.time()
+        try:
+            last = self._getpubkey_last.get(bytes(tag), 0)
+            if now - last < 300:
+                return
+        except Exception:
+            pass
         for address, keys in list(self.identities.items()):
             if keys.tag == tag:
+                if parsed.stream != keys.stream:
+                    return
+                try:
+                    self._getpubkey_last[bytes(tag)] = now
+                except Exception:
+                    pass
                 self._log('rede', 'pedido de chave pública recebido para %s; '
                           'publicando pubkey…' % address[:18])
                 self._publish_pubkey(keys, parsed.stream)
@@ -485,10 +556,12 @@ class Client:
             reverse[keys.tag] = subscription['address']
         for channel in self.db.all_identities(enabled_only=False):
             if channel['chan'] and channel['enabled']:
-                keys = self.identities.get(channel['address'])
-                if keys is not None:
-                    subscriptions.setdefault(keys.tag, keys)
-                    reverse.setdefault(keys.tag, channel['address'])
+                try:
+                    keys = AddressKeys.from_address(channel['address'])
+                except Exception:
+                    continue
+                subscriptions.setdefault(keys.tag, keys)
+                reverse.setdefault(keys.tag, channel['address'])
         if not subscriptions:
             return
         incoming = objects.process_broadcast(raw, subscriptions)
@@ -496,7 +569,9 @@ class Client:
             return
         if self.db.message_exists(incoming.inventory_hash):
             return
-        channel_address = reverse.get(parsed.data[:32], incoming.stream)
+        channel_address = reverse.get(parsed.data[:32])
+        if channel_address is None:
+            return
         body = _decode_body(incoming.encoding, incoming.message)
         self.db.add_message(
             incoming.inventory_hash, incoming.address, channel_address,
@@ -533,13 +608,27 @@ class Client:
                 row['body'], row['encoding'])
 
     def send_message(self, identity_address, to_address, subject, body,
-                     encoding=BITMESSAGE_ENCODING_TRIVIAL):
+                      encoding=BITMESSAGE_ENCODING_TRIVIAL):
+        from ..protocol.const import MAX_OBJECT_LENGTH
         status, version, stream, ripe = addr_module.decode_address(to_address)
         if status != 'success':
             return status, 'endereço inválido'
-        contact_keys = AddressKeys.from_address(to_address)
+        if version != 4:
+            return 'unsupported', 'somente endereços versão 4 são suportados'
+        try:
+            contact_keys = AddressKeys.from_address(to_address)
+        except Exception:
+            return 'invalid', 'endereço inválido'
+        body = body or ''
+        # B2: subject nunca trafegava no wire — prefixa para não haver perda silenciosa
+        wire_body = ('Subject: %s\n\n%s' % (subject, body)) if (subject or '').strip() else body
+        try:
+            if len(wire_body.encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
+                return 'too-large', 'mensagem grande demais para um objeto'
+        except Exception:
+            return 'invalid', 'corpo de mensagem inválido'
         message_id = self.db.add_message(
-            None, identity_address, to_address, subject or '', body or '',
+            None, identity_address, to_address, subject or '', body,
             encoding, int(time.time()), 'out', 'awaiting-pubkey')
         self.ui_queue.put(('status', message_id, 'sending'))
         if to_address in self.pubkeys:
@@ -550,11 +639,14 @@ class Client:
             int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
         target = calculate_target(1000, 1000, len(unsigned) + 8,
                                   GETPUBKEY_TTL)
-        self._pow_and_publish(unsigned, target)
+        # A1: antes o PoW era descartado (sem done_cb) — agora anuncia
+        self._pow_and_publish(
+            unsigned, target,
+            done_cb=lambda complete, nonce: self.net.announce_object(complete))
         return 'success', None
 
     def _pow_and_publish_message(self, message_id, identity_address,
-                                 to_address, body, encoding):
+                                  to_address, body, encoding):
         pub = self.pubkeys.get(to_address)
         if pub is None:
             return
@@ -564,28 +656,75 @@ class Client:
         status, version, stream, ripe = addr_module.decode_address(to_address)
         if status != 'success':
             return
+        with self._lock:
+            if message_id in self._msg_in_flight:
+                return
+            self._msg_in_flight.add(message_id)
+        try:
+            self.db.set_message_status(message_id, 'sending')
+        except Exception:
+            pass
         expires = int(time.time()) + MSG_TTL
 
         def worker():
             ack_packet, watch = self._build_ack_packet(stream)
-            if watch:
+            if not watch:
+                # B3: sem ACK não envia degradado silencioso
+                try:
+                    self.db.set_message_status(message_id, 'ack-failed')
+                    self.ui_queue.put(('status', message_id, 'ack-failed'))
+                finally:
+                    with self._lock:
+                        self._msg_in_flight.discard(message_id)
+                return
+            with self._lock:
+                self._ack_watch[watch] = message_id
+            # B2: inclui subject no wire (retry lê do DB via _send_queued)
+            try:
+                rows = self.db.query(
+                    "SELECT subject FROM messages WHERE id=?", (message_id,))
+                subj = (rows[0]['subject'] if rows else '') or ''
+            except Exception:
+                subj = ''
+            wire = ('Subject: %s\n\n%s' % (subj, body)) if subj.strip() else (body or '')
+            try:
+                wire_bytes = wire.encode('utf-8')
+            except Exception:
                 with self._lock:
-                    self._ack_watch[watch] = message_id
+                    self._msg_in_flight.discard(message_id)
+                return
             unsigned = objects.build_msg_unsigned(
                 expires, stream, keys, pub['encryption_public'], ripe,
-                body.encode('utf-8'), encoding, ack_packet)
+                wire_bytes, encoding, ack_packet)
             target = calculate_target(
                 pub['nonce_trials_per_byte'],
                 pub['payload_length_extra_bytes'],
                 len(unsigned) + 8, MSG_TTL)
 
             def done(complete, nonce):
+                # B1: revalida antes de anunciar (conversa pode ter sido apagada)
+                try:
+                    rows = self.db.query(
+                        "SELECT status FROM messages WHERE id=?", (message_id,))
+                    if not rows or rows[0]['status'] not in (
+                            'sending', 'awaiting-pubkey'):
+                        return
+                except Exception:
+                    pass
+                finally:
+                    with self._lock:
+                        self._msg_in_flight.discard(message_id)
                 self.net.announce_object(complete)
                 self.db.set_message_status(message_id, 'sent')
                 self.ui_queue.put(('status', message_id, 'sent'))
 
-            self._run_pow_and_done(
-                unsigned, target, message_id=message_id, done_cb=done)
+            try:
+                self._run_pow_and_done(
+                    unsigned, target, message_id=message_id, done_cb=done)
+            except Exception:
+                with self._lock:
+                    self._msg_in_flight.discard(message_id)
+                raise
 
         threading.Thread(target=worker, daemon=True,
                          name='msg-pow-%s' % message_id).start()
@@ -667,9 +806,15 @@ class Client:
             event.set()
 
     def broadcast(self, identity_address, body,
-                  encoding=BITMESSAGE_ENCODING_TRIVIAL):
+                   encoding=BITMESSAGE_ENCODING_TRIVIAL):
+        from ..protocol.const import MAX_OBJECT_LENGTH
         keys = self.identities.get(identity_address)
         if keys is None:
+            return 'error'
+        try:
+            if len((body or '').encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
+                return 'too-large'
+        except Exception:
             return 'error'
         expires = int(time.time()) + MSG_TTL
         unsigned = objects.build_broadcast_unsigned(
@@ -715,7 +860,13 @@ class Client:
         return self._derive_chan_keys(address, stored.strip(), stream)
 
     def broadcast_chan(self, address, body,
-                       encoding=BITMESSAGE_ENCODING_TRIVIAL, name=None):
+                        encoding=BITMESSAGE_ENCODING_TRIVIAL, name=None):
+        from ..protocol.const import MAX_OBJECT_LENGTH
+        try:
+            if len((body or '').encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
+                return 'too-large', 'mensagem grande demais para um objeto'
+        except Exception:
+            return 'error', 'corpo inválido'
         explicit = name is not None
         keys = self._chan_posting_keys(address, name)
         if keys is None:
@@ -771,18 +922,35 @@ class Client:
 
         self._pow_and_publish(unsigned, target, done_cb=done)
 
-    def _reannounce_pubkeys(self):
-        try:
-            rows = self.db.query(
-                'SELECT raw FROM objects WHERE type=1 AND version=4 AND '
-                'expires > ? ORDER BY expires DESC LIMIT 200',
-                (int(time.time()),))
-        except Exception:
-            return
+    def _reannounce_loop(self):
+        self._reannounce_pubkeys_once()
+        while self.started:
+            for _ in range(24 * 60):
+                if not self.started:
+                    return
+                time.sleep(60)
+            if not self.started:
+                return
+            try:
+                self._reannounce_pubkeys_once()
+            except Exception as exc:
+                self._log('rede', 'reannounce: %r' % exc)
+
+    def _reannounce_pubkeys_once(self):
+        now = int(time.time())
         for identity in self.db.all_identities(enabled_only=False):
+            if not self.started:
+                return
             address = identity['address']
             try:
                 keys = AddressKeys.from_address(address)
+            except Exception:
+                continue
+            try:
+                rows = self.db.query(
+                    'SELECT raw FROM objects WHERE type=1 AND version=4 AND '
+                    'expires > ? ORDER BY expires DESC LIMIT 5',
+                    (now,))
             except Exception:
                 continue
             for row in rows:
@@ -796,9 +964,16 @@ class Client:
                     continue
                 if incoming is None:
                     continue
-                self.net.announce_object(raw)
+                try:
+                    self.net.announce_object(raw)
+                except Exception:
+                    pass
                 self._log('rede', 'pubkey de %s reanunciada' % address[:18])
                 break
+
+    def _reannounce_pubkeys(self):
+        # compat: testes antigos chamam direto (1-shot)
+        return self._reannounce_pubkeys_once()
 
 
 def _decode_body(encoding, message):

@@ -62,7 +62,7 @@ def client():
 
 
 def test_pubkey_lifecycle(client):
-    alice = client.create_identity('Alice', 1)
+    client.create_identity('Alice', 1)
     bob = client.create_identity('Bob', 1)
     client._load_identities()
     client.add_contact(bob, 'Bob')
@@ -136,8 +136,8 @@ def test_send_then_ack(client):
 
 
 def test_msg_with_ack_packet_is_valid(client):
-    alice = client.create_identity('Alice', 1)
-    bob = client.create_identity('Bob', 1)
+    client.create_identity('Alice', 1)
+    client.create_identity('Bob', 1)
     client._load_identities()
     packet, watch = client._build_ack_packet(1)
     assert len(watch) == 38
@@ -584,5 +584,4 @@ def bob_keys_producer(client, bob):
 
 
 if __name__ == '__main__':
-    import sys
     sys.exit(pytest.main([__file__, '-v']))

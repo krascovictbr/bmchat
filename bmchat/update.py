@@ -60,6 +60,9 @@ def check_for_updates(repo_root=_REPO_ROOT):
     if behind:
         return {'status': 'update-available', 'behind': behind,
                 'local': local, 'remote': remote, 'upstream': upstream}
+    if ahead:
+        return {'status': 'ahead', 'behind': 0, 'ahead': ahead,
+                'local': local, 'remote': remote, 'upstream': upstream}
     return {'status': 'up-to-date', 'local': local}
 
 
@@ -93,4 +96,4 @@ def restart_program(repo_root=_REPO_ROOT):
     run_path = os.path.join(repo_root, 'run.py')
     if not os.path.isfile(run_path):
         raise FileNotFoundError('run.py não encontrado para reiniciar')
-    os.execv(sys.executable, [sys.executable, run_path])
+    os.execv(sys.executable, [sys.executable, run_path] + sys.argv[1:])

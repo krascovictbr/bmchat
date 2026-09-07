@@ -380,16 +380,27 @@ class App(tk.Tk):
     def __init__(self, data_dir):
         super().__init__()
         # Item 1 — startup percebido: começa escondida, mostra uma casca
-        # mínima (~50 ms) e monta o pesado via after_idle encadeado.
-        # Um único update() bombeia toda a cadeia, então após App()+update()
-        # todos os métodos/atributos externos existem como antes.
+        # mínima e monta o pesado em etapas (after), com a rede em thread.
+        # A cadeia completa exige bombear o loop (update + esperas dos
+        # after); ver _startup_step_*.
         try:
             self.withdraw()
         except Exception:
             pass
         self.data_dir = data_dir
         self.client = Client(data_dir)
-        self.client.start()
+        # Startup: rede/DB pesado roda em thread; a janela pinta antes.
+        self._client_started = False
+        self._client_start_error = None
+        try:
+            threading.Thread(target=self._start_client_bg, daemon=True,
+                             name='client-start').start()
+        except Exception:
+            try:
+                self.client.start()
+                self._client_started = True
+            except Exception as exc:
+                self._client_start_error = exc
 
         self.title('bmchat')
         self.geometry('1100x700')
@@ -456,8 +467,70 @@ class App(tk.Tk):
 
     # -------------------------------------------------- startup diferido (item 1)
 
+    def _start_client_bg(self):
+        try:
+            self.client.start()
+            self._client_started = True
+        except Exception as exc:
+            self._client_start_error = exc
+
     def _startup_step_build(self):
         self._startup_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._build_widgets_left()
+        except Exception:
+            pass
+        if getattr(self, '_closed', False):
+            return
+        try:
+            boot = getattr(self, '_boot_label', None)
+            if boot is not None:
+                try:
+                    boot.config(text='Abrindo bmchat… montando conversa…')
+                except Exception:
+                    pass
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            # after(ms) em vez de after_idle: dá chance de paint entre fatias
+            # (idle callbacks esgotariam no mesmo update()).
+            self._startup_after = self.after(30, self._startup_step_build_left_b)
+        except Exception:
+            self._startup_after = None
+
+    def _startup_step_build_left_b(self):
+        self._startup_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._build_widgets_left_b()
+        except Exception:
+            pass
+        if getattr(self, '_closed', False):
+            return
+        try:
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
+            self._startup_after = self.after(30, self._startup_step_build_right)
+        except Exception:
+            self._startup_after = None
+
+    def _startup_step_build_right(self):
+        self._startup_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._build_widgets_right()
+        except Exception:
+            pass
         if getattr(self, '_closed', False):
             return
         try:
@@ -471,12 +544,6 @@ class App(tk.Tk):
         except Exception:
             pass
         try:
-            self._build_widgets()
-        except Exception:
-            pass
-        if getattr(self, '_closed', False):
-            return
-        try:
             self._startup_after = self.after_idle(self._startup_step_data)
         except Exception:
             self._startup_after = None
@@ -485,6 +552,20 @@ class App(tk.Tk):
         self._startup_after = None
         if getattr(self, '_closed', False):
             return
+        if not getattr(self, '_client_started', False):
+            if getattr(self, '_client_start_error', None) is not None:
+                try:
+                    boot = getattr(self, '_boot_label', None)
+                    if boot is not None:
+                        boot.config(text='Falha ao iniciar rede local; tentando…')
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._startup_after = self.after(100, self._startup_step_data)
+                except Exception:
+                    self._startup_after = None
+                return
         try:
             if not self.client.identities:
                 self.client.create_identity('Minha identidade')
@@ -527,6 +608,12 @@ class App(tk.Tk):
     # -------------------------------------------------- widgets
 
     def _build_widgets(self):
+        # Compat: monta tudo de uma vez (startup usa as partes fatiadas).
+        self._build_widgets_left()
+        self._build_widgets_left_b()
+        self._build_widgets_right()
+
+    def _build_widgets_left(self):
         self.name_font = tkfont.Font(family='TkDefaultFont', size=11,
                                      weight='bold')
         self.preview_font = tkfont.Font(family='TkDefaultFont', size=10)
@@ -594,7 +681,8 @@ class App(tk.Tk):
         self.conv_canvas.bind('<Configure>',
                               lambda _e: self._schedule_conv_redraw())
 
-        # ---- compose FAB ----
+    def _build_widgets_left_b(self):
+        # Segunda fatia da esquerda: FAB + linha de identidade.
         self.fab = tk.Canvas(self.left, width=56, height=56,
                              highlightthickness=0, bd=0, bg=PANEL_BG)
         self.fab.place(relx=1.0, rely=1.0, x=-76, y=-76, anchor='center')
@@ -625,7 +713,9 @@ class App(tk.Tk):
                   bg=PANEL_BG, fg=TEXT_INK, relief='solid', bd=1,
                   font=self.small_font).pack(side='left', padx=(4, 0))
 
-        # ---- right header ----
+    def _build_widgets_right(self):
+        # Segunda metade: cabeçalho/chat/input/statusbar (roda no próximo idle).
+        # Pré-condição: _build_widgets_left já criou panes/right + fontes.
         self.chat_header = tk.Frame(self.right, bg=HEADER_BG, height=52)
         self.chat_header.grid(row=0, column=0, sticky='ew')
         self.chat_header.grid_propagate(False)
@@ -919,7 +1009,7 @@ class App(tk.Tk):
 
     _KNOWN_UI_EVENTS = frozenset([
         'log', 'message', 'broadcast', 'pubkey', 'status',
-        'identity-created', 'contact-added', 'subscribed',
+        'identity-created', 'contact-added', 'contact-removed', 'subscribed',
         'channel-created', 'broadcast-sent', 'pow-progress',
         'pow-cancelled', 'ack', 'update-available', 'update-check-result',
         'update-result',
@@ -1019,7 +1109,7 @@ class App(tk.Tk):
         elif kind == 'identity-created':
             self._refresh_identity_menu()
             self._refresh_conversations()
-        elif kind in ('contact-added', 'subscribed', 'channel-created'):
+        elif kind in ('contact-added', 'contact-removed', 'subscribed', 'channel-created'):
             self._refresh_conversations()
         elif kind == 'broadcast-sent':
             self._reload_chat()
@@ -1118,9 +1208,36 @@ class App(tk.Tk):
     def _refresh_conversations(self):
         self._conv_meta = []
         self._conv_labels = []
-        for contact in self.client.db.all_contacts():
+        try:
+            contacts = self.client.db.all_contacts()
+        except Exception:
+            contacts = []
+        for contact in contacts:
             self._conv_meta.append(('contact', contact['address']))
             self._conv_labels.append(contact['label'] or contact['address'])
+        try:
+            subs = self.client.db.all_subscriptions()
+        except Exception:
+            subs = []
+        for sub in subs:
+            addr = sub['address']
+            if any(a == addr for _, a in self._conv_meta):
+                continue
+            self._conv_meta.append(('channel', addr))
+            self._conv_labels.append(
+                '# ' + ((sub.get('name') or sub.get('label')) or addr))
+        try:
+            for ident in self.client.db.all_identities(enabled_only=False):
+                if not ident.get('chan'):
+                    continue
+                addr = ident['address']
+                if any(a == addr for _, a in self._conv_meta):
+                    continue
+                self._conv_meta.append(('channel', addr))
+                self._conv_labels.append(
+                    '# ' + (ident.get('chan_label') or ident.get('label') or addr))
+        except Exception:
+            pass
         if self._conv_selected is not None and \
                 self._conv_selected >= len(self._conv_meta):
             self._conv_selected = None
@@ -1135,8 +1252,9 @@ class App(tk.Tk):
     def _unread_counts(self):
         try:
             rows = self.client.db.query(
-                "SELECT from_address AS address, COUNT(*) AS n FROM "
-                "messages WHERE status='received' GROUP BY from_address")
+                "SELECT CASE WHEN to_address LIKE 'BM-%' AND from_address != to_address "
+                "THEN to_address ELSE from_address END AS address, COUNT(*) AS n FROM "
+                "messages WHERE status='received' GROUP BY address")
         except Exception:
             return {}
         try:
@@ -1445,12 +1563,26 @@ class App(tk.Tk):
             self._refresh_conversations()
 
     def _remove_entry(self, kind, address, label):
-        ok = dialogs.confirm(
-            self, 'Remover',
-            'Remover %s dos contatos e apagar a conversa?' % label)
-        if not ok:
-            return
-        self.client.remove_contact(address)
+        if kind == 'channel':
+            ok = dialogs.confirm(
+                self, 'Remover',
+                'Remover inscrição no canal %s e apagar a conversa?' % label)
+            if not ok:
+                return
+            try:
+                self.client.unsubscribe(address)
+            except Exception:
+                try:
+                    self.client.db.delete_conversation(address)
+                except Exception:
+                    pass
+        else:
+            ok = dialogs.confirm(
+                self, 'Remover',
+                'Remover %s dos contatos e apagar a conversa?' % label)
+            if not ok:
+                return
+            self.client.remove_contact(address)
         if getattr(self, 'current_address', None) == address:
             self._show_welcome()
         else:
@@ -1495,6 +1627,25 @@ class App(tk.Tk):
                 status = 'chave pública conhecida'
             else:
                 status = 'aguardando chave pública…'
+        elif kind == 'channel':
+            row = None
+            try:
+                row = self.client.db.get_subscription(address)
+            except Exception:
+                row = None
+            if row:
+                label = (row.get('name') or row.get('label')) or address
+                label = '# ' + label
+            else:
+                try:
+                    ident = self.client.db.get_identity(address)
+                except Exception:
+                    ident = None
+                if ident:
+                    label = '# ' + ((ident.get('chan_label') or ident.get('label')) or address)
+                else:
+                    label = '# ' + address
+            status = 'canal Bitmessage (broadcast)'
         else:
             row = self.client.db.get_contact(address)
             label = (row['label'] if row else '') or address
@@ -2171,12 +2322,33 @@ class App(tk.Tk):
             if not body:
                 self._flash_status('Digite uma mensagem antes de enviar.')
                 return
+            if len(body.encode('utf-8')) > 5000:
+                dialogs.warn(self, 'Mensagem longa',
+                             'Mensagem acima de 5000 caracteres; encurte antes de enviar.')
+                return
             identity = self._current_identity()
             if not identity or identity not in self.client.identities:
                 dialogs.warn(self, 'Identidade ausente',
                              'Crie ou selecione uma identidade válida antes '
                              'de enviar.')
                 self._refresh_identity_menu()
+                return
+            if getattr(self, 'current_kind', 'contact') == 'channel':
+                try:
+                    sub = self.client.db.get_subscription(self.current_address)
+                except Exception:
+                    sub = None
+                if sub is None:
+                    dialogs.warn(self, 'Canal ausente',
+                                 'Inscrição do canal não encontrada.')
+                    self._refresh_conversations()
+                    return
+                self.input_var.set('')
+                self._set_placeholder()
+                status, error = self.client.broadcast_chan(
+                    self.current_address, body)
+                if status != 'success':
+                    dialogs.warn(self, 'Canal', error or status)
                 return
             if self.client.db.get_contact(self.current_address) is None:
                 dialogs.warn(self, 'Conversa encerrada',
@@ -2302,11 +2474,16 @@ class App(tk.Tk):
             if not path:
                 return
             try:
-                with open(path, 'w') as handle:
+                with open(path, 'w', encoding='utf-8') as handle:
                     handle.write(
                         'BACKUP DE IDENTIDADE BMCHAT\n'
                         'Guarde em lugar seguro. Se perder, é impossível '
                         'recuperar.\n\n' + body + '\n')
+                try:
+                    import os as _osbk
+                    _osbk.chmod(path, 0o600)
+                except Exception:
+                    pass
             except Exception as exc:
                 dialogs.warn(window, 'Backup', 'Falha ao salvar: %s' % exc)
                 return

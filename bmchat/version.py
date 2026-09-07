@@ -16,13 +16,17 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _git_output(args):
     try:
         completed = subprocess.run(
-            ['git'] + args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=10, check=True, cwd=_REPO_ROOT)
+            ['git', '-C', _REPO_ROOT] + args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=5, check=True)
     except Exception:
         return None
     return completed.stdout.decode('utf-8', 'replace').strip()
 
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
 def get_version():
     """Retorna a versão rolling, ex.: ``2026.09.05+r42.g1a2b3c4``."""
     count = _git_output(['rev-list', '--count', 'HEAD'])
