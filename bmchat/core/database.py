@@ -104,7 +104,10 @@ CREATE INDEX IF NOT EXISTS idx_objects_type ON objects(type);
 
     def close(self):
         with self.lock:
-            self.conn.close()
+            try:
+                self.conn.close()
+            except Exception:
+                pass
 
     def query(self, sql, params=()):
         with self.lock:
@@ -283,10 +286,15 @@ CREATE INDEX IF NOT EXISTS idx_objects_type ON objects(type);
             (identity_address, contact_address,
              contact_address, identity_address))
 
-    def messages_for_conversation(self, address):
+    def messages_for_conversation(self, address, limit=None):
+        if limit is None:
+            return self.query(
+                'SELECT * FROM messages WHERE to_address=? OR from_address=? '
+                'ORDER BY timestamp, id', (address, address))
         return self.query(
-            'SELECT * FROM messages WHERE to_address=? OR from_address=? '
-            'ORDER BY timestamp, id', (address, address))
+            'SELECT * FROM (SELECT * FROM messages WHERE to_address=? OR '
+            'from_address=? ORDER BY timestamp DESC, id DESC LIMIT ?) '
+            'ORDER BY timestamp, id', (address, address, int(limit)))
 
     def set_message_status(self, message_id, status):
         self.execute('UPDATE messages SET status=? WHERE id=?',

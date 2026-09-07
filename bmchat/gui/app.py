@@ -1,4 +1,5 @@
 import datetime
+import queue
 import threading
 import time
 import tkinter as tk
@@ -235,10 +236,34 @@ def _initials(label):
 def _fit_width(font, text, max_width):
     if font.measure(text) <= max_width:
         return text
-    trimmed = text
-    while trimmed and font.measure(trimmed + '…') > max_width:
-        trimmed = trimmed[:-1]
-    return trimmed + '…'
+    ellipsis = '…'
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if font.measure(text[:mid] + ellipsis) <= max_width:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low] + ellipsis
+
+
+def _fit_long_word(font, word, max_width):
+    probe = word[:64]
+    avg = font.measure(probe) / max(1, len(probe))
+    if avg <= 0:
+        return 1
+    cut = max(1, min(int(max_width / avg), len(word)))
+    for _ in range(12):
+        if cut > 1 and font.measure(word[:cut]) > max_width:
+            cut = max(1, cut // 2)
+        else:
+            break
+    for _ in range(8):
+        if cut < len(word) and font.measure(word[:cut + 1]) <= max_width:
+            cut += 1
+        else:
+            break
+    return cut
 
 
 def _wrap_lines(font, text, max_width):
@@ -257,9 +282,7 @@ def _wrap_lines(font, text, max_width):
                 if current:
                     lines.append(current)
                 while word and font.measure(word) > max_width:
-                    cut = len(word)
-                    while cut > 1 and font.measure(word[:cut]) > max_width:
-                        cut -= 1
+                    cut = _fit_long_word(font, word, max_width)
                     lines.append(word[:cut])
                     word = word[cut:]
                 current = word
@@ -356,6 +379,14 @@ class App(tk.Tk):
 
     def __init__(self, data_dir):
         super().__init__()
+        # Item 1 — startup percebido: começa escondida, mostra uma casca
+        # mínima (~50 ms) e monta o pesado via after_idle encadeado.
+        # Um único update() bombeia toda a cadeia, então após App()+update()
+        # todos os métodos/atributos externos existem como antes.
+        try:
+            self.withdraw()
+        except Exception:
+            pass
         self.data_dir = data_dir
         self.client = Client(data_dir)
         self.client.start()
@@ -368,7 +399,7 @@ class App(tk.Tk):
         self._conv_meta = []
         self._conv_labels = []
         self._conv_selected = None
-        self._conv_hover = None
+        self._conv_hover_index = None
         self._conv_filter = ''
         self.current_kind = None
         self.current_address = None
@@ -376,6 +407,28 @@ class App(tk.Tk):
         self._chat_layouts = []
         self._redraw_after = None
         self._stick_bottom = True
+        self._wrap_cache = {}
+        self._wrap_order = []
+        self._chat_limit = 200
+        self._chat_has_more = False
+        self._chat_pill = None
+        self._conv_hover_after = None
+        self._conv_draw_after = None
+        self._refresh_after = None
+        self._pow_last = {}
+        # Item 3 — cache de elipse {(font-name, text, max_w): fitted}, FIFO ~300.
+        self._fit_cache = {}
+        self._fit_order = []
+        self._ellipsis_w = {}
+        # Item 4 — última largura com layout de chat calculado.
+        self._last_chat_w = None
+        # Item 6 — higiene de after(): ids pendentes + flag de encerrado.
+        self._closed = False
+        self._startup_after = None
+        self._poll_after = None
+        self._tick_after = None
+        # Item 1 — só True após a cadeia de init diferido terminar.
+        self._startup_done = False
 
         self.conv_list = _ConvListAdapter(self)
         self.chat_text = _ChatTextAdapter()
@@ -384,18 +437,92 @@ class App(tk.Tk):
         self._menu_opened_at = 0.0
         self.bind_all('<ButtonPress>', self._dismiss_open_menu, add='+')
 
-        self._build_widgets()
-
-        if not self.client.identities:
-            self.client.create_identity('Minha identidade')
-        self._refresh_identity_menu()
-        self._refresh_conversations()
-        self.after(250, self._poll)
-        self.after(1500, self._tick_status)
-        threading.Thread(target=self._auto_update_check, daemon=True,
-                         name='update-check').start()
+        # Item 1 — casca mínima (barata): placeholder até o build real.
+        # `place` não conflita com o grid/pack que _build_widgets usa.
+        self._boot_label = tk.Label(
+            self, text='Abrindo bmchat…', bg=PANEL_BG, fg=TEXT_GRAY,
+            font=('TkDefaultFont', 11))
+        self._boot_label.place(relx=0.5, rely=0.5, anchor='center')
+        try:
+            self.deiconify()
+        except Exception:
+            pass
 
         self.protocol('WM_DELETE_WINDOW', self._on_close)
+        try:
+            self._startup_after = self.after_idle(self._startup_step_build)
+        except Exception:
+            self._startup_after = None
+
+    # -------------------------------------------------- startup diferido (item 1)
+
+    def _startup_step_build(self):
+        self._startup_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            boot = getattr(self, '_boot_label', None)
+            if boot is not None:
+                try:
+                    boot.destroy()
+                except Exception:
+                    pass
+            self._boot_label = None
+        except Exception:
+            pass
+        try:
+            self._build_widgets()
+        except Exception:
+            pass
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._startup_after = self.after_idle(self._startup_step_data)
+        except Exception:
+            self._startup_after = None
+
+    def _startup_step_data(self):
+        self._startup_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            if not self.client.identities:
+                self.client.create_identity('Minha identidade')
+        except Exception:
+            pass
+        try:
+            self._refresh_identity_menu()
+        except Exception:
+            pass
+        try:
+            self._refresh_conversations()
+        except Exception:
+            pass
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._startup_after = self.after_idle(self._startup_step_live)
+        except Exception:
+            self._startup_after = None
+
+    def _startup_step_live(self):
+        self._startup_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._poll_after = self.after(250, self._poll)
+        except Exception:
+            self._poll_after = None
+        try:
+            self._tick_after = self.after(1500, self._tick_status)
+        except Exception:
+            self._tick_after = None
+        try:
+            threading.Thread(target=self._auto_update_check, daemon=True,
+                             name='update-check').start()
+        except Exception:
+            pass
+        self._startup_done = True
 
     # -------------------------------------------------- widgets
 
@@ -411,6 +538,8 @@ class App(tk.Tk):
                                        weight='bold')
         self.title_font = tkfont.Font(family='TkDefaultFont', size=13,
                                       weight='bold')
+        self.welcome_title_font = tkfont.Font(family='TkDefaultFont', size=14,
+                                              weight='bold')
 
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
@@ -452,16 +581,18 @@ class App(tk.Tk):
         # ---- conversation list ----
         self.conv_canvas = tk.Canvas(self.left, bg=PANEL_BG,
                                      highlightthickness=0, bd=0)
-        self.conv_canvas.pack(fill='both', expand=True)
         self.conv_scroll = tk.Scrollbar(self.left, orient='vertical',
                                         command=self.conv_canvas.yview)
         self.conv_canvas.configure(yscrollcommand=self.conv_scroll.set)
+        self.conv_scroll.pack(side='right', fill='y')
+        self.conv_canvas.pack(side='left', fill='both', expand=True)
         self.conv_canvas.bind('<Button-1>', self._conv_click)
-        self.conv_canvas.bind('<Motion>', self._conv_hover)
+        self.conv_canvas.bind('<Motion>', self._conv_hover_debounced)
         self.conv_canvas.bind('<Leave>', self._conv_leave)
         self.conv_canvas.bind('<Button-3>', self._conv_right_click)
         self._bind_wheel(self.conv_canvas)
-        self.conv_canvas.bind('<Configure>', lambda _e: self._draw_conversations())
+        self.conv_canvas.bind('<Configure>',
+                              lambda _e: self._schedule_conv_redraw())
 
         # ---- compose FAB ----
         self.fab = tk.Canvas(self.left, width=56, height=56,
@@ -541,6 +672,7 @@ class App(tk.Tk):
         self._bind_wheel(self.chat_canvas)
         self.chat_canvas.bind('<Configure>', lambda _e: self._schedule_chat_redraw())
         self.chat_canvas.bind('<Button-3>', self._chat_right_click)
+        self.chat_canvas.bind('<Button-1>', self._chat_click)
 
         self.jump_btn = tk.Button(
             self.chat_frame, text='↓', bg=PANEL_BG, fg=INPUT_ICON,
@@ -572,6 +704,7 @@ class App(tk.Tk):
         self.input_entry.grid(row=1, column=1, sticky='ew', padx=4)
         self.input_entry.bind('<Return>', lambda _e: self._send())
         self.input_entry.bind('<FocusIn>', self._clear_placeholder)
+        self.input_entry.bind('<FocusOut>', self._restore_placeholder)
         self._placeholder_on = True
         self._set_placeholder()
         self.send_btn = tk.Canvas(self.input_frame, width=36, height=36,
@@ -682,7 +815,7 @@ class App(tk.Tk):
     # -------------------------------------------------- input bar
 
     def _set_placeholder(self):
-        self.input_var.set('Message')
+        self.input_var.set('Mensagem')
         self.input_entry.config(fg=TEXT_GRAY)
         self._placeholder_on = True
 
@@ -691,6 +824,11 @@ class App(tk.Tk):
             self.input_var.set('')
             self.input_entry.config(fg=TEXT_INK)
             self._placeholder_on = False
+
+    def _restore_placeholder(self, _event=None):
+        if not self._placeholder_on and not self.input_var.get().strip():
+            if getattr(self, '_input_enabled', False):
+                self._set_placeholder()
 
     def _set_input_enabled(self, enabled):
         self._input_enabled = enabled
@@ -719,30 +857,146 @@ class App(tk.Tk):
             self._placeholder_on = True
 
     def _emoji_popup(self):
-        popup = tk.Toplevel(self)
-        popup.title('Emoji')
+        existing = getattr(self, '_emoji_win', None)
+        try:
+            alive = existing is not None and bool(existing.winfo_exists())
+        except Exception:
+            alive = False
+        if alive:
+            try:
+                existing.lift()
+                existing.focus_set()
+            except Exception:
+                pass
+            return
+        # Item 2: abre a casca já (deiconify) e preenche os 30 botões em
+        # after_idle, por fileiras de 6, para a janela pintar imediatamente.
+        popup = self._dialog_shell('Emoji')
+        self._emoji_win = popup
         popup.resizable(False, False)
         emojis = ['😀', '😁', '😂', '😊', '😍', '😎', '👍', '👎', '🙏', '👏',
                   '🔥', '🎉', '❤️', '💯', '🚀', '⭐', '✅', '❌', '😢', '😮',
                   '🤔', '👋', '💡', '📌', '🎵', '☀️', '🌙', '🍕', '⚽', '🚗']
-        for index, emoji in enumerate(emojis):
-            tk.Button(popup, text=emoji, font=('', 14), relief='flat', bd=0,
-                      command=lambda e=emoji: (
-                          self._clear_placeholder(), self.input_entry.insert(
-                              'insert', e), self.input_entry.focus_set(),
-                          popup.destroy())).grid(
-                              row=index // 6, column=index % 6, padx=2, pady=2)
+        try:
+            popup.after_idle(lambda: self._fill_emoji(popup, emojis, 0))
+        except Exception:
+            pass
+
+    def _fill_emoji(self, popup, emojis, start):
+        try:
+            alive = bool(popup.winfo_exists())
+        except Exception:
+            return
+        if not alive or getattr(self, '_closed', False):
+            return
+        if popup is not getattr(self, '_emoji_win', None):
+            return
+        for offset in range(6):
+            index = start + offset
+            if index >= len(emojis):
+                break
+            emoji = emojis[index]
+            try:
+                tk.Button(popup, text=emoji, font=('', 14), relief='flat',
+                          bd=0,
+                          command=lambda e=emoji: (
+                              self._clear_placeholder(),
+                              self.input_entry.insert('insert', e),
+                              self.input_entry.focus_set(),
+                              popup.destroy())).grid(
+                                  row=index // 6, column=index % 6,
+                                  padx=2, pady=2)
+            except Exception:
+                return
+        if start + 6 < len(emojis):
+            try:
+                popup.after_idle(
+                    lambda: self._fill_emoji(popup, emojis, start + 6))
+            except Exception:
+                pass
 
     # -------------------------------------------------- events
 
+    _KNOWN_UI_EVENTS = frozenset([
+        'log', 'message', 'broadcast', 'pubkey', 'status',
+        'identity-created', 'contact-added', 'subscribed',
+        'channel-created', 'broadcast-sent', 'pow-progress',
+        'pow-cancelled', 'ack', 'update-available', 'update-check-result',
+        'update-result',
+    ])
+
     def _poll(self):
+        # Item 6: não reagenda nada após _on_close.
+        if getattr(self, '_closed', False):
+            self._poll_after = None
+            return
         try:
             while True:
-                event = self.client.ui_queue.get_nowait()
-                self._handle_event(event)
+                try:
+                    event = self.client.ui_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    kind = event[0]
+                except Exception:
+                    continue
+                try:
+                    self._handle_event(event)
+                except Exception as exc:
+                    if kind not in self._KNOWN_UI_EVENTS:
+                        continue
+                    try:
+                        self.statusbar.config(
+                            text='Erro interno: %s' % exc)
+                    except Exception:
+                        pass
+        except Exception as exc:
+            try:
+                self.statusbar.config(text='Erro: %s' % exc)
+            except Exception:
+                pass
+        finally:
+            if getattr(self, '_closed', False):
+                self._poll_after = None
+            else:
+                try:
+                    self._poll_after = self.after(250, self._poll)
+                except Exception:
+                    self._poll_after = None
+
+    def _schedule_refresh(self):
+        if getattr(self, '_closed', False):
+            return
+        if getattr(self, '_refresh_after', None) is not None:
+            try:
+                self.after_cancel(self._refresh_after)
+            except Exception:
+                pass
+        try:
+            self._refresh_after = self.after(200, self._do_refresh)
         except Exception:
-            pass
-        self.after(250, self._poll)
+            self._refresh_after = None
+
+    def _do_refresh(self):
+        self._refresh_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
+            self._refresh_conversations()
+        except Exception as exc:
+            try:
+                self.statusbar.config(
+                    text='Erro ao atualizar conversas: %s' % exc)
+            except Exception:
+                pass
+        try:
+            self._reload_chat()
+        except Exception as exc:
+            try:
+                self.statusbar.config(
+                    text='Erro ao atualizar chat: %s' % exc)
+            except Exception:
+                pass
 
     def _handle_event(self, event):
         kind = event[0]
@@ -750,18 +1004,15 @@ class App(tk.Tk):
             self._flash_status(event[2])
         elif kind == 'message':
             self._flash_status('Mensagem recebida')
-            self._refresh_conversations()
-            self._reload_chat()
+            self._schedule_refresh()
         elif kind == 'broadcast':
             self._flash_status('Nova postagem no canal')
-            self._refresh_conversations()
-            self._reload_chat()
+            self._schedule_refresh()
         elif kind == 'pubkey':
             self._flash_status('Chave pública recebida')
-            self._refresh_conversations()
-            self._reload_chat()
+            self._schedule_refresh()
         elif kind == 'status':
-            self._reload_chat()
+            self._schedule_refresh()
         elif kind == 'ack':
             self._flash_status('Mensagem entregue (ACK recebido)')
             self._reload_chat()
@@ -773,9 +1024,20 @@ class App(tk.Tk):
         elif kind == 'broadcast-sent':
             self._reload_chat()
         elif kind == 'pow-progress':
-            _, token, _tried, rate = event
-            self.statusbar.config(
-                text='POW %d: %.0f hashes/s' % (token, rate))
+            try:
+                _, token, _tried, rate = event
+            except Exception:
+                return
+            now = time.time()
+            last = self._pow_last.get(token, 0.0)
+            if now - last < 1.0:
+                return
+            self._pow_last[token] = now
+            try:
+                self.statusbar.config(
+                    text='POW %d: %.0f hashes/s' % (token, rate))
+            except Exception:
+                pass
         elif kind == 'pow-cancelled':
             self.statusbar.config(text='POW cancelado')
         elif kind == 'update-available':
@@ -793,6 +1055,10 @@ class App(tk.Tk):
                 dialogs.warn(self, 'Atualização', message)
 
     def _tick_status(self):
+        # Item 6: para de reagendar após _on_close.
+        if getattr(self, '_closed', False):
+            self._tick_after = None
+            return
         try:
             snap = self.client.net.snapshot()
             established = sum(
@@ -811,7 +1077,13 @@ class App(tk.Tk):
             self.statusbar.config(text=' | '.join(parts))
         except Exception:
             pass
-        self.after(1500, self._tick_status)
+        if getattr(self, '_closed', False):
+            self._tick_after = None
+            return
+        try:
+            self._tick_after = self.after(1500, self._tick_status)
+        except Exception:
+            self._tick_after = None
 
     def _flash_status(self, message):
         self.statusbar.config(text=message)
@@ -860,13 +1132,128 @@ class App(tk.Tk):
             "from_address=? AND status='received'", (address,))
         return rows[0]['n'] if rows else 0
 
+    def _unread_counts(self):
+        try:
+            rows = self.client.db.query(
+                "SELECT from_address AS address, COUNT(*) AS n FROM "
+                "messages WHERE status='received' GROUP BY from_address")
+        except Exception:
+            return {}
+        try:
+            return {r['address']: r['n'] for r in rows}
+        except Exception:
+            return {}
+
+    def _last_message_row(self, address):
+        try:
+            rows = self.client.db.query(
+                'SELECT body, timestamp FROM messages WHERE '
+                'to_address=? OR from_address=? '
+                'ORDER BY timestamp DESC, id DESC LIMIT 1',
+                (address, address))
+        except Exception:
+            return None
+        return rows[0] if rows else None
+
     def _last_message_for(self, address):
-        rows = self.client.db.messages_for_conversation(address)
-        if not rows:
+        last = self._last_message_row(address)
+        if not last:
             return '', ''
-        last = rows[-1]
         body = (last['body'] or '').replace('\n', ' ').strip()
         return body, _clock(last['timestamp'])
+
+    def _fit_cached(self, font, text, max_width):
+        """Elipse com cache FIFO (~300) + estimativa aritmética (item 3).
+
+        Acerto de cache: 0 measure. Erro: 1 measure do texto (a largura do
+        '…' é medida 1× por fonte e reaproveitada). Troca os ~8 measures da
+        busca binária por aritmética (avg = largura/len).
+        """
+        try:
+            key = (font.name, text, max_width)
+        except Exception:
+            return _fit_width(font, text, max_width)
+        try:
+            hit = self._fit_cache.get(key)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return hit
+        try:
+            if font.measure(text) <= max_width:
+                fitted = text
+            else:
+                ell_w = self._ellipsis_w.get(key[0])
+                if ell_w is None:
+                    ell_w = font.measure('…')
+                    self._ellipsis_w[key[0]] = ell_w
+                avail = max_width - ell_w
+                count = len(text)
+                if avail <= 0 or count == 0:
+                    fitted = '…'
+                else:
+                    avg = font.measure(text) / count
+                    cut = int(avail / avg) if avg > 0 else 0
+                    if cut < 0:
+                        cut = 0
+                    elif cut > count:
+                        cut = count
+                    fitted = text[:cut] + '…'
+        except Exception:
+            return _fit_width(font, text, max_width)
+        try:
+            self._fit_cache[key] = fitted
+            self._fit_order.append(key)
+            while len(self._fit_order) > 300:
+                old = self._fit_order.pop(0)
+                self._fit_cache.pop(old, None)
+        except Exception:
+            pass
+        return fitted
+
+    def _preview_map(self):
+        """Preview da última mensagem de cada conversa em 1 query (item 3).
+
+        Um GROUP BY sobre MAX(timestamp) por par + join busca corpo/timestamp
+        das mensagens mais recentes de todas as conversas de uma vez (sem
+        N×LIMIT 1). Empates de timestamp usam o maior id — a mesma semântica
+        de _last_message_row (ORDER BY timestamp DESC, id DESC LIMIT 1).
+        Retorna {address: (preview, clock)} com o mesmo formato de
+        _last_message_for.
+        """
+        addresses = [address for _kind, address in self._conv_meta]
+        if not addresses:
+            return {}
+        try:
+            addrset = set(addresses)
+            marks = ','.join('?' for _ in addresses)
+            peer_expr = ('CASE WHEN from_address IN (%s) THEN from_address '
+                         'ELSE to_address END' % marks)
+            rows = self.client.db.query(
+                'SELECT m.from_address AS fa, m.to_address AS ta, '
+                'm.body AS body, m.timestamp AS timestamp, m.id AS mid '
+                'FROM messages m INNER JOIN ('
+                'SELECT %s AS peer, MAX(timestamp) AS mts FROM messages '
+                'WHERE from_address IN (%s) OR to_address IN (%s) '
+                'GROUP BY peer) latest '
+                'ON %s = latest.peer AND m.timestamp = latest.mts'
+                % (peer_expr, marks, marks, peer_expr),
+                tuple(addresses) * 4)
+        except Exception:
+            return {}
+        try:
+            best = {}
+            for row in rows:
+                peer = row['fa'] if row['fa'] in addrset else row['ta']
+                if peer not in best or row['mid'] > best[peer]['mid']:
+                    best[peer] = row
+            result = {}
+            for peer, row in best.items():
+                body = (row['body'] or '').replace('\n', ' ').strip()
+                result[peer] = (body, _clock(row['timestamp']))
+        except Exception:
+            return {}
+        return result
 
     def _visible_rows(self):
         if not self._conv_filter:
@@ -880,16 +1267,19 @@ class App(tk.Tk):
         canvas.delete('all')
         width = canvas.winfo_width() or 300
         rows = self._visible_rows()
+        unread_map = self._unread_counts()
+        preview_map = self._preview_map()
+        fit = self._fit_cached
         y = 0
         self._row_tops = []
         for index in rows:
             self._row_tops.append((y, index))
             kind, address = self._conv_meta[index]
             label = self._conv_labels[index]
-            preview, clock = self._last_message_for(address)
-            unread = self._unread_for(address)
+            preview, clock = preview_map.get(address, ('', ''))
+            unread = unread_map.get(address, 0)
             selected = index == self._conv_selected
-            hover = index == self._conv_hover
+            hover = index == getattr(self, '_conv_hover_index', None)
             bg = ROW_SELECTED if selected else (
                 ROW_HOVER if hover else PANEL_BG)
             canvas.create_rectangle(0, y, width, y + ROW_H, fill=bg,
@@ -904,7 +1294,7 @@ class App(tk.Tk):
             clock_w = self.small_font.measure(clock) if clock else 0
             name_w = width - 70 - clock_w - 16
             canvas.create_text(66, y + 10, anchor='nw',
-                               text=_fit_width(self.name_font, label, name_w),
+                               text=fit(self.name_font, label, name_w),
                                fill=TEXT_INK, font=self.name_font)
             if clock:
                 canvas.create_text(width - 10, y + 10, anchor='ne',
@@ -912,8 +1302,8 @@ class App(tk.Tk):
                                    font=self.small_font)
             prev_w = width - 76 - (34 if unread else 0)
             canvas.create_text(66, y + 34, anchor='nw',
-                               text=_fit_width(self.preview_font, preview,
-                                               prev_w),
+                               text=fit(self.preview_font, preview,
+                                        prev_w),
                                fill=TEXT_GRAY, font=self.preview_font)
             if unread:
                 badge = str(unread) if unread < 100 else '99+'
@@ -948,14 +1338,71 @@ class App(tk.Tk):
             self._on_conv_select(None)
 
     def _conv_hover(self, event):
-        index = self._conv_index_at(event.y)
-        if index != self._conv_hover:
-            self._conv_hover = index
+        try:
+            index = self._conv_index_at(event.y)
+        except Exception:
+            return
+        if index != getattr(self, '_conv_hover_index', None):
+            self._conv_hover_index = index
+            self._schedule_conv_redraw()
+
+    def _conv_hover_debounced(self, event):
+        if getattr(self, '_closed', False):
+            return
+        pending = getattr(self, '_conv_hover_after', None)
+        if pending is not None:
+            try:
+                self.after_cancel(pending)
+            except Exception:
+                pass
+            self._conv_hover_after = None
+        try:
+            y = event.y
+        except Exception:
+            return
+
+        def _apply():
+            self._conv_hover_after = None
+            try:
+                fake = type('E', (), {'y': y})()
+                self._conv_hover(fake)
+            except Exception:
+                pass
+        try:
+            self._conv_hover_after = self.after(80, _apply)
+        except Exception:
+            self._conv_hover_after = None
+
+    def _schedule_conv_redraw(self):
+        if getattr(self, '_closed', False):
+            return
+        pending = getattr(self, '_conv_draw_after', None)
+        if pending is not None:
+            try:
+                self.after_cancel(pending)
+            except Exception:
+                pass
+        try:
+            self._conv_draw_after = self.after(80, self._do_conv_redraw)
+        except Exception:
+            self._conv_draw_after = None
+
+    def _do_conv_redraw(self):
+        self._conv_draw_after = None
+        if getattr(self, '_closed', False):
+            return
+        try:
             self._draw_conversations()
+        except Exception as exc:
+            try:
+                self.statusbar.config(
+                    text='Erro ao desenhar conversas: %s' % exc)
+            except Exception:
+                pass
 
     def _conv_leave(self, _event):
-        if self._conv_hover is not None:
-            self._conv_hover = None
+        if getattr(self, '_conv_hover_index', None) is not None:
+            self._conv_hover_index = None
             self._draw_conversations()
 
     def _conv_right_click(self, event):
@@ -1018,12 +1465,26 @@ class App(tk.Tk):
         selection = self.conv_list.curselection()
         if not selection:
             return
-        kind, address = self._conv_meta[selection[0]]
+        index = selection[0]
+        if not 0 <= index < len(self._conv_meta):
+            return
+        kind, address = self._conv_meta[index]
         self._open_conversation(kind, address)
 
     def _open_conversation(self, kind, address):
         self.current_kind = kind
         self.current_address = address
+        self.input_var.set('')
+        self._set_placeholder()
+        self._chat_limit = 200
+        self._chat_has_more = False
+        self._chat_pill = None
+        try:
+            self._wrap_cache.clear()
+            self._wrap_order.clear()
+        except Exception:
+            self._wrap_cache = {}
+            self._wrap_order = []
         self._set_input_enabled(True)
         if kind == 'contact':
             row = self.client.db.get_contact(address)
@@ -1053,6 +1514,10 @@ class App(tk.Tk):
         self._reload_chat()
         self._refresh_conversations()
         self._update_triage_banner()
+        try:
+            self.input_entry.focus_set()
+        except Exception:
+            pass
 
     def _update_triage_banner(self):
         try:
@@ -1066,12 +1531,27 @@ class App(tk.Tk):
     # -------------------------------------------------- chat canvas
 
     def _schedule_chat_redraw(self):
+        # Item 6: nada após o fechamento.
+        if getattr(self, '_closed', False):
+            return
+        # Item 4: <Configure> sem mudança de largura não precisa de relayout
+        # (o layout das bolhas só depende da largura). Chamadas diretas via
+        # _reload_chat continuam redesenhando sempre.
+        try:
+            width_now = self.chat_canvas.winfo_width()
+        except Exception:
+            width_now = None
+        if width_now and width_now == getattr(self, '_last_chat_w', None):
+            return
         if self._redraw_after is not None:
             try:
                 self.after_cancel(self._redraw_after)
             except Exception:
                 pass
-        self._redraw_after = self.after(120, self._redraw_chat)
+        try:
+            self._redraw_after = self.after(120, self._redraw_chat)
+        except Exception:
+            self._redraw_after = None
 
     def _chat_yview(self, *args):
         self.chat_canvas.yview(*args)
@@ -1090,12 +1570,64 @@ class App(tk.Tk):
                                 anchor='center')
             self.jump_btn.lift()
 
+    def _cached_wrap(self, body, inner_w):
+        key = (body or '', inner_w)
+        try:
+            hit = self._wrap_cache.get(key)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return hit
+        lines = _wrap_lines(self.msg_font, body or '(vazio)', inner_w)
+        try:
+            self._wrap_cache[key] = lines
+            self._wrap_order.append(key)
+            if len(self._wrap_order) > 500:
+                old = self._wrap_order.pop(0)
+                self._wrap_cache.pop(old, None)
+        except Exception:
+            pass
+        return lines
+
+    def _chat_click(self, event):
+        pill = getattr(self, '_chat_pill', None)
+        if pill and getattr(self, '_chat_has_more', False):
+            try:
+                x = self.chat_canvas.canvasx(event.x)
+                y = self.chat_canvas.canvasy(event.y)
+                x0, y0, x1, y1 = pill
+                if x0 <= x <= x1 and y0 <= y <= y1:
+                    self._chat_limit = int(
+                        getattr(self, '_chat_limit', 200)) + 200
+                    self._stick_bottom = False
+                    self._reload_chat()
+                    return
+            except Exception:
+                pass
+
     def _reload_chat(self):
         if getattr(self, 'current_address', None):
-            self._chat_rows = self.client.db.messages_for_conversation(
-                self.current_address)
+            limit = int(getattr(self, '_chat_limit', 200) or 200)
+            try:
+                self._chat_rows = self.client.db.messages_for_conversation(
+                    self.current_address, limit=limit)
+            except TypeError:
+                rows = self.client.db.messages_for_conversation(
+                    self.current_address)
+                self._chat_rows = rows[-limit:]
+            try:
+                cnt = self.client.db.query(
+                    'SELECT COUNT(*) AS n FROM messages WHERE '
+                    'to_address=? OR from_address=?',
+                    (self.current_address, self.current_address))
+                total = cnt[0]['n'] if cnt else len(self._chat_rows)
+            except Exception:
+                total = len(self._chat_rows)
+            self._chat_has_more = total > len(self._chat_rows)
         else:
             self._chat_rows = []
+            self._chat_has_more = False
+            self._chat_pill = None
         self.chat_text._plain = '\n\n'.join(
             (r['body'] or '') for r in self._chat_rows)
         self.chat_text._tags = {'meta', 'self', 'other'}
@@ -1109,8 +1641,8 @@ class App(tk.Tk):
                                 outline=CHAT_BG)
         addresses = list(self.client.identities.keys())
         mine = self._current_identity() if addresses else ''
-        title_font = tkfont.Font(family='TkDefaultFont', size=14,
-                                 weight='bold')
+        title_font = getattr(self, 'welcome_title_font', None) or getattr(
+            self, 'title_font', None) or self.msg_font
         lines = [
             ('Bem-vindo ao bmchat', title_font, TEXT_INK),
             ('Minha identidade — envie este endereço aos seus contatos:',
@@ -1152,9 +1684,21 @@ class App(tk.Tk):
                                         anchor='center')
 
     def _support(self):
-        window = tk.Toplevel(self)
-        window.title('Suporte')
+        # Item 5: casca aparece já; corpo em after_idle.
+        window = self._dialog_shell('Suporte')
         window.resizable(False, False)
+        try:
+            window.after_idle(lambda: self._fill_support(window))
+        except Exception:
+            pass
+
+    def _fill_support(self, window):
+        try:
+            alive = bool(window.winfo_exists())
+        except Exception:
+            return
+        if not alive or getattr(self, '_closed', False):
+            return
         frame = tk.Frame(window, bg=PANEL_BG)
         frame.pack(padx=16, pady=16, fill='both', expand=True)
         tk.Label(frame, text='Suporte do bmchat', bg=PANEL_BG, fg=TEXT_INK,
@@ -1197,10 +1741,26 @@ class App(tk.Tk):
         self._open_diagnostics_preview()
 
     def _open_diagnostics_preview(self):
-        report = _build_support_report(self.client)
-        window = tk.Toplevel(self)
-        window.title('Enviar diagnóstico ao suporte')
-        window.geometry('620x520')
+        # Item 5: casca aparece já; relatório (pesado) + Text em after_idle.
+        window = self._dialog_shell('Enviar diagnóstico ao suporte',
+                                    '620x520')
+        try:
+            window.after_idle(
+                lambda: self._fill_diagnostics_preview(window))
+        except Exception:
+            pass
+
+    def _fill_diagnostics_preview(self, window):
+        try:
+            alive = bool(window.winfo_exists())
+        except Exception:
+            return
+        if not alive or getattr(self, '_closed', False):
+            return
+        try:
+            report = _build_support_report(self.client)
+        except Exception as exc:
+            report = '(erro ao gerar relatório: %s)' % exc
         tk.Label(
             window,
             text=('Confira exatamente o que será enviado. Nada sai deste '
@@ -1287,6 +1847,15 @@ class App(tk.Tk):
         self.current_kind = None
         self.current_address = None
         self._conv_selected = None
+        self.input_var.set('')
+        self._set_placeholder()
+        self._chat_has_more = False
+        self._chat_pill = None
+        try:
+            self._wrap_cache.clear()
+            self._wrap_order.clear()
+        except Exception:
+            pass
         self._set_input_enabled(False)
         self.chat_title.config(text='Selecione uma conversa')
         self.chat_subtitle.config(text='')
@@ -1322,10 +1891,15 @@ class App(tk.Tk):
 
     def _redraw_chat(self):
         self._redraw_after = None
+        if getattr(self, '_closed', False):
+            return
         canvas = self.chat_canvas
         canvas.delete('all')
         width = canvas.winfo_width() or 600
         height = canvas.winfo_height() or 400
+        # Item 4: base do skip de <Configure> (ver _schedule_chat_redraw).
+        self._last_chat_w = width
+        view_h = height
         self.welcome_copy_btn.place_forget()
         if not getattr(self, 'current_address', None):
             self._draw_welcome(canvas, width, height)
@@ -1345,6 +1919,15 @@ class App(tk.Tk):
 
         layouts = []
         y = 14
+        self._chat_pill = None
+        if getattr(self, '_chat_has_more', False):
+            pill_text = 'carregar mensagens anteriores'
+            pill_w = self.small_font.measure(pill_text) + 26
+            px0 = width / 2 - pill_w / 2
+            px1 = width / 2 + pill_w / 2
+            self._chat_pill = (px0, y, px1, y + 22)
+            layouts.append(('more', pill_text, y))
+            y += 30
         for item in items:
             if item[0] == 'day':
                 layouts.append(('day', item[1], y))
@@ -1354,8 +1937,7 @@ class App(tk.Tk):
             out = row['direction'] == 'out'
             sender = '' if out else self._sender_label(row)
             inner_w = max_bubble - 2 * PAD_X
-            lines = _wrap_lines(self.msg_font, row['body'] or '(vazio)',
-                                inner_w)
+            lines = self._cached_wrap(row['body'], inner_w)
             text_w = 0
             for line in lines:
                 text_w = max(text_w, self.msg_font.measure(line))
@@ -1402,16 +1984,27 @@ class App(tk.Tk):
         glyphs = ['✈', '☁', '★', '♫', '✉', '☎', '⚓', '✿']
         gx, gi = 20, 0
         gy = 20
-        while gy < total:
+        # Item 4: doodle só na altura do viewport (+margem), não no total.
+        doodle_h = min(total, view_h + 240)
+        step = 110 if total <= 3000 else 180
+        while gy < doodle_h:
             while gx < width:
                 canvas.create_text(gx, gy, text=glyphs[gi % len(glyphs)],
                                    fill=DOODLE, font=('', 22))
                 gi += 1
-                gx += 110
+                gx += step
             gx = 20 + (gi % 3) * 30
-            gy += 110
+            gy += step
 
         for layout in layouts:
+            if layout[0] == 'more':
+                _kind, label, top = layout
+                x0, y0, x1, y1 = self._chat_pill
+                canvas.create_oval(x0, y0, x1, y1, fill=DATE_BG,
+                                   outline=DATE_BG)
+                canvas.create_text(width / 2, top + 11, text=label,
+                                   fill='white', font=self.small_font)
+                continue
             if layout[0] == 'day':
                 _text, label, top = layout
                 pill_w = self.small_font.measure(label) + 26
@@ -1511,9 +2104,21 @@ class App(tk.Tk):
         self._flash_status('Texto copiado')
 
     def _message_details(self, row):
-        window = tk.Toplevel(self)
-        window.title('Detalhes da mensagem')
+        # Item 5: casca aparece já; campos em after_idle.
+        window = self._dialog_shell('Detalhes da mensagem')
         window.resizable(False, False)
+        try:
+            window.after_idle(lambda: self._fill_message_details(window, row))
+        except Exception:
+            pass
+
+    def _fill_message_details(self, window, row):
+        try:
+            alive = bool(window.winfo_exists())
+        except Exception:
+            return
+        if not alive or getattr(self, '_closed', False):
+            return
         frame = tk.Frame(window, bg=PANEL_BG)
         frame.pack(padx=16, pady=16, fill='both', expand=True)
         raw_hash = row.get('obj_hash') if hasattr(row, 'get') else None
@@ -1567,9 +2172,18 @@ class App(tk.Tk):
                 self._flash_status('Digite uma mensagem antes de enviar.')
                 return
             identity = self._current_identity()
-            if not identity:
+            if not identity or identity not in self.client.identities:
                 dialogs.warn(self, 'Identidade ausente',
-                             'Crie uma identidade antes de enviar.')
+                             'Crie ou selecione uma identidade válida antes '
+                             'de enviar.')
+                self._refresh_identity_menu()
+                return
+            if self.client.db.get_contact(self.current_address) is None:
+                dialogs.warn(self, 'Conversa encerrada',
+                             'Este contato foi removido. Selecione outra '
+                             'conversa.')
+                self._refresh_conversations()
+                self._show_welcome()
                 return
             self.input_var.set('')
             self._set_placeholder()
@@ -1609,7 +2223,7 @@ class App(tk.Tk):
             self.client.request_pubkey(result['address'])
             dialogs.info(self, 'Contato adicionado',
                          'Buscando a chave pública do contato...')
-        elif status == 'checksum':
+        elif status == 'checksumfailed':
             dialogs.warn(self, 'Endereço inválido',
                          'O checksum do endereço não confere.')
         else:
@@ -1652,9 +2266,21 @@ class App(tk.Tk):
         self._show_backup_window(data)
 
     def _show_backup_window(self, data):
-        window = tk.Toplevel(self)
-        window.title('Backup — %s' % data['address'][:20])
-        window.geometry('560x430')
+        # Item 5: casca aparece já; Text com as chaves em after_idle.
+        window = self._dialog_shell(
+            'Backup — %s' % data['address'][:20], '560x430')
+        try:
+            window.after_idle(lambda: self._fill_backup_window(window, data))
+        except Exception:
+            pass
+
+    def _fill_backup_window(self, window, data):
+        try:
+            alive = bool(window.winfo_exists())
+        except Exception:
+            return
+        if not alive or getattr(self, '_closed', False):
+            return
         body = (
             'IDENTIDADE BMCHAT — GUARDE EM LUGAR SEGURO\n'
             'Endereço: %s\nRótulo: %s\nStream: %s\n\n'
@@ -1777,9 +2403,20 @@ class App(tk.Tk):
             dialogs.warn(self, 'Importar', info)
 
     def _show_log(self):
-        window = tk.Toplevel(self)
-        window.title('Log de rede e mensagens')
-        window.geometry('660x420')
+        # Item 5: casca aparece já; Text + primeira leitura em after_idle.
+        window = self._dialog_shell('Log de rede e mensagens', '660x420')
+        try:
+            window.after_idle(lambda: self._fill_log(window))
+        except Exception:
+            pass
+
+    def _fill_log(self, window):
+        try:
+            alive = bool(window.winfo_exists())
+        except Exception:
+            return
+        if not alive or getattr(self, '_closed', False):
+            return
         buttons = tk.Frame(window, bg=PANEL_BG)
         buttons.pack(side='bottom', fill='x', padx=12, pady=10)
         tk.Button(buttons, text='Copiar log',
@@ -1794,22 +2431,52 @@ class App(tk.Tk):
         text.pack(fill='both', expand=True)
         text.bind('<Button-3>',
                   lambda event: self._log_right_click(event, text))
-        self._refresh_log(window, text)
+        # Tinta inicial sempre (ainda pode não estar mapeada: o MapNotify
+        # chega depois do after_idle); o pulo por "oculta" vale só p/ o ciclo.
+        self._refresh_log(window, text, force=True)
 
-    def _refresh_log(self, window, text):
+    def _refresh_log(self, window, text, force=False):
         try:
-            alive = bool(window.winfo_exists())
+            try:
+                alive = bool(window.winfo_exists())
+            except Exception:
+                return
+            if not alive:
+                return
+            if getattr(self, '_closed', False):
+                return
+            if not force:
+                try:
+                    mapped = bool(window.winfo_ismapped())
+                except Exception:
+                    mapped = True
+                if not mapped:
+                    # Item 7: janela oculta → pula o trabalho, reagenda longo.
+                    try:
+                        window._refresh_after = window.after(
+                            5000, lambda: self._refresh_log(window, text))
+                    except Exception:
+                        pass
+                    return
+            try:
+                lines = self.client.recent_logs(200)
+            except Exception as exc:
+                lines = ['(erro ao ler log: %s)' % exc]
+            try:
+                text.config(state='normal')
+                text.delete('1.0', 'end')
+                text.insert('1.0', '\n'.join(lines) or '(sem eventos ainda)')
+                text.config(state='disabled')
+                text.see('end')
+            except Exception:
+                return
+            try:
+                window._refresh_after = window.after(
+                    5000, lambda: self._refresh_log(window, text))
+            except Exception:
+                pass
         except Exception:
-            return
-        if not alive:
-            return
-        lines = self.client.recent_logs(200)
-        text.config(state='normal')
-        text.delete('1.0', 'end')
-        text.insert('1.0', '\n'.join(lines) or '(sem eventos ainda)')
-        text.config(state='disabled')
-        text.see('end')
-        window.after(2000, lambda: self._refresh_log(window, text))
+            pass
 
     def _copy_log(self, text):
         self.clipboard_clear()
@@ -1838,9 +2505,20 @@ class App(tk.Tk):
         self.clipboard_append(content)
 
     def _network_diagnostics(self):
-        window = tk.Toplevel(self)
-        window.title('Diagnóstico de rede')
-        window.geometry('660x500')
+        # Item 5: casca aparece já; Text + relatório em after_idle.
+        window = self._dialog_shell('Diagnóstico de rede', '660x500')
+        try:
+            window.after_idle(lambda: self._fill_diagnostics(window))
+        except Exception:
+            pass
+
+    def _fill_diagnostics(self, window):
+        try:
+            alive = bool(window.winfo_exists())
+        except Exception:
+            return
+        if not alive or getattr(self, '_closed', False):
+            return
         buttons = tk.Frame(window, bg=PANEL_BG)
         buttons.pack(side='bottom', fill='x', padx=12, pady=10)
         tk.Button(buttons, text='Copiar relatório',
@@ -1857,21 +2535,51 @@ class App(tk.Tk):
                        bg=PANEL_BG, fg=TEXT_INK, highlightthickness=0, bd=0,
                        padx=12, pady=12, state='disabled')
         text.pack(fill='both', expand=True)
-        self._refresh_diagnostics(window, text)
+        # Tinta inicial sempre (ver comentário em _fill_log).
+        self._refresh_diagnostics(window, text, force=True)
 
-    def _refresh_diagnostics(self, window, text):
+    def _refresh_diagnostics(self, window, text, force=False):
         try:
-            alive = bool(window.winfo_exists())
+            try:
+                alive = bool(window.winfo_exists())
+            except Exception:
+                return
+            if not alive:
+                return
+            if getattr(self, '_closed', False):
+                return
+            if not force:
+                try:
+                    mapped = bool(window.winfo_ismapped())
+                except Exception:
+                    mapped = True
+                if not mapped:
+                    # Item 7: janela oculta → pula o trabalho, reagenda longo.
+                    try:
+                        window._refresh_after = window.after(
+                            5000, lambda: self._refresh_diagnostics(
+                                window, text))
+                    except Exception:
+                        pass
+                    return
+            try:
+                report = _diagnostics_report(self.client.net.snapshot())
+            except Exception as exc:
+                report = '(erro ao gerar diagnóstico: %s)' % exc
+            try:
+                text.config(state='normal')
+                text.delete('1.0', 'end')
+                text.insert('1.0', report)
+                text.config(state='disabled')
+            except Exception:
+                return
+            try:
+                window._refresh_after = window.after(
+                    5000, lambda: self._refresh_diagnostics(window, text))
+            except Exception:
+                pass
         except Exception:
-            return
-        if not alive:
-            return
-        report = _diagnostics_report(self.client.net.snapshot())
-        text.config(state='normal')
-        text.delete('1.0', 'end')
-        text.insert('1.0', report)
-        text.config(state='disabled')
-        window.after(1000, lambda: self._refresh_diagnostics(window, text))
+            pass
 
     def _wipe_objects(self):
         try:
@@ -1951,10 +2659,14 @@ class App(tk.Tk):
                      'Usando %s. Reconectando...' % profile.describe())
 
     def _show_pows(self):
+        try:
+            total = self.client.net.connection_count
+            established = self.client.net.established_count
+        except Exception:
+            total = established = 0
         dialogs.info(self, 'Rede',
-                     'Conexões ativas: %d\nPOW em andamento: %d' % (
-                         self.client.net.connection_count,
-                         len(self.client._pow_stops)))
+                     'Conexões: %d estabelecidas de %d\nPOW em andamento: %d'
+                     % (established, total, len(self.client._pow_stops)))
 
     def _auto_update_check(self):
         try:
@@ -1991,10 +2703,18 @@ class App(tk.Tk):
             dialogs.warn(self, 'Atualização',
                          'Histórico local divergiu do remoto; atualize à mão '
                          'com git pull.')
-        else:
+        elif status == 'no-upstream':
             dialogs.warn(self, 'Atualização',
-                         'Não foi possível verificar: %s' %
-                         result.get('error', status))
+                         'Sem upstream configurado no git.')
+        elif status == 'fetch-failed':
+            dialogs.warn(self, 'Atualização',
+                         'Falha de rede ao buscar a atualização.')
+        else:
+            detail = result.get('error') or result.get('status')
+            text = 'Não foi possível verificar.'
+            if detail:
+                text += ' %s' % detail
+            dialogs.warn(self, 'Atualização', text)
 
     def _offer_update(self, behind):
         try:
@@ -2019,6 +2739,9 @@ class App(tk.Tk):
         self.client.ui_queue.put(('update-result', ok, message))
 
     def _restart_after_update(self):
+        # Item 6: o after(800) pode disparar após o fechamento.
+        if getattr(self, '_closed', False):
+            return
         try:
             from .. import update as updater
             updater.restart_program()
@@ -2034,9 +2757,85 @@ class App(tk.Tk):
              'Suporta contatos, canais, proxy e redes darknet (Tor/I2P).')
             % BMCHAT_VERSION)
 
+    # -------------------------------------------------- higiene de after (item 6)
+
+    def _dialog_shell(self, title, geometry=None):
+        """Casca de Toplevel próprio: aparece já; recheio vai em after_idle.
+
+        Usado pelos diálogos próprios (itens 2 e 5). O fill usa
+        ``window.after_idle`` (cancelado sozinho se a janela for destruída).
+        """
+        window = tk.Toplevel(self)
+        try:
+            window.transient(self)
+        except Exception:
+            pass
+        try:
+            window.title(title)
+        except Exception:
+            pass
+        if geometry:
+            try:
+                window.geometry(geometry)
+            except Exception:
+                pass
+        self._bind_destroy_cancel(window)
+        try:
+            window.deiconify()
+        except Exception:
+            pass
+        return window
+
+    def _bind_destroy_cancel(self, window):
+        try:
+            window.bind('<Destroy>', self._cancel_window_afters, add='+')
+        except Exception:
+            pass
+
+    def _cancel_window_afters(self, event):
+        try:
+            window = event.widget
+            pending = getattr(window, '_refresh_after', None)
+            if pending is not None:
+                try:
+                    window.after_cancel(pending)
+                except Exception:
+                    pass
+                try:
+                    window._refresh_after = None
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def _on_close(self):
-        self.client.stop()
-        self.destroy()
+        # Item 6: flag + cancela poll/tick/redraws/debounces/startup para
+        # zerar os erros pós-destroy ("invalid command name ... destroyed").
+        self._closed = True
+        for attr in ('_startup_after', '_poll_after', '_tick_after',
+                     '_redraw_after', '_conv_hover_after', '_conv_draw_after',
+                     '_refresh_after'):
+            try:
+                pending = getattr(self, attr, None)
+            except Exception:
+                pending = None
+            if pending is not None:
+                try:
+                    self.after_cancel(pending)
+                except Exception:
+                    pass
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+        try:
+            self.client.stop()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
 
 def main(data_dir):
