@@ -37,6 +37,7 @@ class Client:
         self._ack_watch = {}
         self._msg_in_flight = set()
         self._getpubkey_last = {}
+        self._threads = []
         self._log_lines = collections.deque(maxlen=200)
         self._lock = threading.RLock()
         self.net = NetworkManager(
@@ -46,24 +47,70 @@ class Client:
     # ------------------------------------------------------------------
 
     def start(self):
+        import os as _os
+        try:
+            _os.makedirs(self.data_dir, exist_ok=True)
+            self._lock_path = _os.path.join(self.data_dir, 'bmchat.lock')
+            try:
+                fd = _os.open(self._lock_path,
+                              _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
+                _os.write(fd, str(_os.getpid()).encode())
+                _os.close(fd)
+            except FileExistsError:
+                try:
+                    with open(self._lock_path, 'r') as fh:
+                        _pid = fh.read().strip()
+                except Exception:
+                    _pid = '?'
+                self._log('rede', 'aviso: outra instância pode estar usando %s (pid %s)' % (
+                    self.data_dir, _pid))
+        except Exception:
+            pass
         self._load_identities()
         self._load_pubkeys()
         streams = self._participating_streams()
         self.net.start(streams)
         self.started = True
+        self._threads = []
         retry = threading.Thread(target=self._retry_loop, daemon=True,
                                  name='client-retry')
         retry.start()
-        reannounce = threading.Thread(target=self._reannounce_pubkeys,
+        self._threads.append(retry)
+        reannounce = threading.Thread(target=self._reannounce_loop,
                                       daemon=True, name='client-reannounce')
         reannounce.start()
+        self._threads.append(reannounce)
 
     def stop(self):
         self.started = False
-        for event in self._pow_stops.values():
-            event.set()
-        self.net.stop()
-        self.db.close()
+        for event in list(self._pow_stops.values()):
+            try:
+                event.set()
+            except Exception:
+                pass
+        try:
+            self.net.stop()
+        except Exception:
+            pass
+        for thread in getattr(self, '_threads', []):
+            try:
+                thread.join(timeout=5)
+            except Exception:
+                pass
+        try:
+            import os as _os2
+            _lp = getattr(self, '_lock_path', None)
+            if _lp:
+                try:
+                    _os2.unlink(_lp)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self.db.close()
+        except Exception:
+            pass
 
     def _retry_loop(self):
         while self.started:
@@ -124,8 +171,7 @@ class Client:
         if self.started:
             streams = self._participating_streams()
             self.net.streams = sorted(set(streams))
-            for connection in list(self.net.connections.values()):
-                connection.their_streams = self.net.streams
+            # NOTE: não tocar em connection.their_streams (são os streams do par)
 
     def _participating_streams(self):
         streams = set()
@@ -177,10 +223,12 @@ class Client:
     def create_channel(self, name, stream=1, label=None):
         name = (name or '').strip()
         if not name:
-            return None
+            return 'invalid', 'nome do canal vazio'
         try:
             stream = int(stream)
         except (TypeError, ValueError):
+            stream = 1
+        if stream < 1:
             stream = 1
         keys = chan_keys_from_name(name, stream)
         self.db.add_identity(
@@ -194,7 +242,7 @@ class Client:
             self.identities[keys.address] = keys
         self._refresh_streams()
         self.ui_queue.put(('channel-created', keys.address, label))
-        return keys.address
+        return 'success', keys.address
 
     def export_identity(self, address):
         keys = self.identities.get(address)
@@ -350,7 +398,7 @@ class Client:
         self.db.remove_contact(address_text)
         self.db.delete_conversation(address_text)
         self._refresh_streams()
-        self.ui_queue.put(('contact-added', address_text, ''))
+        self.ui_queue.put(('contact-removed', address_text, ''))
 
     def subscribe(self, name_or_address, label=None, stream=1):
         status, _version, _stream, _ripe = addr_module.decode_address(
@@ -399,12 +447,16 @@ class Client:
         if parsed.object_type != OBJECT_MSG or parsed.version != 1:
             return
         try:
-            key = parsed.raw[16:]
-            message_id = self._ack_watch.get(key)
+            key = bytes(parsed.raw[16:])
+            with self._lock:
+                message_id = self._ack_watch.pop(key, None)
         except Exception:
             return
         if message_id:
-            self.db.set_message_status(message_id, 'ackreceived')
+            try:
+                self.db.set_message_status(message_id, 'ackreceived')
+            except Exception:
+                return
             self._log('rede', 'confirmação (ACK) recebida: mensagem entregue')
             self.ui_queue.put(('ack', message_id))
 
@@ -878,18 +930,35 @@ class Client:
 
         self._pow_and_publish(unsigned, target, done_cb=done)
 
-    def _reannounce_pubkeys(self):
-        try:
-            rows = self.db.query(
-                'SELECT raw FROM objects WHERE type=1 AND version=4 AND '
-                'expires > ? ORDER BY expires DESC LIMIT 200',
-                (int(time.time()),))
-        except Exception:
-            return
+    def _reannounce_loop(self):
+        self._reannounce_pubkeys_once()
+        while self.started:
+            for _ in range(24 * 60):
+                if not self.started:
+                    return
+                time.sleep(60)
+            if not self.started:
+                return
+            try:
+                self._reannounce_pubkeys_once()
+            except Exception as exc:
+                self._log('rede', 'reannounce: %r' % exc)
+
+    def _reannounce_pubkeys_once(self):
+        now = int(time.time())
         for identity in self.db.all_identities(enabled_only=False):
+            if not self.started:
+                return
             address = identity['address']
             try:
                 keys = AddressKeys.from_address(address)
+            except Exception:
+                continue
+            try:
+                rows = self.db.query(
+                    'SELECT raw FROM objects WHERE type=1 AND version=4 AND '
+                    'expires > ? ORDER BY expires DESC LIMIT 5',
+                    (now,))
             except Exception:
                 continue
             for row in rows:
@@ -903,9 +972,16 @@ class Client:
                     continue
                 if incoming is None:
                     continue
-                self.net.announce_object(raw)
+                try:
+                    self.net.announce_object(raw)
+                except Exception:
+                    pass
                 self._log('rede', 'pubkey de %s reanunciada' % address[:18])
                 break
+
+    def _reannounce_pubkeys(self):
+        # compat: testes antigos chamam direto (1-shot)
+        return self._reannounce_pubkeys_once()
 
 
 def _decode_body(encoding, message):

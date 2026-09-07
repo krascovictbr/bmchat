@@ -919,7 +919,7 @@ class App(tk.Tk):
 
     _KNOWN_UI_EVENTS = frozenset([
         'log', 'message', 'broadcast', 'pubkey', 'status',
-        'identity-created', 'contact-added', 'subscribed',
+        'identity-created', 'contact-added', 'contact-removed', 'subscribed',
         'channel-created', 'broadcast-sent', 'pow-progress',
         'pow-cancelled', 'ack', 'update-available', 'update-check-result',
         'update-result',
@@ -1019,7 +1019,7 @@ class App(tk.Tk):
         elif kind == 'identity-created':
             self._refresh_identity_menu()
             self._refresh_conversations()
-        elif kind in ('contact-added', 'subscribed', 'channel-created'):
+        elif kind in ('contact-added', 'contact-removed', 'subscribed', 'channel-created'):
             self._refresh_conversations()
         elif kind == 'broadcast-sent':
             self._reload_chat()
