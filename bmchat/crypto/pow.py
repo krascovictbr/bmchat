@@ -74,12 +74,15 @@ class PowExecutor:
         self.tried = 0
 
     def run(self, initial_hash, target, start_nonce=0):
-        step = 1 << 54
+        if len(initial_hash) != 64:
+            raise ValueError('initial_hash deve ter 64 bytes')
+        step = 1 << 20
         started = start_nonce
         futures = {}
         self.tried = 0
         begin = time.time()
-        with ProcessPoolExecutor(max_workers=self.workers) as pool:
+        pool = ProcessPoolExecutor(max_workers=self.workers)
+        try:
             for _ in range(self.workers):
                 future = pool.submit(search_range, (
                     initial_hash, target, started, step))
@@ -108,6 +111,10 @@ class PowExecutor:
                     futures[new_future] = next_start
                 if self.progress_cb is not None and self.tried > 0:
                     self.progress_cb(self.tried, self._rate(begin))
+        finally:
+            for remaining in list(futures):
+                remaining.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
         raise RuntimeError('proof of work não concluído')
 
     def _rate(self, begin):

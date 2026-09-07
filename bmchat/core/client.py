@@ -35,6 +35,7 @@ class Client:
         self._pow_stops = {}
         self._pow_sequencer = 0
         self._ack_watch = {}
+        self._msg_in_flight = set()
         self._log_lines = collections.deque(maxlen=200)
         self._lock = threading.RLock()
         self.net = NetworkManager(
@@ -86,7 +87,16 @@ class Client:
         return [r['to_address'] for r in rows if r['to_address']]
 
     def _retry_awaiting(self):
-        for address in self._awaiting_addresses():
+        # B7: não queima PoW offline + limite de paralelismo
+        try:
+            established = sum(
+                1 for c in list(self.net.connections.values())
+                if getattr(c, 'established', False))
+        except Exception:
+            established = 0
+        if established == 0:
+            return
+        for address in self._awaiting_addresses()[:20]:
             if not self.started:
                 return
             if address in self.pubkeys:
@@ -94,7 +104,10 @@ class Client:
                 continue
             self._log('rede', 'republicando pedido de chave para %s' %
                       address[:18])
-            self.request_pubkey(address)
+            try:
+                self.request_pubkey(address)
+            except Exception:
+                continue
 
     def _log(self, level, message):
         line = '[%s] %s' % (time.strftime('%H:%M:%S'), message)
@@ -575,7 +588,7 @@ class Client:
         return 'success', None
 
     def _pow_and_publish_message(self, message_id, identity_address,
-                                 to_address, body, encoding):
+                                  to_address, body, encoding):
         pub = self.pubkeys.get(to_address)
         if pub is None:
             return
@@ -585,14 +598,26 @@ class Client:
         status, version, stream, ripe = addr_module.decode_address(to_address)
         if status != 'success':
             return
+        with self._lock:
+            if message_id in self._msg_in_flight:
+                return
+            self._msg_in_flight.add(message_id)
+        try:
+            self.db.set_message_status(message_id, 'sending')
+        except Exception:
+            pass
         expires = int(time.time()) + MSG_TTL
 
         def worker():
             ack_packet, watch = self._build_ack_packet(stream)
             if not watch:
-                # B3 parcial (bloco 2 completa): sem ACK não envia degradado silencioso
-                self.db.set_message_status(message_id, 'ack-failed')
-                self.ui_queue.put(('status', message_id, 'ack-failed'))
+                # B3: sem ACK não envia degradado silencioso
+                try:
+                    self.db.set_message_status(message_id, 'ack-failed')
+                    self.ui_queue.put(('status', message_id, 'ack-failed'))
+                finally:
+                    with self._lock:
+                        self._msg_in_flight.discard(message_id)
                 return
             with self._lock:
                 self._ack_watch[watch] = message_id
@@ -607,6 +632,8 @@ class Client:
             try:
                 wire_bytes = wire.encode('utf-8')
             except Exception:
+                with self._lock:
+                    self._msg_in_flight.discard(message_id)
                 return
             unsigned = objects.build_msg_unsigned(
                 expires, stream, keys, pub['encryption_public'], ripe,
@@ -617,12 +644,29 @@ class Client:
                 len(unsigned) + 8, MSG_TTL)
 
             def done(complete, nonce):
+                # B1: revalida antes de anunciar (conversa pode ter sido apagada)
+                try:
+                    rows = self.db.query(
+                        "SELECT status FROM messages WHERE id=?", (message_id,))
+                    if not rows or rows[0]['status'] not in (
+                            'sending', 'awaiting-pubkey'):
+                        return
+                except Exception:
+                    pass
+                finally:
+                    with self._lock:
+                        self._msg_in_flight.discard(message_id)
                 self.net.announce_object(complete)
                 self.db.set_message_status(message_id, 'sent')
                 self.ui_queue.put(('status', message_id, 'sent'))
 
-            self._run_pow_and_done(
-                unsigned, target, message_id=message_id, done_cb=done)
+            try:
+                self._run_pow_and_done(
+                    unsigned, target, message_id=message_id, done_cb=done)
+            except Exception:
+                with self._lock:
+                    self._msg_in_flight.discard(message_id)
+                raise
 
         threading.Thread(target=worker, daemon=True,
                          name='msg-pow-%s' % message_id).start()
