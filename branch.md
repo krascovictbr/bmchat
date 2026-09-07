@@ -11,6 +11,7 @@
 - [analysis/complete-audit-20260907 — resumo executivo](#analysiscomplete-audit-20260907--resumo-executivo)
 - [analysis/complete-audit-20260907 — relatório completo](#bmchat--relatório-completo-de-auditoria-analysis_reportmd)
 - [Correções aplicadas (2026-09-07, com aprovação — TUDO)](#correções-aplicadas-2026-09-07-com-aprovação--tudo)
+- [optimization/performance-20260907 (2026-09-07)](#changelog--branch-optimizationperformance-20260907)
 
 ---
 
@@ -667,3 +668,76 @@ git checkout rolling-release
 git merge --no-ff analysis/complete-audit-20260907
 python3 -m pytest tests/ -q  # 26 passed
 ```
+
+---
+
+# Changelog — branch `optimization/performance-20260907`
+
+Registro das atualizações vindas do branch `optimization/performance-20260907`
+(merge `--no-ff` em `rolling-release`, 2026-09-07; rebase linear sobre
+`720c303` "Update README.md" do remoto; branch apagado após o merge;
+push fast-forward `720c303..2060c42`). Formato: Adicionado / Mudado /
+Corrigido.
+
+## [optimization/performance-20260907] — 2026-09-07
+
+### Adicionado
+- Sistema de temas claro/escuro (`bmchat/gui/theme.py`): cores, fontes,
+  espaçamentos e raios centralizados; troca no hambúrguer ☰ → Tema.
+- Atalhos de teclado: Ctrl+N nova conversa, Ctrl+F busca, Ctrl+W/Esc fecha
+  diálogo ou limpa busca, Ctrl+Q sai, Ctrl+, configurações de rede.
+- Tooltips (`bmchat/gui/tooltip.py`) em todos os botões principais.
+- Lista de conversas agrupada (Contatos / Canais) com título de seção,
+  avatar `#` para canais e iniciais para contatos.
+- Anexos: botão 📎, seleção de arquivo, base64 no corpo
+  (`[attachment:nome:mime:dados]`, teto 1 MB), prévia inline de imagem
+  (PIL, máx. 300 px) ou caixa com ícone por tipo.
+- Responder/Encaminhar no botão direito da mensagem (citação `>` e
+  prefixo `[Encaminhada]`).
+- Mensagens agendadas: botão 🕐, diálogo data/hora, tabela
+  `scheduled_messages`, thread `client-scheduled` (checa a cada 30 s).
+- Banco criptografado opcional (`bmchat/crypto/encrypted_db.py`):
+  PBKDF2 200k + AES-256-GCM, backup/restauração `.enc` com senha, troca de
+  senha; entradas no hambúrguer.
+- Notificações desktop (`bmchat/gui/notification.py`): notify-send/dbus
+  (Linux), osascript (macOS), win10toast/PowerShell (Windows); avisam
+  mensagem e post de canal recebidos.
+- CI GitHub Actions (`.github/workflows/ci.yml`): pytest + flake8 + mypy
+  + compileall + pip-audit, com job de release.
+- Cache de `font.measure` (`_font_measure_cache`, cap com limpeza) e
+  `_wrap_lines_cached` (larguras de palavra reaproveitadas).
+- Scroll virtual no chat: calcula layout de tudo, renderiza só o viewport
+  + buffer de 100 px; redesenha ao rolar (`_chat_yview`).
+
+### Mudado
+- Barra de envio estilo Telegram (fix do layout quebrado ao maximizar):
+  campo branco com borda (`field_box`), botões 📎/☺/➤/🕐 fixos, **só a
+  coluna do campo tem `weight=1`** (antes o emoji dividia o extra 50/50 e
+  criava vazio à esquerda); placeholder via `readonly` (nunca `disabled`);
+  sem conversa a barra some (`grid_remove`); cores via `theme.py`
+  (`input_bg/border/fg/placeholder`) nos dois temas; separador
+  `columnspan=5`. Medido: maximizar 1100→1600 px, entry x fixo em 11,
+  largura 473→973 (absorve 100% do extra).
+- Tuplas de layout do chat unificadas (índice 1=`top`, 2=`altura` em
+  `more`/`day`/`msg`); `_chat_layouts` volta a ser `(top, altura, row)`.
+- `_handle_event` de mensagem/broadcast dispara notificação desktop com
+  prévia de até 100 chars (anexo removido do texto).
+- Statusbar usa cor do tema (`panel_bg_secondary`).
+
+### Corrigido
+- **Chat em branco**: abrir conversa com ≥1 mensagem estourava
+  `TypeError: '<=' str vs float` no loop de viewport (`lay[2]` era o
+  `sender`) e o canvas ficava vazio — mensagem enviada e antigas não
+  apareciam. Reproduzido antes, zerado depois (30 msgs → 214 itens,
+  0 erros).
+- `os` não importado em `app.py` (F821 no backup criptografado).
+- Anotações de tipo em `encrypted_db.py`/`theme.py` (mypy limpo).
+- `except` desalinhado no `_send` após inserir `_attach_file`
+  (SyntaxError pego pela suíte).
+
+### Verificação
+- `pytest tests/ -q`: **26 passed** (antes do commit, do merge e do push).
+- `flake8` sem F821/F822; `mypy --ignore-missing-imports` limpo (32 arqs).
+- Smokes Tkinter: abrir 30 msgs, envio mockado, maximizar 1600 px,
+  welcome↔conversa, temas claro/escuro, anexo, reply/forward, agendamento,
+  `report_callback_exception` vazio, fechar sem erros.
