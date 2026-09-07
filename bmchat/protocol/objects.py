@@ -1,8 +1,7 @@
-import os
 import struct
 
 from ..util import (
-    encode_varint, decode_varint, double_sha512, sha512, ripemd160,
+    encode_varint, decode_varint, double_sha512,
 )
 from ..crypto import ecc, ecies
 from .const import (
@@ -319,7 +318,6 @@ def process_broadcast(raw, subscriptions):
     position += 64
     ntpb, position = _take_varint(plain, position)
     eb, position = _take_varint(plain, position)
-    end_of_pubkey = position
     encoding, position = _take_varint(plain, position)
     if encoding == 0:
         return None

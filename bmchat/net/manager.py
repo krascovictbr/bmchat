@@ -10,7 +10,7 @@ MAX_FUTURE_SKEW = 28 * 24 * 3600 + 10800
 MAX_PAST_SKEW = 3600
 from ..crypto.pow import is_proof_of_work_sufficient
 from ..util.hashing import double_sha512
-from .peers import Peer, PeerStore, DNS_SEEDS
+from .peers import PeerStore, DNS_SEEDS
 
 
 class NetworkManager:
