@@ -80,6 +80,10 @@ class Client:
                                       daemon=True, name='client-reannounce')
         reannounce.start()
         self._threads.append(reannounce)
+        scheduled = threading.Thread(target=self._scheduled_sender_loop,
+                                     daemon=True, name='client-scheduled')
+        scheduled.start()
+        self._threads.append(scheduled)
 
     def stop(self):
         self.started = False
@@ -974,6 +978,32 @@ class Client:
     def _reannounce_pubkeys(self):
         # compat: testes antigos chamam direto (1-shot)
         return self._reannounce_pubkeys_once()
+
+    def _scheduled_sender_loop(self):
+        """Background thread to send scheduled messages."""
+        while self.started:
+            try:
+                pending = self.db.get_pending_scheduled()
+                for msg in pending:
+                    if not self.started:
+                        return
+                    try:
+                        identity = msg['identity_address']
+                        to_addr = msg['to_address']
+                        body = msg['body']
+                        if identity in self.identities:
+                            self.send_message(identity, to_addr, '', body)
+                            self.db.mark_scheduled_sent(msg['id'])
+                            self._log('agendada', f'mensagem para {to_addr[:18]} enviada')
+                    except Exception as exc:
+                        self._log('agendada', f'erro ao enviar: {exc}')
+            except Exception as exc:
+                self._log('agendada', f'erro no loop: {exc}')
+            # Check every 30 seconds
+            for _ in range(30):
+                if not self.started:
+                    return
+                time.sleep(1)
 
 
 def _decode_body(encoding, message):

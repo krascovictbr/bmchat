@@ -1,4 +1,5 @@
 import datetime
+import os
 import queue
 import threading
 import time
@@ -7,42 +8,80 @@ from tkinter import filedialog
 from tkinter import font as tkfont
 
 from . import dialogs
+from .theme import get_theme, Theme
+from .tooltip import ToolTip
+from .notification import notify, get_notification_manager
 from .. import SUPPORT_ADDRESS, SUPPORT_LABEL
 from ..core.client import Client
+from ..core.database import Database
+from ..crypto.encrypted_db import (
+    is_encrypted, export_encrypted_backup, import_encrypted_backup,
+    change_password, enable_encryption
+)
 from ..version import __version__ as BMCHAT_VERSION
 from ..net.proxy import (
     ProxyProfile, DARKNET_PRESETS,
 )
 
-HEADER_BG = '#5682a3'
-HEADER_BG_DARK = '#4e7696'
-HEADER_FG = '#ffffff'
-HEADER_DIM = '#c7d7e4'
-PANEL_BG = '#ffffff'
-ROW_HOVER = '#f1f5f9'
-ROW_SELECTED = '#e3edf5'
-LINE = '#dfe5ea'
-TEXT_INK = '#222222'
-TEXT_GRAY = '#8a96a0'
-TIME_GRAY = '#a3adb6'
-CHAT_BG = '#cfe0b3'
-DOODLE = '#bccf9c'
-BUBBLE_IN = '#ffffff'
-BUBBLE_OUT = '#effdde'
-BADGE_BG = '#64c270'
-FAB_BG = '#4ea4e5'
-READ_BLUE = '#4aa3df'
-DATE_BG = '#93a3b1'
-INPUT_ICON = '#8a96a0'
+# Default theme (can be switched at runtime)
+_current_theme_name = 'light'
+_theme = get_theme(_current_theme_name)
 
-SENDER_COLORS = [
-    '#e17076', '#e8a04c', '#a695e7', '#7fb968',
-    '#5fb4d9', '#5b9bd5', '#ef7fa8',
-]
+def get_theme_colors() -> Theme:
+    """Get current theme colors."""
+    return _theme
+
+
+def set_theme(name: str) -> None:
+    """Switch theme globally."""
+    global _theme, _current_theme_name
+    _current_theme_name = name
+    _theme = get_theme(name)
+
+
+# Backward-compatible color constants (read from current theme)
+def _c(name: str) -> str:
+    return getattr(_theme, name)
+
+
+# These will be updated when theme changes
+HEADER_BG = _c('header_bg')
+HEADER_BG_DARK = _c('header_bg_hover')
+HEADER_FG = _c('header_fg')
+HEADER_DIM = _c('header_dim')
+PANEL_BG = _c('panel_bg')
+ROW_HOVER = _c('row_hover')
+ROW_SELECTED = _c('row_selected')
+LINE = _c('divider')
+TEXT_INK = _c('text_primary')
+TEXT_GRAY = _c('text_secondary')
+TIME_GRAY = _c('text_muted')
+CHAT_BG = _c('chat_bg')
+DOODLE = _c('doodle')
+BUBBLE_IN = _c('bubble_in')
+BUBBLE_OUT = _c('bubble_out')
+BADGE_BG = _c('unread_badge')
+FAB_BG = _c('accent')
+READ_BLUE = _c('info')
+DATE_BG = _c('border')
+INPUT_ICON = _c('text_muted')
+
+SENDER_COLORS = _theme.sender_colors
 
 ROW_H = 68
 AVATAR_R = 22
 PAD_X = 12
+
+SPACING_XS = 4
+SPACING_SM = 8
+SPACING_MD = 12
+SPACING_LG = 16
+SPACING_XL = 24
+
+RADIUS_SM = 4
+RADIUS_MD = 8
+RADIUS_LG = 12
+RADIUS_FULL = 999
 
 BACKUP_WARNING = (
     'ATENÇÃO — CHAVES PRIVADAS da identidade\n%s\n\n'
@@ -287,6 +326,52 @@ def _wrap_lines(font, text, max_width):
                     word = word[cut:]
                 current = word
         lines.append(current)
+    return lines
+
+
+def _wrap_lines_cached(font, text, max_width, measure_cache):
+    """Versão otimizada de _wrap_lines com cache de font.measure."""
+    lines = []
+    fid = id(font)
+    for paragraph in str(text).split('\n'):
+        if not paragraph:
+            lines.append('')
+            continue
+        words = paragraph.split(' ')
+        current = ''
+        current_w = 0
+        space_w = measure_cache.get((fid, ' '))
+        if space_w is None:
+            space_w = font.measure(' ')
+            measure_cache[(fid, ' ')] = space_w
+        for word in words:
+            wkey = (fid, word)
+            word_w = measure_cache.get(wkey)
+            if word_w is None:
+                word_w = font.measure(word)
+                measure_cache[wkey] = word_w
+                if len(measure_cache) > 5000:
+                    for k in list(measure_cache.keys())[:2500]:
+                        measure_cache.pop(k, None)
+            trial_w = word_w if not current else current_w + space_w + word_w
+            if trial_w <= max_width:
+                current = word if not current else current + ' ' + word
+                current_w = trial_w
+            else:
+                if current:
+                    lines.append(current)
+                while word and word_w > max_width:
+                    cut = _fit_long_word(font, word, max_width)
+                    lines.append(word[:cut])
+                    word = word[cut:]
+                    wkey = (fid, word)
+                    word_w = measure_cache.get(wkey)
+                    if word_w is None:
+                        word_w = font.measure(word)
+                        measure_cache[wkey] = word_w
+                current = word
+                current_w = word_w
+        lines.append(current)
     return lines if lines else ['']
 
 
@@ -427,10 +512,17 @@ class App(tk.Tk):
         self._conv_draw_after = None
         self._refresh_after = None
         self._pow_last = {}
-        # Item 3 — cache de elipse {(font-name, text, max_w): fitted}, FIFO ~300.
+        # Item 3 — cache de elipse {(font-id, text, max_w): fitted}, FIFO ~300.
         self._fit_cache = {}
         self._fit_order = []
         self._ellipsis_w = {}
+        # Virtual scroll state
+        self._chat_first_visible = 0
+        self._chat_last_visible = 0
+        self._chat_viewport_height = 0
+        # Font metrics cache
+        self._font_measure_cache = {}
+        self._line_h_cache = {}
         # Item 4 — última largura com layout de chat calculado.
         self._last_chat_w = None
         # Item 6 — higiene de after(): ids pendentes + flag de encerrado.
@@ -447,6 +539,14 @@ class App(tk.Tk):
         self._open_menu = None
         self._menu_opened_at = 0.0
         self.bind_all('<ButtonPress>', self._dismiss_open_menu, add='+')
+
+        # Keyboard shortcuts
+        self.bind_all('<Control-n>', lambda e: self._new_contact())
+        self.bind_all('<Control-f>', lambda e: self._toggle_search())
+        self.bind_all('<Control-w>', lambda e: self._close_current_dialog())
+        self.bind_all('<Escape>', lambda e: self._handle_escape())
+        self.bind_all('<Control-q>', lambda e: self._on_close())
+        self.bind_all('<Control-comma>', lambda e: self._network_settings())
 
         # Item 1 — casca mínima (barata): placeholder até o build real.
         # `place` não conflita com o grid/pack que _build_widgets usa.
@@ -646,16 +746,20 @@ class App(tk.Tk):
         self.left_header = tk.Frame(self.left, bg=HEADER_BG, height=52)
         self.left_header.pack(fill='x')
         self.left_header.pack_propagate(False)
-        tk.Button(self.left_header, text='☰', fg=HEADER_FG, bg=HEADER_BG,
+        self.hamburger_btn = tk.Button(self.left_header, text='☰', fg=HEADER_FG, bg=HEADER_BG,
                   activebackground=HEADER_BG_DARK, activeforeground=HEADER_FG,
                   relief='flat', bd=0, font=('', 14),
-                  command=self._hamburger_menu).pack(side='left', padx=6)
+                  command=self._hamburger_menu)
+        self.hamburger_btn.pack(side='left', padx=6)
+        ToolTip(self.hamburger_btn, 'Menu principal (Ctrl+,)')
         tk.Label(self.left_header, text='bmchat', fg=HEADER_FG, bg=HEADER_BG,
                  font=self.title_font).pack(side='left')
-        tk.Button(self.left_header, text='🔍', fg=HEADER_FG, bg=HEADER_BG,
+        self.search_btn = tk.Button(self.left_header, text='🔍', fg=HEADER_FG, bg=HEADER_BG,
                   activebackground=HEADER_BG_DARK, activeforeground=HEADER_FG,
                   relief='flat', bd=0, font=('', 13),
-                  command=self._toggle_search).pack(side='right', padx=6)
+                  command=self._toggle_search)
+        self.search_btn.pack(side='right', padx=6)
+        ToolTip(self.search_btn, 'Buscar conversas (Ctrl+F)')
 
         self.search_frame = tk.Frame(self.left, bg=PANEL_BG)
         self.search_var = tk.StringVar()
@@ -690,6 +794,7 @@ class App(tk.Tk):
         self.fab.create_text(28, 28, text='✎', fill='white',
                              font=('', 20))
         self.fab.bind('<Button-1>', lambda _e: self._compose_menu())
+        ToolTip(self.fab, 'Nova conversa (Ctrl+N)')
 
         # ---- identity row ----
         id_row = tk.Frame(self.left, bg=PANEL_BG, highlightthickness=0)
@@ -706,12 +811,17 @@ class App(tk.Tk):
                                      font=self.preview_font)
         self.identity_menu['menu'].configure(bg=PANEL_BG, fg=TEXT_INK)
         self.identity_menu.pack(side='left', padx=4, fill='x', expand=True)
-        tk.Button(inner, text='+', command=self._new_identity, bg=FAB_BG,
+        ToolTip(self.identity_menu, 'Selecionar identidade')
+        self.new_identity_btn = tk.Button(inner, text='+', command=self._new_identity, bg=FAB_BG,
                   fg='white', relief='flat', width=3,
-                  font=self.preview_font).pack(side='left')
-        tk.Button(inner, text='Backup', command=self._backup_identity,
+                  font=self.preview_font)
+        self.new_identity_btn.pack(side='left')
+        ToolTip(self.new_identity_btn, 'Nova identidade')
+        self.backup_btn = tk.Button(inner, text='Backup', command=self._backup_identity,
                   bg=PANEL_BG, fg=TEXT_INK, relief='solid', bd=1,
-                  font=self.small_font).pack(side='left', padx=(4, 0))
+                  font=self.small_font)
+        self.backup_btn.pack(side='left', padx=(4, 0))
+        ToolTip(self.backup_btn, 'Backup de identidade')
 
     def _build_widgets_right(self):
         # Segunda metade: cabeçalho/chat/input/statusbar (roda no próximo idle).
@@ -769,6 +879,7 @@ class App(tk.Tk):
             relief='solid', bd=1, font=('', 12), width=2,
             command=lambda: self.chat_canvas.yview_moveto(1.0))
         self.jump_btn.place_forget()
+        ToolTip(self.jump_btn, 'Ir para mensagens mais recentes')
 
         self.welcome_copy_btn = tk.Button(
             self.chat_frame, text='Copiar meu endereço', bg=FAB_BG,
@@ -776,22 +887,30 @@ class App(tk.Tk):
             font=self.preview_font, padx=12, pady=6,
             command=self._copy_my_address)
         self.welcome_copy_btn.place_forget()
+        ToolTip(self.welcome_copy_btn, 'Copiar seu endereço')
 
         # ---- input bar ----
         self.input_frame = tk.Frame(self.right, bg=PANEL_BG)
         self.input_frame.grid(row=2, column=0, sticky='ew')
         self.input_frame.columnconfigure(1, weight=1)
         tk.Frame(self.input_frame, bg=LINE, height=1).grid(
-            row=0, column=0, columnspan=3, sticky='ew')
-        tk.Button(self.input_frame, text='☺', fg=INPUT_ICON, bg=PANEL_BG,
+            row=0, column=0, columnspan=4, sticky='ew')
+        self.attach_btn = tk.Button(self.input_frame, text='📎', fg=INPUT_ICON, bg=PANEL_BG,
+                   activebackground=ROW_HOVER, relief='flat', bd=0,
+                   font=('', 16), command=self._attach_file)
+        self.attach_btn.grid(row=1, column=0, padx=(6, 2), pady=8)
+        ToolTip(self.attach_btn, 'Anexar arquivo')
+        self.emoji_btn = tk.Button(self.input_frame, text='☺', fg=INPUT_ICON, bg=PANEL_BG,
                   activebackground=ROW_HOVER, relief='flat', bd=0,
-                  font=('', 16), command=self._emoji_popup).grid(
-                      row=1, column=0, padx=(6, 2), pady=8)
+                  font=('', 16), command=self._emoji_popup)
+        self.emoji_btn.grid(row=1, column=1, padx=(2, 2), pady=8)
+        ToolTip(self.emoji_btn, 'Emojis')
         self.input_var = tk.StringVar()
         self.input_entry = tk.Entry(
             self.input_frame, textvariable=self.input_var, relief='flat',
             bd=0, highlightthickness=0, font=self.msg_font, fg=TEXT_INK)
-        self.input_entry.grid(row=1, column=1, sticky='ew', padx=4)
+        self.input_entry.grid(row=1, column=2, sticky='ew', padx=4)
+        self.input_frame.columnconfigure(2, weight=1)
         self.input_entry.bind('<Return>', lambda _e: self._send())
         self.input_entry.bind('<FocusIn>', self._clear_placeholder)
         self.input_entry.bind('<FocusOut>', self._restore_placeholder)
@@ -799,17 +918,26 @@ class App(tk.Tk):
         self._set_placeholder()
         self.send_btn = tk.Canvas(self.input_frame, width=36, height=36,
                                   highlightthickness=0, bd=0, bg=PANEL_BG)
-        self.send_btn.grid(row=1, column=2, padx=(2, 8), pady=6)
+        self.send_btn.grid(row=1, column=3, padx=(2, 4), pady=6)
         self._send_oval = self.send_btn.create_oval(
             2, 2, 34, 34, fill=FAB_BG, outline=FAB_BG)
         self._send_arrow = self.send_btn.create_text(
             18, 18, text='➤', fill='white', font=('', 14))
         self._input_enabled = True
         self.send_btn.bind('<Button-1>', lambda _e: self._send())
+        ToolTip(self.send_btn, 'Enviar (Enter)')
+        
+        # Schedule button
+        self.schedule_btn = tk.Button(self.input_frame, text='🕐', fg=INPUT_ICON, bg=PANEL_BG,
+                    activebackground=ROW_HOVER, relief='flat', bd=0,
+                    font=('', 16), command=self._schedule_message)
+        self.schedule_btn.grid(row=1, column=4, padx=(0, 8), pady=6)
+        ToolTip(self.schedule_btn, 'Agendar envio')
+        
         self._set_input_enabled(False)
 
         self.statusbar = tk.Label(self, text='Conectando...', anchor='e',
-                                  bg='#eef2f5', fg=TEXT_GRAY, padx=8,
+                                  bg=_c('panel_bg_secondary'), fg=TEXT_GRAY, padx=8,
                                   font=self.small_font)
         self.statusbar.grid(row=1, column=0, sticky='ew')
 
@@ -872,6 +1000,16 @@ class App(tk.Tk):
         menu.add_separator()
         menu.add_command(label='Backup de identidade…',
                          command=self._backup_identity)
+        menu.add_command(label='Backup criptografado…',
+                         command=self._encrypted_backup)
+        menu.add_command(label='Restaurar backup criptografado…',
+                         command=self._restore_encrypted_backup)
+        menu.add_separator()
+        menu.add_command(label='Criptografar banco de dados…',
+                         command=self._encrypt_database)
+        menu.add_command(label='Alterar senha do banco…',
+                         command=self._change_db_password)
+        menu.add_separator()
         menu.add_command(label='Diagnóstico de rede…',
                          command=self._network_diagnostics)
         menu.add_command(label='Ver log…', command=self._show_log)
@@ -882,10 +1020,93 @@ class App(tk.Tk):
         menu.add_command(label='Verificar POW ativos', command=self._show_pows)
         menu.add_command(label='Verificar atualizações',
                          command=self._check_updates_manual)
+        menu.add_separator()
+        # Theme submenu
+        theme_menu = tk.Menu(menu, tearoff=0)
+        theme_menu.add_command(label='☀️  Claro', command=lambda: self._set_theme('light'))
+        theme_menu.add_command(label='🌙  Escuro', command=lambda: self._set_theme('dark'))
+        menu.add_cascade(label='Tema', menu=theme_menu)
         menu.add_command(label='Legenda de confirmações',
                          command=self._confirmation_legend)
         menu.add_command(label='Sobre', command=self._about)
         self._popup(menu, self.left_header)
+
+    def _set_theme(self, name: str):
+        """Switch application theme."""
+        set_theme(name)
+        self._refresh_theme_colors()
+        if getattr(self, '_startup_done', False):
+            self._draw_conversations()
+            self._redraw_chat()
+            self._refresh_identity_menu()
+            # Update placeholder color
+            if self._placeholder_on:
+                self.input_entry.config(fg=TEXT_GRAY)
+            self._flash_status(f'Tema alterado para {name}')
+
+    def _refresh_theme_colors(self):
+        """Refresh all theme-dependent colors."""
+        global HEADER_BG, HEADER_BG_DARK, HEADER_FG, HEADER_DIM
+        global PANEL_BG, ROW_HOVER, ROW_SELECTED, LINE
+        global TEXT_INK, TEXT_GRAY, TIME_GRAY, CHAT_BG, DOODLE
+        global BUBBLE_IN, BUBBLE_OUT, BADGE_BG, FAB_BG, READ_BLUE
+        global DATE_BG, INPUT_ICON, SENDER_COLORS
+
+        HEADER_BG = _c('header_bg')
+        HEADER_BG_DARK = _c('header_bg_hover')
+        HEADER_FG = _c('header_fg')
+        HEADER_DIM = _c('header_dim')
+        PANEL_BG = _c('panel_bg')
+        ROW_HOVER = _c('row_hover')
+        ROW_SELECTED = _c('row_selected')
+        LINE = _c('divider')
+        TEXT_INK = _c('text_primary')
+        TEXT_GRAY = _c('text_secondary')
+        TIME_GRAY = _c('text_muted')
+        CHAT_BG = _c('chat_bg')
+        DOODLE = _c('doodle')
+        BUBBLE_IN = _c('bubble_in')
+        BUBBLE_OUT = _c('bubble_out')
+        BADGE_BG = _c('unread_badge')
+        FAB_BG = _c('accent')
+        READ_BLUE = _c('info')
+        DATE_BG = _c('border')
+        INPUT_ICON = _c('text_muted')
+        SENDER_COLORS = _theme.sender_colors
+
+        # Update widget backgrounds if widgets exist
+        try:
+            if hasattr(self, 'left') and self.left.winfo_exists():
+                self.left.configure(bg=PANEL_BG)
+            if hasattr(self, 'right') and self.right.winfo_exists():
+                self.right.configure(bg=CHAT_BG)
+            if hasattr(self, 'left_header') and self.left_header.winfo_exists():
+                self.left_header.configure(bg=HEADER_BG)
+            if hasattr(self, 'chat_frame') and self.chat_frame.winfo_exists():
+                self.chat_frame.configure(bg=CHAT_BG)
+            if hasattr(self, 'input_frame') and self.input_frame.winfo_exists():
+                self.input_frame.configure(bg=PANEL_BG)
+            if hasattr(self, 'search_frame') and self.search_frame.winfo_exists():
+                self.search_frame.configure(bg=PANEL_BG)
+            if hasattr(self, 'conv_canvas') and self.conv_canvas.winfo_exists():
+                self.conv_canvas.configure(bg=PANEL_BG)
+            if hasattr(self, 'chat_canvas') and self.chat_canvas.winfo_exists():
+                self.chat_canvas.configure(bg=CHAT_BG)
+            if hasattr(self, 'welcome_copy_btn') and self.welcome_copy_btn.winfo_exists():
+                self.welcome_copy_btn.configure(bg=FAB_BG, activebackground=_c('accent_hover'))
+            if hasattr(self, 'jump_btn') and self.jump_btn.winfo_exists():
+                self.jump_btn.configure(bg=PANEL_BG, fg=_c('text_secondary'))
+            if hasattr(self, 'send_btn') and self.send_btn.winfo_exists():
+                self.send_btn.configure(bg=PANEL_BG)
+            if hasattr(self, 'input_entry') and self.input_entry.winfo_exists():
+                self.input_entry.configure(bg=_c('input_bg'), fg=_c('input_fg'),
+                                           insertbackground=_c('input_fg'))
+            if hasattr(self, 'left_header') and self.left_header.winfo_exists():
+                for btn in self.left_header.winfo_children():
+                    if isinstance(btn, tk.Button):
+                        btn.configure(bg=HEADER_BG, activebackground=HEADER_BG_DARK, fg=HEADER_FG)
+        except Exception:
+            pass
 
     def _compose_menu(self):
         self._new_contact()
@@ -1093,11 +1314,26 @@ class App(tk.Tk):
         if kind == 'log':
             self._flash_status(event[2])
         elif kind == 'message':
+            # event: ('message', from_address, to_address, body, expires)
+            from_addr = event[1]
+            body = event[3] if len(event) > 3 else ''
+            # Truncate body for notification
+            clean_body = body.split('[attachment:')[0].strip()
+            preview = clean_body[:100] + ('…' if len(clean_body) > 100 else '')
             self._flash_status('Mensagem recebida')
             self._schedule_refresh()
+            # Desktop notification
+            try:
+                notify(f'Mensagem de {from_addr[:18]}', preview)
+            except Exception:
+                pass
         elif kind == 'broadcast':
             self._flash_status('Nova postagem no canal')
             self._schedule_refresh()
+            try:
+                notify('Novo post no canal', 'Nova mensagem em canal inscrito')
+            except Exception:
+                pass
         elif kind == 'pubkey':
             self._flash_status('Chave pública recebida')
             self._schedule_refresh()
@@ -1281,14 +1517,13 @@ class App(tk.Tk):
         return body, _clock(last['timestamp'])
 
     def _fit_cached(self, font, text, max_width):
-        """Elipse com cache FIFO (~300) + estimativa aritmética (item 3).
+        """Elipse com cache FIFO (~300) + estimativa aritmética (1 measure).
 
-        Acerto de cache: 0 measure. Erro: 1 measure do texto (a largura do
-        '…' é medida 1× por fonte e reaproveitada). Troca os ~8 measures da
-        busca binária por aritmética (avg = largura/len).
+        Acerto de cache: 0 measure. Erro: 1 measure do texto + '…' cached.
+        Usa id(font) para chave estável (font.name pode variar).
         """
         try:
-            key = (font.name, text, max_width)
+            key = (id(font), text, max_width)
         except Exception:
             return _fit_width(font, text, max_width)
         try:
@@ -1298,19 +1533,32 @@ class App(tk.Tk):
         if hit is not None:
             return hit
         try:
-            if font.measure(text) <= max_width:
+            # Cached font.measure
+            fm_cache = self._font_measure_cache
+            mkey = (id(font), text)
+            text_w = fm_cache.get(mkey)
+            if text_w is None:
+                text_w = font.measure(text)
+                fm_cache[mkey] = text_w
+                if len(fm_cache) > 2000:
+                    # Simple LRU: clear half
+                    for k in list(fm_cache.keys())[:1000]:
+                        fm_cache.pop(k, None)
+
+            if text_w <= max_width:
                 fitted = text
             else:
-                ell_w = self._ellipsis_w.get(key[0])
+                # Cached ellipsis width per font
+                ell_w = self._ellipsis_w.get(id(font))
                 if ell_w is None:
                     ell_w = font.measure('…')
-                    self._ellipsis_w[key[0]] = ell_w
+                    self._ellipsis_w[id(font)] = ell_w
                 avail = max_width - ell_w
                 count = len(text)
                 if avail <= 0 or count == 0:
                     fitted = '…'
                 else:
-                    avg = font.measure(text) / count
+                    avg = text_w / count
                     cut = int(avail / avg) if avg > 0 else 0
                     if cut < 0:
                         cut = 0
@@ -1390,49 +1638,87 @@ class App(tk.Tk):
         fit = self._fit_cached
         y = 0
         self._row_tops = []
-        for index in rows:
-            self._row_tops.append((y, index))
-            kind, address = self._conv_meta[index]
-            label = self._conv_labels[index]
-            preview, clock = preview_map.get(address, ('', ''))
-            unread = unread_map.get(address, 0)
-            selected = index == self._conv_selected
-            hover = index == getattr(self, '_conv_hover_index', None)
-            bg = ROW_SELECTED if selected else (
-                ROW_HOVER if hover else PANEL_BG)
-            canvas.create_rectangle(0, y, width, y + ROW_H, fill=bg,
-                                    outline=bg)
-            color = _avatar_color(address)
-            canvas.create_oval(12, y + ROW_H / 2 - AVATAR_R, 12 + AVATAR_R * 2,
-                               y + ROW_H / 2 + AVATAR_R, fill=color,
-                               outline=color)
-            canvas.create_text(12 + AVATAR_R, y + ROW_H / 2,
-                               text=_initials(label), fill='white',
-                               font=self.avatar_font)
-            clock_w = self.small_font.measure(clock) if clock else 0
-            name_w = width - 70 - clock_w - 16
-            canvas.create_text(66, y + 10, anchor='nw',
-                               text=fit(self.name_font, label, name_w),
-                               fill=TEXT_INK, font=self.name_font)
-            if clock:
-                canvas.create_text(width - 10, y + 10, anchor='ne',
-                                   text=clock, fill=TIME_GRAY,
-                                   font=self.small_font)
-            prev_w = width - 76 - (34 if unread else 0)
-            canvas.create_text(66, y + 34, anchor='nw',
-                               text=fit(self.preview_font, preview,
-                                        prev_w),
-                               fill=TEXT_GRAY, font=self.preview_font)
-            if unread:
-                badge = str(unread) if unread < 100 else '99+'
-                bw = max(22, self.small_font.measure(badge) + 12)
-                canvas.create_oval(width - 12 - bw, y + ROW_H - 30,
-                                   width - 12, y + ROW_H - 8, fill=BADGE_BG,
-                                   outline=BADGE_BG)
-                canvas.create_text(width - 12 - bw / 2, y + ROW_H - 19,
-                                   text=badge, fill='white',
-                                   font=self.small_font)
-            y += ROW_H
+
+        # Group by kind: contacts first, then channels
+        contacts = [(i, self._conv_meta[i], self._conv_labels[i])
+                    for i in rows if self._conv_meta[i][0] == 'contact']
+        channels = [(i, self._conv_meta[i], self._conv_labels[i])
+                    for i in rows if self._conv_meta[i][0] == 'channel']
+
+        def draw_section(section_items, section_title):
+            nonlocal y
+            if not section_items:
+                return
+            # Section header
+            canvas.create_rectangle(0, y, width, y + 24, fill=PANEL_BG, outline=PANEL_BG)
+            canvas.create_text(16, y + 12, anchor='w', text=section_title,
+                               fill=TEXT_GRAY, font=self.small_font)
+            y += 24
+            for index, (kind, address), label in section_items:
+                self._row_tops.append((y, index))
+                preview, clock = preview_map.get(address, ('', ''))
+                unread = unread_map.get(address, 0)
+                selected = index == self._conv_selected
+                hover = index == getattr(self, '_conv_hover_index', None)
+                bg = ROW_SELECTED if selected else (
+                    ROW_HOVER if hover else PANEL_BG)
+                canvas.create_rectangle(0, y, width, y + ROW_H, fill=bg,
+                                        outline=bg)
+                # Avatar with different style for channels
+                color = _avatar_color(address)
+                is_channel = kind == 'channel'
+                if is_channel:
+                    # Channel: square-ish avatar with # symbol
+                    x0 = 12
+                    y0 = y + ROW_H / 2 - AVATAR_R
+                    x1 = 12 + AVATAR_R * 2
+                    y1 = y + ROW_H / 2 + AVATAR_R
+                    canvas.create_oval(x0, y0, x1, y1, fill=color, outline=color)
+                    canvas.create_text(12 + AVATAR_R, y + ROW_H / 2,
+                                       text='#', fill='white',
+                                       font=self.avatar_font)
+                else:
+                    # Contact: round avatar with initials
+                    canvas.create_oval(12, y + ROW_H / 2 - AVATAR_R, 12 + AVATAR_R * 2,
+                                       y + ROW_H / 2 + AVATAR_R, fill=color,
+                                       outline=color)
+                    canvas.create_text(12 + AVATAR_R, y + ROW_H / 2,
+                                       text=_initials(label), fill='white',
+                                       font=self.avatar_font)
+                clock_w = self.small_font.measure(clock) if clock else 0
+                name_w = width - 70 - clock_w - 16
+                canvas.create_text(66, y + 10, anchor='nw',
+                                   text=fit(self.name_font, label, name_w),
+                                   fill=TEXT_INK, font=self.name_font)
+                if clock:
+                    canvas.create_text(width - 10, y + 10, anchor='ne',
+                                       text=clock, fill=TIME_GRAY,
+                                       font=self.small_font)
+                # Show preview with sender indicator for incoming
+                prev_w = width - 76 - (34 if unread else 0)
+                preview_text = preview
+                preview_color = TEXT_GRAY
+                if preview and not is_channel:
+                    # Try to determine if last message was incoming
+                    pass
+                canvas.create_text(66, y + 34, anchor='nw',
+                                   text=fit(self.preview_font, preview_text,
+                                            prev_w),
+                                   fill=preview_color, font=self.preview_font)
+                if unread:
+                    badge = str(unread) if unread < 100 else '99+'
+                    bw = max(22, self.small_font.measure(badge) + 12)
+                    canvas.create_oval(width - 12 - bw, y + ROW_H - 30,
+                                       width - 12, y + ROW_H - 8, fill=BADGE_BG,
+                                       outline=BADGE_BG)
+                    canvas.create_text(width - 12 - bw / 2, y + ROW_H - 19,
+                                       text=badge, fill='white',
+                                       font=self.small_font)
+                y += ROW_H
+
+        draw_section(contacts, 'Contatos')
+        draw_section(channels, 'Canais')
+
         canvas.create_line(0, 0, 0, max(y, 1), fill=LINE)
         canvas.configure(scrollregion=(0, 0, width, y))
 
@@ -1706,6 +1992,11 @@ class App(tk.Tk):
 
     def _chat_yview(self, *args):
         self.chat_canvas.yview(*args)
+        # Virtual scroll: re-render on scroll to show new items
+        if len(args) >= 1 and args[0] == 'moveto':
+            self._schedule_chat_redraw()
+        elif len(args) >= 2 and args[0] == 'scroll':
+            self._schedule_chat_redraw()
 
     def _chat_yscroll(self, first, last):
         self.chat_scroll.set(first, last)
@@ -1729,7 +2020,7 @@ class App(tk.Tk):
             hit = None
         if hit is not None:
             return hit
-        lines = _wrap_lines(self.msg_font, body or '(vazio)', inner_w)
+        lines = _wrap_lines_cached(self.msg_font, body or '(vazio)', inner_w, self._font_measure_cache)
         try:
             self._wrap_cache[key] = lines
             self._wrap_order.append(key)
@@ -2040,6 +2331,109 @@ class App(tk.Tk):
             return 'Entregue — confirmação (ACK) recebida do destinatário'
         return str(status)
 
+    def _calc_attachment_height(self, attachment, max_width, out):
+        """Calculate height needed for an attachment."""
+        mime = attachment['mime']
+        is_image = mime.startswith('image/')
+        if is_image:
+            # Try to get image dimensions
+            try:
+                import base64
+                from io import BytesIO
+                from PIL import Image
+                img_data = base64.b64decode(attachment['data'])
+                img = Image.open(BytesIO(img_data))
+                max_img_w = min(300, max_width - 2 * PAD_X)
+                if img.width > max_img_w:
+                    ratio = max_img_w / img.width
+                    return int(img.height * ratio) + 8
+                return img.height + 8
+            except Exception:
+                return 48  # fallback
+        return 48  # file icon box height
+
+    def _parse_attachments(self, body: str):
+        """Parse attachment markers from message body.
+        
+        Returns (clean_body, attachments_list) where attachments_list contains
+        dicts with filename, mime, data (base64).
+        """
+        import re
+        attachments = []
+        # Pattern: [attachment:filename:mime:base64data]
+        pattern = r'\[attachment:([^:]+):([^:]+):([^\]]+)\]'
+        
+        def replace(match):
+            filename = match.group(1)
+            mime = match.group(2)
+            data = match.group(3)
+            attachments.append({'filename': filename, 'mime': mime, 'data': data})
+            return ''  # Remove marker from display body
+        
+        clean_body = re.sub(pattern, replace, body)
+        return clean_body, attachments
+
+    def _render_attachment(self, canvas, x, y, attachment, max_width, out):
+        """Render an attachment inline in the chat bubble."""
+        filename = attachment['filename']
+        mime = attachment['mime']
+        data = attachment['data']
+        
+        import base64
+        try:
+            # Decode base64 data
+            img_data = base64.b64decode(data)
+        except Exception:
+            img_data = None
+        
+        is_image = mime.startswith('image/') and img_data is not None
+        
+        if is_image:
+            # Try to create PhotoImage for inline display
+            try:
+                from io import BytesIO
+                from PIL import Image, ImageTk
+                img = Image.open(BytesIO(img_data))
+                # Resize to fit in bubble (max 300px width)
+                max_img_w = min(300, max_width - 2 * PAD_X)
+                if img.width > max_img_w:
+                    ratio = max_img_w / img.width
+                    new_h = int(img.height * ratio)
+                    img = img.resize((max_img_w, new_h), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                # Store reference to prevent GC
+                if not hasattr(self, '_chat_images'):
+                    self._chat_images = []
+                self._chat_images.append(photo)
+                # Create image on canvas
+                canvas.create_image(x + PAD_X, y, anchor='nw', image=photo)
+                return img.height + 8
+            except Exception:
+                pass  # Fall back to file icon
+        
+        # File icon fallback
+        icon = '📄'
+        if mime.startswith('image/'):
+            icon = '🖼'
+        elif mime.startswith('video/'):
+            icon = '🎬'
+        elif mime.startswith('audio/'):
+            icon = '🎵'
+        elif mime.startswith('text/'):
+            icon = '📝'
+        elif mime == 'application/pdf':
+            icon = '📕'
+        
+        # Draw file preview box
+        box_h = 40
+        canvas.create_rectangle(x, y, x + max_width, y + box_h,
+                                fill=BUBBLE_IN if not out else BUBBLE_OUT,
+                                outline=DATE_BG)
+        canvas.create_text(x + 10, y + box_h // 2, anchor='w',
+                           text=f'{icon} {filename}', fill=TEXT_INK,
+                           font=self.msg_font)
+        return box_h + 8
+
     def _redraw_chat(self):
         self._redraw_after = None
         if getattr(self, '_closed', False):
@@ -2051,6 +2445,7 @@ class App(tk.Tk):
         # Item 4: base do skip de <Configure> (ver _schedule_chat_redraw).
         self._last_chat_w = width
         view_h = height
+        self._chat_viewport_height = view_h
         self.welcome_copy_btn.place_forget()
         if not getattr(self, 'current_address', None):
             self._draw_welcome(canvas, width, height)
@@ -2068,6 +2463,7 @@ class App(tk.Tk):
                 last_day = day
             items.append(('msg', row))
 
+        # VIRTUAL SCROLL: compute layout for all items but only RENDER visible ones
         layouts = []
         y = 14
         self._chat_pill = None
@@ -2077,21 +2473,28 @@ class App(tk.Tk):
             px0 = width / 2 - pill_w / 2
             px1 = width / 2 + pill_w / 2
             self._chat_pill = (px0, y, px1, y + 22)
-            layouts.append(('more', pill_text, y))
+            layouts.append(('more', pill_text, y, 0, 22))  # kind, text, top, idx, height
             y += 30
+        msg_idx = 0
         for item in items:
             if item[0] == 'day':
-                layouts.append(('day', item[1], y))
+                layouts.append(('day', item[1], y, msg_idx, 30))
                 y += 30
                 continue
             row = item[1]
             out = row['direction'] == 'out'
             sender = '' if out else self._sender_label(row)
             inner_w = max_bubble - 2 * PAD_X
-            lines = self._cached_wrap(row['body'], inner_w)
+            # Parse attachments from body
+            clean_body, attachments = self._parse_attachments(row['body'])
+            lines = self._cached_wrap(clean_body, inner_w)
             text_w = 0
             for line in lines:
                 text_w = max(text_w, self.msg_font.measure(line))
+            # Calculate attachment heights
+            attach_h = 0
+            for att in attachments:
+                attach_h += self._calc_attachment_height(att, inner_w, out)
             stamp = _clock(row['timestamp'])
             pending = False
             if out:
@@ -2113,30 +2516,57 @@ class App(tk.Tk):
                 sender_w = self.sender_font.measure(sender)
                 needed = max(needed, sender_w)
             bubble_w = min(max_bubble, needed + 2 * PAD_X)
-            height = 8 + len(lines) * line_h + 4
+            item_h = 8 + len(lines) * line_h + 4 + attach_h
             if sender:
-                height += small_h + 4
+                item_h += small_h + 4
             if extra_row:
-                height += small_h + 2
+                item_h += small_h + 2
             else:
                 bubble_w = min(max_bubble,
                                max(bubble_w, last_w + 10 + stamp_w +
                                    2 * PAD_X))
             layouts.append(('msg', row, sender, lines, stamp_text, out,
-                            bubble_w, height, y, extra_row, pending))
-            y += height + 6
+                            bubble_w, item_h, y, extra_row, pending, msg_idx, attachments))
+            y += item_h + 6
+            msg_idx += 1
         total = y + 10
+
+        # VIRTUAL SCROLL: find visible range
+        # Canvas scroll position
+        try:
+            scroll_top = canvas.canvasy(0)
+        except Exception:
+            scroll_top = 0
+        scroll_bottom = scroll_top + view_h
+        BUFFER = 100  # px buffer above/below viewport
+        first_vis = 0
+        last_vis = len(layouts) - 1
+        for i, lay in enumerate(layouts):
+            lay_top = lay[2]
+            lay_h = lay[3]
+            if lay_top + lay_h >= scroll_top - BUFFER:
+                first_vis = i
+                break
+        for i in range(len(layouts) - 1, -1, -1):
+            lay = layouts[i]
+            lay_top = lay[2]
+            if lay_top <= scroll_bottom + BUFFER:
+                last_vis = i
+                break
+        self._chat_first_visible = first_vis
+        self._chat_last_visible = last_vis
+
         self._chat_layouts = [
-            (layout[8], layout[7], layout[1])
+            (layout[7], layout[6], layout[1])  # top, height, row
             for layout in layouts if layout[0] == 'msg']
 
+        # Draw background (only viewport + buffer)
+        doodle_h = min(total, view_h + 240)
         canvas.create_rectangle(0, 0, width, total, fill=CHAT_BG,
                                 outline=CHAT_BG)
         glyphs = ['✈', '☁', '★', '♫', '✉', '☎', '⚓', '✿']
         gx, gi = 20, 0
         gy = 20
-        # Item 4: doodle só na altura do viewport (+margem), não no total.
-        doodle_h = min(total, view_h + 240)
         step = 110 if total <= 3000 else 180
         while gy < doodle_h:
             while gx < width:
@@ -2147,17 +2577,20 @@ class App(tk.Tk):
             gx = 20 + (gi % 3) * 30
             gy += step
 
-        for layout in layouts:
-            if layout[0] == 'more':
-                _kind, label, top = layout
+        # RENDER ONLY VISIBLE ITEMS
+        for i in range(first_vis, last_vis + 1):
+            layout = layouts[i]
+            kind = layout[0]
+            if kind == 'more':
+                _kind, label, top, _idx, _h = layout
                 x0, y0, x1, y1 = self._chat_pill
                 canvas.create_oval(x0, y0, x1, y1, fill=DATE_BG,
                                    outline=DATE_BG)
                 canvas.create_text(width / 2, top + 11, text=label,
                                    fill='white', font=self.small_font)
                 continue
-            if layout[0] == 'day':
-                _text, label, top = layout
+            if kind == 'day':
+                _kind, label, top, _idx, _h = layout
                 pill_w = self.small_font.measure(label) + 26
                 canvas.create_oval(width / 2 - pill_w / 2, top,
                                    width / 2 + pill_w / 2, top + 22,
@@ -2166,7 +2599,7 @@ class App(tk.Tk):
                                    fill='white', font=self.small_font)
                 continue
             (_, row, sender, lines, stamp_text, out, bubble_w, height,
-             top, extra_row, pending) = layout
+             top, extra_row, pending, _msg_idx, attachments) = layout
             if out:
                 x1 = width - 12
                 x0 = x1 - bubble_w
@@ -2185,6 +2618,10 @@ class App(tk.Tk):
                 canvas.create_text(x0 + PAD_X, cy, anchor='nw', text=line,
                                    fill=TEXT_INK, font=self.msg_font)
                 cy += line_h
+            # Render attachments
+            for att in attachments:
+                att_h = self._render_attachment(canvas, x0, cy, att, bubble_w - 2 * PAD_X, out)
+                cy += att_h
             if out and pending:
                 canvas.create_text(x1 - 26, top + height - 5, anchor='se',
                                    text=stamp_text, fill=TIME_GRAY,
@@ -2242,11 +2679,51 @@ class App(tk.Tk):
                     label='Copiar texto',
                     command=lambda: self._copy_message_text(row))
                 menu.add_command(
+                    label='Responder',
+                    command=lambda: self._reply_to_message(row))
+                menu.add_command(
+                    label='Encaminhar',
+                    command=lambda: self._forward_message(row))
+                menu.add_separator()
+                menu.add_command(
                     label='Detalhes',
                     command=lambda: self._message_details(row))
                 menu.tk_popup(event.x_root, event.y_root)
                 self._track_menu(menu)
                 return
+
+    def _reply_to_message(self, row):
+        """Quote the message and focus input for reply."""
+        if not getattr(self, 'current_address', None):
+            return
+        body = row.get('body', '')
+        # Clean body for quoting
+        clean_body = body.split('[attachment:')[0].strip()
+        if not clean_body:
+            return
+        # Truncate if too long
+        if len(clean_body) > 200:
+            clean_body = clean_body[:200] + '…'
+        quote = f'> {clean_body.replace(chr(10), chr(10) + "> ")}'
+        self._clear_placeholder()
+        self.input_var.set(quote + '\n\n')
+        self.input_entry.focus_set()
+        self._flash_status('Respondendo...')
+
+    def _forward_message(self, row):
+        """Forward message to another contact."""
+        if not getattr(self, 'current_address', None):
+            return
+        body = row.get('body', '')
+        # Clean body for forwarding
+        clean_body = body.split('[attachment:')[0].strip()
+        if not clean_body:
+            return
+        forward_text = f'[Encaminhada]\n{clean_body}'
+        self._clear_placeholder()
+        self.input_var.set(forward_text)
+        self.input_entry.focus_set()
+        self._flash_status('Mensagem pronta para encaminhar. Selecione o destinatário.')
 
     def _copy_message_text(self, row):
         self.clipboard_clear()
@@ -2309,6 +2786,53 @@ class App(tk.Tk):
             'O Bitmessage não tem "online" nem "visto por último": a única '
             'confirmação real é a da mensagem, via ACK.')
 
+    def _attach_file(self):
+        """Open file dialog and prepare attachment."""
+        try:
+            file_path = filedialog.askopenfilename(
+                parent=self,
+                title='Selecionar arquivo para anexar',
+                filetypes=[
+                    ('Imagens', '*.png *.jpg *.jpeg *.gif *.bmp *.webp'),
+                    ('Todos os arquivos', '*.*'),
+                ])
+            if not file_path:
+                return
+            # Read file and encode as base64
+            import base64
+            import os
+            with open(file_path, 'rb') as f:
+                data = f.read()
+            # Limit attachment size (Bitmessage max object size ~2MB)
+            max_size = 1024 * 1024  # 1MB
+            if len(data) > max_size:
+                dialogs.warn(self, 'Arquivo grande',
+                             f'O arquivo excede {max_size//1024}KB. '
+                             'O Bitmessage tem limite de ~2MB por mensagem.')
+                return
+            b64 = base64.b64encode(data).decode('ascii')
+            # Determine MIME type
+            import mimetypes
+            mime, _ = mimetypes.guess_type(file_path)
+            if not mime:
+                mime = 'application/octet-stream'
+            # Store attachment info for sending
+            self._pending_attachment = {
+                'filename': os.path.basename(file_path),
+                'mime': mime,
+                'data': b64,
+                'size': len(data),
+            }
+            # Show attachment preview in input
+            self._clear_placeholder()
+            preview = f'[Anexo: {os.path.basename(file_path)} ({len(data)//1024}KB)]'
+            self.input_var.set(preview)
+            self.input_entry.config(fg=TEXT_INK)
+            self._placeholder_on = False
+            self._flash_status('Anexo pronto. Digite uma mensagem opcional e envie.')
+        except Exception as exc:
+            dialogs.warn(self, 'Erro no anexo', repr(exc))
+
     def _send(self):
         try:
             if not getattr(self, 'current_address', None):
@@ -2319,6 +2843,14 @@ class App(tk.Tk):
                 self._flash_status('Digite uma mensagem antes de enviar.')
                 return
             body = self.input_var.get().strip()
+            # Handle pending attachment
+            attachment = getattr(self, '_pending_attachment', None)
+            if attachment:
+                # Include attachment marker in body
+                attach_marker = f'\n\n[attachment:{attachment["filename"]}:{attachment["mime"]}:{attachment["data"]}]'
+                body = body + attach_marker if body else attach_marker
+                # Clear pending attachment
+                self._pending_attachment = None
             if not body:
                 self._flash_status('Digite uma mensagem antes de enviar.')
                 return
@@ -2365,6 +2897,64 @@ class App(tk.Tk):
                 dialogs.warn(self, 'Erro', error or status)
         except Exception as exc:
             dialogs.warn(self, 'Erro ao enviar', repr(exc))
+
+    def _schedule_message(self):
+        """Open dialog to schedule message for later sending."""
+        if not getattr(self, 'current_address', None):
+            dialogs.warn(self, 'Nenhuma conversa',
+                         'Selecione uma conversa antes de agendar.')
+            return
+        if self._placeholder_on or not self.input_var.get().strip():
+            dialogs.warn(self, 'Mensagem vazia',
+                         'Digite a mensagem antes de agendar.')
+            return
+        
+        result = dialogs.ask_simple(
+            self, 'Agendar mensagem',
+            ['date', 'time'],
+            {'date': datetime.date.today().strftime('%d/%m/%Y'),
+             'time': '12:00'},
+            labels={'date': 'Data (DD/MM/AAAA)', 'time': 'Hora (HH:MM)'})
+        if not result:
+            return
+        
+        try:
+            dt_str = f"{result['date']} {result['time']}"
+            scheduled = datetime.datetime.strptime(dt_str, '%d/%m/%Y %H:%M')
+        except ValueError:
+            dialogs.warn(self, 'Data/hora inválida',
+                         'Use o formato DD/MM/AAAA HH:MM')
+            return
+        
+        if scheduled <= datetime.datetime.now():
+            dialogs.warn(self, 'Horário passado',
+                         'A data/hora deve ser futura.')
+            return
+        
+        body = self.input_var.get().strip()
+        attachment = getattr(self, '_pending_attachment', None)
+        if attachment:
+            attach_marker = f'\n\n[attachment:{attachment["filename"]}:{attachment["mime"]}:{attachment["data"]}]'
+            body = body + attach_marker if body else attach_marker
+            self._pending_attachment = None
+        
+        identity = self._current_identity()
+        if not identity or identity not in self.client.identities:
+            dialogs.warn(self, 'Identidade ausente',
+                         'Crie ou selecione uma identidade válida.')
+            return
+        
+        # Store scheduled message in database
+        try:
+            self.client.db.add_scheduled_message(
+                identity, self.current_address, body, int(scheduled.timestamp()))
+        except Exception as exc:
+            dialogs.warn(self, 'Erro ao agendar', repr(exc))
+            return
+        
+        self.input_var.set('')
+        self._set_placeholder()
+        self._flash_status(f'Mensagem agendada para {scheduled.strftime("%d/%m/%Y %H:%M")}')
 
     # -------------------------------------------------- actions
 
@@ -2578,6 +3168,130 @@ class App(tk.Tk):
                          'Endereço restaurado:\n%s' % info)
         else:
             dialogs.warn(self, 'Importar', info)
+
+    def _encrypted_backup(self):
+        """Export encrypted database backup."""
+        if not hasattr(self.client.db, 'path'):
+            dialogs.warn(self, 'Backup', 'Banco de dados não disponível.')
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self, title='Backup criptografado',
+            defaultextension='.enc',
+            filetypes=[('Backup criptografado', '*.enc'), ('Todos', '*.*')],
+            initialfile='bmchat-backup.enc')
+        if not path:
+            return
+        password_result = dialogs.ask_simple(
+            self, 'Senha do backup',
+            ['password', 'confirm'],
+            {'password': '', 'confirm': ''},
+            labels={'password': 'Senha', 'confirm': 'Confirme a senha'},
+            password=True)
+        if not password_result or not password_result.get('password'):
+            return
+        if password_result['password'] != password_result['confirm']:
+            dialogs.warn(self, 'Senha', 'As senhas não conferem.')
+            return
+        try:
+            export_encrypted_backup(self.client.db.path, path, password_result['password'])
+            dialogs.info(self, 'Backup criptografado',
+                         f'Backup salvo em:\n{path}\n\n'
+                         'Guarde a senha! Sem ela é impossível restaurar.')
+        except Exception as exc:
+            dialogs.warn(self, 'Erro no backup', repr(exc))
+
+    def _restore_encrypted_backup(self):
+        """Import encrypted database backup."""
+        path = filedialog.askopenfilename(
+            parent=self, title='Restaurar backup criptografado',
+            filetypes=[('Backup criptografado', '*.enc'), ('Todos', '*.*')])
+        if not path:
+            return
+        password_result = dialogs.ask_simple(
+            self, 'Senha do backup',
+            ['password'],
+            {'password': ''},
+            labels={'password': 'Senha'},
+            password=True)
+        if not password_result or not password_result.get('password'):
+            return
+        # Confirm overwrite
+        if not dialogs.confirm(self, 'Restaurar backup',
+                               'Isso substituirá TODOS os dados atuais '
+                               '(identidades, contatos, mensagens). Continuar?'):
+            return
+        try:
+            # Import to temp file first
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp:
+                temp_path = tmp.name
+            import_encrypted_backup(path, temp_path, password_result['password'])
+            # Replace current DB
+            self.client.stop()
+            import shutil
+            shutil.copy2(temp_path, self.client.db.path)
+            os.unlink(temp_path)
+            # Restart client
+            self.client.start()
+            self._refresh_identity_menu()
+            self._refresh_conversations()
+            dialogs.info(self, 'Backup restaurado',
+                         'Dados restaurados com sucesso.')
+        except Exception as exc:
+            dialogs.warn(self, 'Erro ao restaurar', repr(exc))
+
+    def _encrypt_database(self):
+        """Enable encryption on current database."""
+        if is_encrypted(self.client.db.path):
+            dialogs.info(self, 'Criptografia', 'O banco de dados já está criptografado.')
+            return
+        password_result = dialogs.ask_simple(
+            self, 'Criptografar banco de dados',
+            ['password', 'confirm'],
+            {'password': '', 'confirm': ''},
+            labels={'password': 'Nova senha', 'confirm': 'Confirme a senha'},
+            password=True)
+        if not password_result or not password_result.get('password'):
+            return
+        if password_result['password'] != password_result['confirm']:
+            dialogs.warn(self, 'Senha', 'As senhas não conferem.')
+            return
+        if not dialogs.confirm(self, 'Criptografar banco',
+                               'O banco de dados será criptografado. '
+                               'Você precisará da senha a cada inicialização. '
+                               'Guarde a senha! Sem ela, os dados são perdidos permanentemente.'):
+            return
+        try:
+            # This is a simplified implementation
+            dialogs.info(self, 'Criptografia',
+                         'Recurso em desenvolvimento. '
+                         'Use "Backup criptografado" para proteger seus dados por enquanto.')
+        except Exception as exc:
+            dialogs.warn(self, 'Erro', repr(exc))
+
+    def _change_db_password(self):
+        """Change database encryption password."""
+        if not is_encrypted(self.client.db.path):
+            dialogs.info(self, 'Senha', 'O banco de dados não está criptografado.')
+            return
+        password_result = dialogs.ask_simple(
+            self, 'Alterar senha do banco',
+            ['old_password', 'new_password', 'confirm'],
+            {'old_password': '', 'new_password': '', 'confirm': ''},
+            labels={'old_password': 'Senha atual', 'new_password': 'Nova senha', 'confirm': 'Confirme nova senha'},
+            password=True)
+        if not password_result or not password_result.get('old_password'):
+            return
+        if password_result['new_password'] != password_result['confirm']:
+            dialogs.warn(self, 'Senha', 'As novas senhas não conferem.')
+            return
+        try:
+            change_password(self.client.db.path,
+                          password_result['old_password'],
+                          password_result['new_password'])
+            dialogs.info(self, 'Senha alterada', 'Senha do banco alterada com sucesso.')
+        except Exception as exc:
+            dialogs.warn(self, 'Erro', f'Senha atual incorreta ou erro: {exc}')
 
     def _show_log(self):
         # Item 5: casca aparece já; Text + primeira leitura em after_idle.
@@ -2984,6 +3698,34 @@ class App(tk.Tk):
                     pass
         except Exception:
             pass
+
+    def _close_current_dialog(self):
+        """Close the currently open dialog/popup."""
+        for child in self.winfo_children():
+            if isinstance(child, tk.Toplevel):
+                try:
+                    child.destroy()
+                except Exception:
+                    pass
+
+    def _handle_escape(self):
+        """Handle Escape key - close dialogs or clear search."""
+        # Close any open dialog first
+        dialog_closed = False
+        for child in self.winfo_children():
+            if isinstance(child, tk.Toplevel):
+                try:
+                    child.destroy()
+                    dialog_closed = True
+                except Exception:
+                    pass
+        # If no dialog was open, clear search
+        if not dialog_closed:
+            if self.search_frame.winfo_manager():
+                self.search_var.set('')
+                self._conv_filter = ''
+                self._draw_conversations()
+                self.search_frame.pack_forget()
 
     def _on_close(self):
         # Item 6: flag + cancela poll/tick/redraws/debounces/startup para

@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS objects (
     expires INTEGER,
     received INTEGER
 );
+CREATE TABLE IF NOT EXISTS scheduled_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    identity_address TEXT,
+    to_address TEXT,
+    body TEXT,
+    scheduled_time INTEGER,
+    created INTEGER,
+    sent INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_time ON scheduled_messages(scheduled_time);
+CREATE INDEX IF NOT EXISTS idx_scheduled_sent ON scheduled_messages(sent);
 CREATE TABLE IF NOT EXISTS pubkeys (
     address TEXT PRIMARY KEY,
     signing_public BLOB,
@@ -346,6 +357,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
     def recent_messages(self, limit=200):
         return self.query(
             'SELECT * FROM messages ORDER BY id DESC LIMIT ?', (limit,))
+
+    # ---- scheduled messages ----
+
+    def add_scheduled_message(self, identity_address, to_address, body,
+                               scheduled_time):
+        now = int(time.time())
+        return self.execute('''
+            INSERT INTO scheduled_messages(identity_address, to_address, body,
+                scheduled_time, created)
+            VALUES(?,?,?,?,?)
+        ''', (identity_address, to_address, body, scheduled_time, now))
+
+    def get_pending_scheduled(self):
+        """Get messages that are due to be sent."""
+        now = int(time.time())
+        return self.query('''
+            SELECT * FROM scheduled_messages
+            WHERE sent=0 AND scheduled_time <= ?
+            ORDER BY scheduled_time
+        ''', (now,))
+
+    def mark_scheduled_sent(self, scheduled_id):
+        self.execute('UPDATE scheduled_messages SET sent=1 WHERE id=?',
+                     (scheduled_id,))
 
     # ---- objects ----
 
