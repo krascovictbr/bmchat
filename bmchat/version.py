@@ -23,13 +23,10 @@ def _git_output(args):
     return completed.stdout.decode('utf-8', 'replace').strip()
 
 
-try:
-    from functools import lru_cache as _lru
-except Exception:
-    _lru = lambda f: f
+from functools import lru_cache
 
 
-@_lru(maxsize=1)
+@lru_cache(maxsize=1)
 def get_version():
     """Retorna a versão rolling, ex.: ``2026.09.05+r42.g1a2b3c4``."""
     count = _git_output(['rev-list', '--count', 'HEAD'])

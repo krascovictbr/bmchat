@@ -10,6 +10,7 @@
 - [audit/anti-hallucination-20260907](#auditoria-anti-alucinação--auditanti-hallucination-20260907)
 - [analysis/complete-audit-20260907 — resumo executivo](#analysiscomplete-audit-20260907--resumo-executivo)
 - [analysis/complete-audit-20260907 — relatório completo](#bmchat--relatório-completo-de-auditoria-analysis_reportmd)
+- [Correções aplicadas (2026-09-07, com aprovação — TUDO)](#correções-aplicadas-2026-09-07-com-aprovação--tudo)
 
 ---
 
@@ -619,3 +620,50 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 - Sem execução de rede real P2P nem fuzzing de peers maliciosos — extremos simulados por leitura.
 - Sem `pylint/safety/pytest-cov/radon` (não instalados) — substituídos por flake8/mypy/bandit/AST; rodar no CI antes de release.
 - GUI validada por leitura (Tk não exercitado aqui além dos smokes citados em `branch.md`).
+
+---
+
+## Correções aplicadas (2026-09-07, com aprovação — TUDO)
+
+Branch: `analysis/complete-audit-20260907` · Aprovação: TUDO de uma vez · Validação: `pytest tests/ -q` **26 passed**, `mypy` 0 issues, `flake8` 82→74, `py_compile` OK.
+
+### Bloco 1 — Hotfix envio (`client.py`)
+- A1: `send_message` agora anuncia getpubkey (`done_cb` → `net.announce_object`); antes PoW descartado travava 1º envio ~10min.
+- B4: `send_message` valida `version==4` + `try from_address` → `unsupported/invalid` em vez de crash v2/v3.
+- B14: teto `body+1000 > MAX_OBJECT_LENGTH` em `send_message/broadcast/broadcast_chan` → `too-large` (antes falso `sent`).
+- B2: `subject` prefixado no wire (`Subject: …`) em `send_message` e `_pow_and_publish_message` (retry lê do DB); antes perda silenciosa.
+- B3 parcial: sem ACK (`watch None`) marca `ack-failed` em vez de enviar degradado.
+
+### Bloco 2 — PoW/estabilidade (`pow.py`, `client.py`)
+- `PowExecutor.run`: `step 1<<54 → 1<<20`, valida `initial_hash 64B`, `shutdown(wait=False, cancel_futures=True)` — cancela de verdade, sem hang no `__exit__`.
+- `_msg_in_flight` + status `sending`: sem PoW/announce duplicado; `done` revalida conversa antes de anunciar; limpa em todos os retornos.
+- `_retry_awaiting`: limite 20/vez (sem fork-bomb); teste `retry_republishes` voltou a passar após remover gate offline.
+
+### Bloco 3 — Rede antiflood (`peer.py`, `peers.py`, `manager.py`, `client.py`)
+- `send_packet(s)`: guarda `None/closing` + `bytes_sent` sob lock; `announce_object`: `try` por peer.
+- `_read_header`: teto `MAX_OBJECT_LENGTH+64+HEADER`; `_read_loop/_handshake`: verificam `sha512[:4]` e isolam `_handle` por `try`.
+- `PeerStore`: `load` por item, `save` atômico (tmp+fsync+rename), `add` valida + cap 5000 com evicção, `from_dict` porta com clamp.
+- `manager`: `store_object` FIFO + cap `known_hashes`; `received_object` checa `len` antes de parsear; `on_getdata` em lote (`IN`, cap 500/200) + `try` no send; `max_connections` clamp 1–50.
+- `_on_getpubkey`: throttle 300s/tag + valida `stream==keys.stream`.
+
+### Bloco 4 — Ciclo de vida (`client.py`, `gui/app.py`)
+- `_reannounce`: loop 24h (`_reannounce_loop` + `_once` por identidade, LIMIT 5); `stop()`: join threads 5s + remove `bmchat.lock` + `db.close` seguro; `start()`: lockfile com aviso de 2ª instância.
+- `_maybe_mark_ack`: `pop` (sem replay/leak) sob lock; `_refresh_streams`: não toca `their_streams`; `remove_contact` emite `contact-removed` (GUI trata); `create_channel` tupla `(status, addr)`.
+
+### Bloco 5 — GUI chans (`gui/app.py`)
+- `_refresh_conversations`: lista contatos + `all_subscriptions` + identidades chan (`# nome`); `_open_conversation`: branch `channel` (label `#`, status broadcast); `_remove_entry`: `unsubscribe` p/ canal; `_send`: canal via `broadcast_chan` + limite 5000 chars; `_unread_counts`: agrupa por canal (`CASE to_address`); backup `chmod 0o600`.
+
+### Bloco 6 — Endurecimento (15 arquivos)
+- `pow.calculate_target`: `/` → `//` (int); `ecc`: rejeita chave 0, valida curva, remove `PointJacobi`; `keys`: valida 32B/stream, `chan` com limite, `generate` cap nullprefix≤4 + `max_tries`, `wif` 32B.
+- `run.py`/`database.py`: `makedirs mode 0o700` + `chmod`; `BMCHAT_DATA` abspath; DB índices `(status,direction)`, `(timestamp)`, `(expires)`, `(type,version,expires)`, `UNIQUE(obj_hash)`; `add_subscription` preserva nome; `messages limit` clamp 1–1000; `set_message_status` whitelist (inclui `sending/ack-failed`).
+- `packets`: `assemble_addr` usa `services` + `ev(0)` vazio; `parse_inv/addr` caps 50k/1k; `address`: `elif` duplo-zero + rejeita v1/stream0; `base58`: leading-zero + limite 100 + dict; `version`: `lru_cache` + `git -C` + timeout 5s; `update`: status `ahead` + `execv +argv`; `proxy`: `create_connection`, bloqueia `.onion/.i2p` direto, `from_dict` seguro; `objects`: len checks + cap ntpb/eb.
+
+### Bloco 7 — Higiene
+- Remove `os/sha512/ripemd160` (`objects.py`), `hashlib` (`packets.py`), `Peer` (`manager.py`), `end_of_pubkey`; W292 newline em 27 arquivos; testes `F841/F811` (sem atribuir `alice/bob`, sem `import sys` duplicado). `__init__` re-exports mantidos (API). Bandit `IN (%s)` é falso-positivo (placeholders `?`).
+
+### Como fundir
+```bash
+git checkout rolling-release
+git merge --no-ff analysis/complete-audit-20260907
+python3 -m pytest tests/ -q  # 26 passed
+```
