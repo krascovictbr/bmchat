@@ -892,9 +892,14 @@ class App(tk.Tk):
         # ---- input bar ----
         self.input_frame = tk.Frame(self.right, bg=PANEL_BG)
         self.input_frame.grid(row=2, column=0, sticky='ew')
-        self.input_frame.columnconfigure(1, weight=1)
+        self.input_frame.columnconfigure(0, weight=0)
+        self.input_frame.columnconfigure(1, weight=0)
+        self.input_frame.columnconfigure(2, weight=1)
+        self.input_frame.columnconfigure(3, weight=0)
+        self.input_frame.columnconfigure(4, weight=0)
+        self.input_frame.rowconfigure(1, weight=0)
         tk.Frame(self.input_frame, bg=LINE, height=1).grid(
-            row=0, column=0, columnspan=4, sticky='ew')
+            row=0, column=0, columnspan=5, sticky='ew')
         self.attach_btn = tk.Button(self.input_frame, text='📎', fg=INPUT_ICON, bg=PANEL_BG,
                    activebackground=ROW_HOVER, relief='flat', bd=0,
                    font=('', 16), command=self._attach_file)
@@ -906,11 +911,21 @@ class App(tk.Tk):
         self.emoji_btn.grid(row=1, column=1, padx=(2, 2), pady=8)
         ToolTip(self.emoji_btn, 'Emojis')
         self.input_var = tk.StringVar()
+        self.field_box = tk.Frame(
+            self.input_frame, bg=_c('input_bg'),
+            highlightthickness=1,
+            highlightbackground=_c('input_border'),
+            highlightcolor=_c('input_border'))
+        self.field_box.grid(row=1, column=2, sticky='nsew', padx=4, pady=6)
         self.input_entry = tk.Entry(
-            self.input_frame, textvariable=self.input_var, relief='flat',
-            bd=0, highlightthickness=0, font=self.msg_font, fg=TEXT_INK)
-        self.input_entry.grid(row=1, column=2, sticky='ew', padx=4)
-        self.input_frame.columnconfigure(2, weight=1)
+            self.field_box, textvariable=self.input_var, relief='flat',
+            bd=0, highlightthickness=0, font=self.msg_font,
+            bg=_c('input_bg'), fg=_c('input_fg'),
+            insertbackground=_c('input_fg'),
+            disabledbackground=_c('input_bg'),
+            disabledforeground=_c('input_placeholder'),
+            readonlybackground=_c('input_bg'))
+        self.input_entry.pack(fill='x', expand=True, padx=10, pady=7)
         self.input_entry.bind('<Return>', lambda _e: self._send())
         self.input_entry.bind('<FocusIn>', self._clear_placeholder)
         self.input_entry.bind('<FocusOut>', self._restore_placeholder)
@@ -1041,7 +1056,7 @@ class App(tk.Tk):
             self._refresh_identity_menu()
             # Update placeholder color
             if self._placeholder_on:
-                self.input_entry.config(fg=TEXT_GRAY)
+                self.input_entry.config(fg=_c('input_placeholder'))
             self._flash_status(f'Tema alterado para {name}')
 
     def _refresh_theme_colors(self):
@@ -1098,9 +1113,22 @@ class App(tk.Tk):
                 self.jump_btn.configure(bg=PANEL_BG, fg=_c('text_secondary'))
             if hasattr(self, 'send_btn') and self.send_btn.winfo_exists():
                 self.send_btn.configure(bg=PANEL_BG)
+            if hasattr(self, 'field_box') and self.field_box.winfo_exists():
+                self.field_box.configure(bg=_c('input_bg'),
+                                         highlightbackground=_c('input_border'),
+                                         highlightcolor=_c('input_border'))
             if hasattr(self, 'input_entry') and self.input_entry.winfo_exists():
-                self.input_entry.configure(bg=_c('input_bg'), fg=_c('input_fg'),
-                                           insertbackground=_c('input_fg'))
+                try:
+                    ph_on = bool(getattr(self, '_placeholder_on', False))
+                except Exception:
+                    ph_on = False
+                self.input_entry.configure(
+                    bg=_c('input_bg'),
+                    fg=_c('input_placeholder') if ph_on else _c('input_fg'),
+                    insertbackground=_c('input_fg'),
+                    disabledbackground=_c('input_bg'),
+                    disabledforeground=_c('input_placeholder'),
+                    readonlybackground=_c('input_bg'))
             if hasattr(self, 'left_header') and self.left_header.winfo_exists():
                 for btn in self.left_header.winfo_children():
                     if isinstance(btn, tk.Button):
@@ -1127,13 +1155,19 @@ class App(tk.Tk):
 
     def _set_placeholder(self):
         self.input_var.set('Mensagem')
-        self.input_entry.config(fg=TEXT_GRAY)
+        try:
+            self.input_entry.config(fg=_c('input_placeholder'))
+        except Exception:
+            pass
         self._placeholder_on = True
 
     def _clear_placeholder(self, _event=None):
         if self._placeholder_on:
             self.input_var.set('')
-            self.input_entry.config(fg=TEXT_INK)
+            try:
+                self.input_entry.config(fg=_c('input_fg'))
+            except Exception:
+                pass
             self._placeholder_on = False
 
     def _restore_placeholder(self, _event=None):
@@ -1144,8 +1178,16 @@ class App(tk.Tk):
     def _set_input_enabled(self, enabled):
         self._input_enabled = enabled
         try:
+            if enabled:
+                self.input_frame.grid()
+            else:
+                self.input_frame.grid_remove()
+        except Exception:
+            pass
+        try:
+            # Nunca 'disabled' para placeholder: 'readonly' quando sem conversa.
             self.input_entry.config(
-                state='normal' if enabled else 'disabled')
+                state='normal' if enabled else 'readonly')
         except Exception:
             pass
         try:
@@ -1157,15 +1199,27 @@ class App(tk.Tk):
         except Exception:
             pass
         if enabled:
-            if self._placeholder_on:
-                self._set_placeholder()
-        elif self._placeholder_on or not self.input_var.get().strip():
-            self.input_var.set('Selecione uma conversa para começar')
             try:
-                self.input_entry.config(fg=TEXT_GRAY)
+                self.input_entry.config(state='normal')
             except Exception:
                 pass
-            self._placeholder_on = True
+            if getattr(self, '_placeholder_on', False) or \
+                    not self.input_var.get().strip():
+                self._set_placeholder()
+        else:
+            # SEM conversa: barra oculta (Telegram-fiel); mantém texto
+            # placeholder consistente sem usar 'disabled'.
+            if getattr(self, '_placeholder_on', False) or \
+                    not self.input_var.get().strip():
+                try:
+                    self.input_var.set('Mensagem')
+                except Exception:
+                    pass
+                try:
+                    self.input_entry.config(fg=_c('input_placeholder'))
+                except Exception:
+                    pass
+                self._placeholder_on = True
 
     def _emoji_popup(self):
         existing = getattr(self, '_emoji_win', None)
@@ -2473,12 +2527,12 @@ class App(tk.Tk):
             px0 = width / 2 - pill_w / 2
             px1 = width / 2 + pill_w / 2
             self._chat_pill = (px0, y, px1, y + 22)
-            layouts.append(('more', pill_text, y, 0, 22))  # kind, text, top, idx, height
+            layouts.append(('more', y, 22, pill_text))  # kind, top, height, text
             y += 30
         msg_idx = 0
         for item in items:
             if item[0] == 'day':
-                layouts.append(('day', item[1], y, msg_idx, 30))
+                layouts.append(('day', y, 30, item[1]))  # kind, top, height, label
                 y += 30
                 continue
             row = item[1]
@@ -2525,8 +2579,9 @@ class App(tk.Tk):
                 bubble_w = min(max_bubble,
                                max(bubble_w, last_w + 10 + stamp_w +
                                    2 * PAD_X))
-            layouts.append(('msg', row, sender, lines, stamp_text, out,
-                            bubble_w, item_h, y, extra_row, pending, msg_idx, attachments))
+            layouts.append(('msg', y, item_h, row, sender, lines,
+                              stamp_text, out, bubble_w, extra_row,
+                              pending, msg_idx, attachments))
             y += item_h + 6
             msg_idx += 1
         total = y + 10
@@ -2542,14 +2597,14 @@ class App(tk.Tk):
         first_vis = 0
         last_vis = len(layouts) - 1
         for i, lay in enumerate(layouts):
-            lay_top = lay[2]
-            lay_h = lay[3]
+            lay_top = lay[1]
+            lay_h = lay[2]
             if lay_top + lay_h >= scroll_top - BUFFER:
                 first_vis = i
                 break
         for i in range(len(layouts) - 1, -1, -1):
             lay = layouts[i]
-            lay_top = lay[2]
+            lay_top = lay[1]
             if lay_top <= scroll_bottom + BUFFER:
                 last_vis = i
                 break
@@ -2557,7 +2612,7 @@ class App(tk.Tk):
         self._chat_last_visible = last_vis
 
         self._chat_layouts = [
-            (layout[7], layout[6], layout[1])  # top, height, row
+            (layout[1], layout[2], layout[3])  # top, height, row
             for layout in layouts if layout[0] == 'msg']
 
         # Draw background (only viewport + buffer)
@@ -2582,7 +2637,7 @@ class App(tk.Tk):
             layout = layouts[i]
             kind = layout[0]
             if kind == 'more':
-                _kind, label, top, _idx, _h = layout
+                _kind, top, _h, label = layout
                 x0, y0, x1, y1 = self._chat_pill
                 canvas.create_oval(x0, y0, x1, y1, fill=DATE_BG,
                                    outline=DATE_BG)
@@ -2590,7 +2645,7 @@ class App(tk.Tk):
                                    fill='white', font=self.small_font)
                 continue
             if kind == 'day':
-                _kind, label, top, _idx, _h = layout
+                _kind, top, _h, label = layout
                 pill_w = self.small_font.measure(label) + 26
                 canvas.create_oval(width / 2 - pill_w / 2, top,
                                    width / 2 + pill_w / 2, top + 22,
@@ -2598,8 +2653,8 @@ class App(tk.Tk):
                 canvas.create_text(width / 2, top + 11, text=label,
                                    fill='white', font=self.small_font)
                 continue
-            (_, row, sender, lines, stamp_text, out, bubble_w, height,
-             top, extra_row, pending, _msg_idx, attachments) = layout
+            (_, top, height, row, sender, lines, stamp_text, out,
+             bubble_w, extra_row, pending, _msg_idx, attachments) = layout
             if out:
                 x1 = width - 12
                 x0 = x1 - bubble_w
@@ -2827,7 +2882,7 @@ class App(tk.Tk):
             self._clear_placeholder()
             preview = f'[Anexo: {os.path.basename(file_path)} ({len(data)//1024}KB)]'
             self.input_var.set(preview)
-            self.input_entry.config(fg=TEXT_INK)
+            self.input_entry.config(fg=_c('input_fg'))
             self._placeholder_on = False
             self._flash_status('Anexo pronto. Digite uma mensagem opcional e envie.')
         except Exception as exc:
