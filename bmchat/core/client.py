@@ -36,6 +36,7 @@ class Client:
         self._pow_sequencer = 0
         self._ack_watch = {}
         self._msg_in_flight = set()
+        self._getpubkey_last = {}
         self._log_lines = collections.deque(maxlen=200)
         self._lock = threading.RLock()
         self.net = NetworkManager(
@@ -409,8 +410,21 @@ class Client:
 
     def _on_getpubkey(self, parsed):
         tag = parsed.data[:32]
+        now = time.time()
+        try:
+            last = self._getpubkey_last.get(bytes(tag), 0)
+            if now - last < 300:
+                return
+        except Exception:
+            pass
         for address, keys in list(self.identities.items()):
             if keys.tag == tag:
+                if parsed.stream != keys.stream:
+                    return
+                try:
+                    self._getpubkey_last[bytes(tag)] = now
+                except Exception:
+                    pass
                 self._log('rede', 'pedido de chave pública recebido para %s; '
                           'publicando pubkey…' % address[:18])
                 self._publish_pubkey(keys, parsed.stream)

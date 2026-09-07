@@ -50,19 +50,34 @@ class PeerStore:
             self.seed_defaults()
             return
         try:
-            with open(self.path, 'r') as handle:
+            with open(self.path, 'r', encoding='utf-8') as handle:
                 data = json.load(handle)
-            for item in data:
-                peer = item.get('peer', {})
-                info = item.get('info', {})
-                self.entries[(peer['host'], int(peer['port']))] = {
+        except Exception:
+            self.seed_defaults()
+            return
+        if not isinstance(data, list):
+            self.seed_defaults()
+            return
+        for item in data:
+            try:
+                if not isinstance(item, dict):
+                    continue
+                peer = item.get('peer', {}) or {}
+                info = item.get('info', {}) or {}
+                host = str(peer.get('host', '')).strip()
+                port = int(peer.get('port', 0))
+                if not host or not 1 <= port <= 65535:
+                    continue
+                self.entries[(host, port)] = {
                     'stream': int(item.get('stream', 1)),
                     'services': info.get('services', 1),
                     'last_seen': int(info.get('lastseen', time.time())),
                     'rating': float(info.get('rating', 0)),
                     'last_try': int(info.get('lasttry', 0)),
                 }
-        except Exception:
+            except Exception:
+                continue
+        if not self.entries:
             self.seed_defaults()
 
     def seed_defaults(self):
@@ -90,19 +105,49 @@ class PeerStore:
         directory = os.path.dirname(self.path)
         if directory and not os.path.exists(directory):
             os.makedirs(directory, exist_ok=True)
-        with open(self.path, 'w') as handle:
+        tmp = self.path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as handle:
             json.dump(entries, handle, indent=2)
+            try:
+                handle.flush()
+                os.fsync(handle.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, self.path)
+
+    MAX_PEERS = 5000
 
     def add(self, host, port, stream=1, services=1, rating=0):
-        key = (host, int(port))
+        try:
+            host = str(host).strip()
+            port = int(port)
+        except Exception:
+            return
+        if not host or not 1 <= port <= 65535:
+            return
+        try:
+            stream = int(stream)
+        except Exception:
+            stream = 1
+        key = (host, port)
         entry = self.entries.get(key, {
             'stream': stream, 'services': services,
             'last_seen': int(time.time()), 'rating': rating,
             'last_try': 0})
         entry['last_seen'] = int(time.time())
+        entry['stream'] = stream
+        entry['services'] = services
         entry.setdefault('rating', rating)
         entry.setdefault('last_try', 0)
         self.entries[key] = entry
+        if len(self.entries) > self.MAX_PEERS:
+            # evicta piores (rating baixo, vistos há mais tempo)
+            ranked = sorted(
+                self.entries.items(),
+                key=lambda kv: (kv[1].get('rating', 0),
+                                kv[1].get('last_seen', 0)))
+            for old_key, _ in ranked[:len(self.entries) - self.MAX_PEERS]:
+                self.entries.pop(old_key, None)
 
     def record_attempt(self, host, port):
         entry = self.entries.get((host, int(port)))

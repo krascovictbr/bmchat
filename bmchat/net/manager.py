@@ -160,16 +160,25 @@ class NetworkManager:
     def store_object(self, raw):
         obj_hash = double_sha512(raw)[:32]
         if len(self.inventory) > 8000:
-            oldest = min(self.inventory, key=self.inventory.get)
-            self.inventory.pop(oldest, None)
+            try:
+                oldest = next(iter(self.inventory))
+                self.inventory.pop(oldest, None)
+            except Exception:
+                pass
         self.inventory[obj_hash] = raw
+        # evita OOM em nó de longa vida
+        try:
+            if len(self.known_hashes) > 200000:
+                self.known_hashes = set(list(self.known_hashes)[-150000:])
+        except Exception:
+            pass
         return obj_hash
 
     def received_object(self, raw, source):
         try:
-            parsed = ParsedObject(raw)
             if len(raw) > MAX_OBJECT_LENGTH + 64:
                 return None
+            parsed = ParsedObject(raw)
             now = time.time()
             if parsed.expires < now - MAX_PAST_SKEW:
                 return None
@@ -211,7 +220,14 @@ class NetworkManager:
         if not targets:
             return
         for connection in targets:
-            connection.send_packet(b'inv', packets.assemble_inventory([obj_hash]))
+            try:
+                connection.send_packet(b'inv', packets.assemble_inventory([obj_hash]))
+            except Exception as exc:
+                try:
+                    self.on_log('network', 'announce falhou p/ %s: %s' % (
+                        getattr(connection, 'peer', '?'), exc))
+                except Exception:
+                    pass
 
     def send_inventory(self, connection):
         with self.lock:
@@ -234,7 +250,7 @@ class NetworkManager:
 
     def on_getdata(self, connection, payload):
         self.stats['getdatas'] += 1
-        hashes = packets.parse_inventory(payload)
+        hashes = packets.parse_inventory(payload)[:500]
         blobs = []
         missing = []
         with self.lock:
@@ -244,16 +260,31 @@ class NetworkManager:
                     blobs.append(raw)
                 else:
                     missing.append(obj_hash)
-        for obj_hash in missing:
+        if missing:
             try:
-                row = self.db.get_object(obj_hash)
-                raw = row['raw'] if row else None
-                if raw is not None:
-                    blobs.append(bytes(raw))
+                placeholders = ','.join('?' for _ in missing[:200])
+                rows = self.db.query(
+                    'SELECT hash, raw FROM objects WHERE hash IN (%s)' % placeholders,
+                    tuple(missing[:200]))
+                by_hash = {bytes(r['hash']): bytes(r['raw']) for r in rows}
+                for obj_hash in missing[:200]:
+                    raw = by_hash.get(bytes(obj_hash))
+                    if raw is not None:
+                        blobs.append(raw)
+            except Exception:
+                for obj_hash in missing[:50]:
+                    try:
+                        row = self.db.get_object(obj_hash)
+                        raw = row['raw'] if row else None
+                        if raw is not None:
+                            blobs.append(bytes(raw))
+                    except Exception:
+                        pass
+        if blobs:
+            try:
+                connection.send_packets(b'object', blobs[:200])
             except Exception:
                 pass
-        if blobs:
-            connection.send_packets(b'object', blobs)
 
     def _prune_expired_objects(self):
         try:
