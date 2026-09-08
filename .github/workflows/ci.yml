@@ -80,6 +80,9 @@ jobs:
     needs: [test, security]
     if: github.event_name == 'push' && github.ref == 'refs/heads/rolling-release'
     timeout-minutes: 20
+    # GITHUB_TOKEN precisa de contents:write para criar tag/release (403 sem isso com workflow permissions restritivas).
+    permissions:
+      contents: write
     
     steps:
     - uses: actions/checkout@v4
