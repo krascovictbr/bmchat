@@ -1,3 +1,5 @@
+from ..version import user_agent_version
+
 MAGIC = 0xE9BEB4D9
 
 NODE_NETWORK = 1
@@ -32,7 +34,5 @@ BITMESSAGE_ENCODING_EXTENDED = 3
 MSG_TTL = 4 * 24 * 3600
 PUBKEY_TTL = 28 * 24 * 3600
 GETPUBKEY_TTL = 4 * 24 * 3600
-
-from ..version import user_agent_version
 
 USER_AGENT = '/bmchat:%s/' % user_agent_version()

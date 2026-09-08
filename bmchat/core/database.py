@@ -361,7 +361,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
     # ---- scheduled messages ----
 
     def add_scheduled_message(self, identity_address, to_address, body,
-                               scheduled_time):
+                              scheduled_time):
         now = int(time.time())
         return self.execute('''
             INSERT INTO scheduled_messages(identity_address, to_address, body,

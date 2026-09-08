@@ -134,30 +134,40 @@ class PeerConnection(threading.Thread):
                 except Exception:
                     pass
 
+    def _receive_payload(self, header):
+        _magic, command, length, checksum = header
+        if length == 0:
+            payload = b''
+        else:
+            payload = self._recv_exact(self.sock, length)
+        from ..util.hashing import sha512 as _sha512
+        try:
+            if _sha512(payload)[:4] != checksum:
+                return None, None
+        except Exception:
+            return None, None
+        return command, payload
+
+    def _log_command_error(self, command, exc):
+        try:
+            self.manager.log('peer %s comando %r falhou: %s' % (
+                self.peer, command, exc))
+        except Exception:
+            pass
+
     def _read_loop(self):
         while not self._closing:
             try:
-                magic, command, length, checksum = self._read_header()
+                header = self._read_header()
             except socket.timeout:
                 continue
-            if length == 0:
-                payload = b''
-            else:
-                payload = self._recv_exact(self.sock, length)
-            from ..util.hashing import sha512 as _sha512
-            try:
-                if _sha512(payload)[:4] != checksum:
-                    continue
-            except Exception:
+            command, payload = self._receive_payload(header)
+            if command is None:
                 continue
             try:
                 self._handle(command, payload)
             except Exception as exc:
-                try:
-                    self.manager.log('peer %s comando %r falhou: %s' % (
-                        self.peer, command, exc))
-                except Exception:
-                    pass
+                self._log_command_error(command, exc)
 
     def _read_header(self):
         from ..protocol.const import MAX_OBJECT_LENGTH
@@ -170,22 +180,25 @@ class PeerConnection(threading.Thread):
             raise ValueError('comprimento excessivo')
         return magic, command, length, checksum
 
+    _PAYLOAD_COMMANDS = {
+        'version': '_on_version',
+        'addr': '_on_addr',
+        'inv': '_on_inv',
+        'dinv': '_on_inv',
+        'getdata': '_on_getdata',
+        'object': '_on_object',
+    }
+
     def _handle(self, command, payload):
         command = command.rstrip('\x00')
-        if command == 'version':
-            self._on_version(payload)
-        elif command == 'verack':
+        if command in self._PAYLOAD_COMMANDS:
+            getattr(self, self._PAYLOAD_COMMANDS[command])(payload)
+        else:
+            self._handle_control(command, payload)
+
+    def _handle_control(self, command, payload):
+        if command == 'verack':
             self._on_verack()
-        elif command == 'addr':
-            self._on_addr(payload)
-        elif command == 'inv':
-            self._on_inv(payload)
-        elif command == 'dinv':
-            self._on_inv(payload)
-        elif command == 'getdata':
-            self._on_getdata(payload)
-        elif command == 'object':
-            self._on_object(payload)
         elif command == 'ping':
             self.send_packet(b'pong')
         elif command == 'pong':

@@ -16,7 +16,13 @@ import bmchat.core.client as client_mod
 import bmchat.net.manager as manager_mod
 
 TARGET = 2 ** 52
-FAKE_CHECK = lambda *a, **k: True
+
+
+def _fake_check(*a, **k):
+    return True
+
+
+FAKE_CHECK = _fake_check
 
 
 @pytest.fixture(scope='module')

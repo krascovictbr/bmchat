@@ -85,22 +85,27 @@ class Client:
         scheduled.start()
         self._threads.append(scheduled)
 
-    def stop(self):
-        self.started = False
+    def _cancel_all_pow(self):
         for event in list(self._pow_stops.values()):
             try:
                 event.set()
             except Exception:
                 pass
+
+    def _stop_network_quietly(self):
         try:
             self.net.stop()
         except Exception:
             pass
+
+    def _join_threads(self):
         for thread in getattr(self, '_threads', []):
             try:
                 thread.join(timeout=5)
             except Exception:
                 pass
+
+    def _remove_lock_file(self):
         try:
             import os as _os2
             _lp = getattr(self, '_lock_path', None)
@@ -111,10 +116,20 @@ class Client:
                     pass
         except Exception:
             pass
+
+    def _close_db_quietly(self):
         try:
             self.db.close()
         except Exception:
             pass
+
+    def stop(self):
+        self.started = False
+        self._cancel_all_pow()
+        self._stop_network_quietly()
+        self._join_threads()
+        self._remove_lock_file()
+        self._close_db_quietly()
 
     def _retry_loop(self):
         while self.started:
@@ -305,6 +320,55 @@ class Client:
             blocks.append('\n'.join(lines))
         return '\n\n'.join(blocks) + ('\n' if blocks else '')
 
+    def _import_keys_dat_section(self, parser, section, result):
+        try:
+            expected = AddressKeys.from_address(section)
+            signing_private = bytes.fromhex(
+                parser.get(section, 'privsigningkey').strip())
+            encryption_private = bytes.fromhex(
+                parser.get(section, 'privencryptionkey').strip())
+            keys = AddressKeys.from_private_keys(
+                signing_private, encryption_private, expected.stream)
+        except Exception:
+            result['errors'] += 1
+            return
+        if keys.address != section:
+            result['errors'] += 1
+            return
+        if keys.address in self.identities:
+            result['skipped'] += 1
+            return
+        label = parser.get(
+            section, 'label', fallback=keys.address).strip() or \
+            keys.address
+        chan = parser.get(
+            section, 'chan', fallback='false').strip().lower() == 'true'
+        chan_label = parser.get(section, 'chan_label', fallback='').strip()
+        noncetrials, extrabytes = self._keys_dat_pow_params(parser, section)
+        self.db.add_identity(
+            keys.address, label, expected.stream,
+            signing_private, encryption_private,
+            noncetrials=noncetrials, extrabytes=extrabytes,
+            chan=1 if chan else 0,
+            chan_label=chan_label or (label if chan else ''))
+        keys.nonce_trials_per_byte = noncetrials
+        keys.payload_length_extra_bytes = extrabytes
+        with self._lock:
+            self.identities[keys.address] = keys
+        result['imported'] += 1
+        result['addresses'].append(keys.address)
+
+    @staticmethod
+    def _keys_dat_pow_params(parser, section):
+        try:
+            noncetrials = int(parser.get(
+                section, 'noncetrialsperbyte', fallback='1000'))
+            extrabytes = int(parser.get(
+                section, 'payloadlengthextrabytes', fallback='1000'))
+        except ValueError:
+            noncetrials, extrabytes = 1000, 1000
+        return noncetrials, extrabytes
+
     def import_keys_dat(self, text):
         parser = configparser.ConfigParser()
         parser.optionxform = str
@@ -316,48 +380,7 @@ class Client:
         for section in parser.sections():
             if not section.startswith('BM-'):
                 continue
-            try:
-                expected = AddressKeys.from_address(section)
-                signing_private = bytes.fromhex(
-                    parser.get(section, 'privsigningkey').strip())
-                encryption_private = bytes.fromhex(
-                    parser.get(section, 'privencryptionkey').strip())
-                keys = AddressKeys.from_private_keys(
-                    signing_private, encryption_private, expected.stream)
-            except Exception:
-                result['errors'] += 1
-                continue
-            if keys.address != section:
-                result['errors'] += 1
-                continue
-            if keys.address in self.identities:
-                result['skipped'] += 1
-                continue
-            label = parser.get(
-                section, 'label', fallback=keys.address).strip() or \
-                keys.address
-            chan = parser.get(
-                section, 'chan', fallback='false').strip().lower() == 'true'
-            chan_label = parser.get(section, 'chan_label', fallback='').strip()
-            try:
-                noncetrials = int(parser.get(
-                    section, 'noncetrialsperbyte', fallback='1000'))
-                extrabytes = int(parser.get(
-                    section, 'payloadlengthextrabytes', fallback='1000'))
-            except ValueError:
-                noncetrials, extrabytes = 1000, 1000
-            self.db.add_identity(
-                keys.address, label, expected.stream,
-                signing_private, encryption_private,
-                noncetrials=noncetrials, extrabytes=extrabytes,
-                chan=1 if chan else 0,
-                chan_label=chan_label or (label if chan else ''))
-            keys.nonce_trials_per_byte = noncetrials
-            keys.payload_length_extra_bytes = extrabytes
-            with self._lock:
-                self.identities[keys.address] = keys
-            result['imported'] += 1
-            result['addresses'].append(keys.address)
+            self._import_keys_dat_section(parser, section, result)
         if result['imported']:
             self._refresh_streams()
             self.ui_queue.put(('identity-created', '', ''))
@@ -548,7 +571,7 @@ class Client:
                 pass
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_broadcast(self, parsed, raw):
+    def _collect_broadcast_keys(self):
         subscriptions = {}
         reverse = {}
         for subscription in self.db.all_subscriptions():
@@ -566,11 +589,9 @@ class Client:
                     continue
                 subscriptions.setdefault(keys.tag, keys)
                 reverse.setdefault(keys.tag, channel['address'])
-        if not subscriptions:
-            return
-        incoming = objects.process_broadcast(raw, subscriptions)
-        if incoming is None:
-            return
+        return subscriptions, reverse
+
+    def _store_incoming_broadcast(self, parsed, incoming, reverse):
         if self.db.message_exists(incoming.inventory_hash):
             return
         channel_address = reverse.get(parsed.data[:32])
@@ -584,6 +605,15 @@ class Client:
                   str(channel_address)[:18])
         self.ui_queue.put(('broadcast', channel_address, incoming.address,
                            body, parsed.expires))
+
+    def _on_broadcast(self, parsed, raw):
+        subscriptions, reverse = self._collect_broadcast_keys()
+        if not subscriptions:
+            return
+        incoming = objects.process_broadcast(raw, subscriptions)
+        if incoming is None:
+            return
+        self._store_incoming_broadcast(parsed, incoming, reverse)
 
     # ---------- envio ----------
 
@@ -612,7 +642,7 @@ class Client:
                 row['body'], row['encoding'])
 
     def send_message(self, identity_address, to_address, subject, body,
-                      encoding=BITMESSAGE_ENCODING_TRIVIAL):
+                     encoding=BITMESSAGE_ENCODING_TRIVIAL):
         from ..protocol.const import MAX_OBJECT_LENGTH
         status, version, stream, ripe = addr_module.decode_address(to_address)
         if status != 'success':
@@ -649,8 +679,80 @@ class Client:
             done_cb=lambda complete, nonce: self.net.announce_object(complete))
         return 'success', None
 
+    def _fail_message_no_ack(self, message_id):
+        # B3: sem ACK não envia degradado silencioso
+        try:
+            self.db.set_message_status(message_id, 'ack-failed')
+            self.ui_queue.put(('status', message_id, 'ack-failed'))
+        finally:
+            with self._lock:
+                self._msg_in_flight.discard(message_id)
+
+    def _message_wire_body(self, message_id, body):
+        # B2: inclui subject no wire (retry lê do DB via _send_queued)
+        try:
+            rows = self.db.query(
+                "SELECT subject FROM messages WHERE id=?", (message_id,))
+            subj = (rows[0]['subject'] if rows else '') or ''
+        except Exception:
+            subj = ''
+        wire = ('Subject: %s\n\n%s' % (subj, body)) if subj.strip() else (body or '')
+        try:
+            return wire.encode('utf-8')
+        except Exception:
+            with self._lock:
+                self._msg_in_flight.discard(message_id)
+            return None
+
+    def _finish_message_send(self, message_id, complete):
+        # B1: revalida antes de anunciar (conversa pode ter sido apagada)
+        try:
+            rows = self.db.query(
+                "SELECT status FROM messages WHERE id=?", (message_id,))
+            if not rows or rows[0]['status'] not in (
+                    'sending', 'awaiting-pubkey'):
+                return
+        except Exception:
+            pass
+        finally:
+            with self._lock:
+                self._msg_in_flight.discard(message_id)
+        self.net.announce_object(complete)
+        self.db.set_message_status(message_id, 'sent')
+        self.ui_queue.put(('status', message_id, 'sent'))
+
+    def _send_message_worker(self, message_id, stream, keys, pub,
+                             to_address, body, encoding, expires, ripe):
+        ack_packet, watch = self._build_ack_packet(stream)
+        if not watch:
+            self._fail_message_no_ack(message_id)
+            return
+        with self._lock:
+            self._ack_watch[watch] = message_id
+        wire_bytes = self._message_wire_body(message_id, body)
+        if wire_bytes is None:
+            return
+        unsigned = objects.build_msg_unsigned(
+            expires, stream, keys, pub['encryption_public'], ripe,
+            wire_bytes, encoding, ack_packet)
+        target = calculate_target(
+            pub['nonce_trials_per_byte'],
+            pub['payload_length_extra_bytes'],
+            len(unsigned) + 8, MSG_TTL)
+
+        def done(complete, nonce):
+            self._finish_message_send(message_id, complete)
+
+        try:
+            self._run_pow_and_done(
+                unsigned, target, message_id=message_id, done_cb=done)
+        except Exception:
+            with self._lock:
+                self._msg_in_flight.discard(message_id)
+            raise
+
     def _pow_and_publish_message(self, message_id, identity_address,
-                                  to_address, body, encoding):
+                                 to_address, body, encoding):
         pub = self.pubkeys.get(to_address)
         if pub is None:
             return
@@ -669,68 +771,10 @@ class Client:
         except Exception:
             pass
         expires = int(time.time()) + MSG_TTL
-
-        def worker():
-            ack_packet, watch = self._build_ack_packet(stream)
-            if not watch:
-                # B3: sem ACK não envia degradado silencioso
-                try:
-                    self.db.set_message_status(message_id, 'ack-failed')
-                    self.ui_queue.put(('status', message_id, 'ack-failed'))
-                finally:
-                    with self._lock:
-                        self._msg_in_flight.discard(message_id)
-                return
-            with self._lock:
-                self._ack_watch[watch] = message_id
-            # B2: inclui subject no wire (retry lê do DB via _send_queued)
-            try:
-                rows = self.db.query(
-                    "SELECT subject FROM messages WHERE id=?", (message_id,))
-                subj = (rows[0]['subject'] if rows else '') or ''
-            except Exception:
-                subj = ''
-            wire = ('Subject: %s\n\n%s' % (subj, body)) if subj.strip() else (body or '')
-            try:
-                wire_bytes = wire.encode('utf-8')
-            except Exception:
-                with self._lock:
-                    self._msg_in_flight.discard(message_id)
-                return
-            unsigned = objects.build_msg_unsigned(
-                expires, stream, keys, pub['encryption_public'], ripe,
-                wire_bytes, encoding, ack_packet)
-            target = calculate_target(
-                pub['nonce_trials_per_byte'],
-                pub['payload_length_extra_bytes'],
-                len(unsigned) + 8, MSG_TTL)
-
-            def done(complete, nonce):
-                # B1: revalida antes de anunciar (conversa pode ter sido apagada)
-                try:
-                    rows = self.db.query(
-                        "SELECT status FROM messages WHERE id=?", (message_id,))
-                    if not rows or rows[0]['status'] not in (
-                            'sending', 'awaiting-pubkey'):
-                        return
-                except Exception:
-                    pass
-                finally:
-                    with self._lock:
-                        self._msg_in_flight.discard(message_id)
-                self.net.announce_object(complete)
-                self.db.set_message_status(message_id, 'sent')
-                self.ui_queue.put(('status', message_id, 'sent'))
-
-            try:
-                self._run_pow_and_done(
-                    unsigned, target, message_id=message_id, done_cb=done)
-            except Exception:
-                with self._lock:
-                    self._msg_in_flight.discard(message_id)
-                raise
-
-        threading.Thread(target=worker, daemon=True,
+        threading.Thread(target=self._send_message_worker,
+                         args=(message_id, stream, keys, pub, to_address,
+                               body, encoding, expires, ripe),
+                         daemon=True,
                          name='msg-pow-%s' % message_id).start()
 
     def _build_ack_packet(self, stream):
@@ -810,7 +854,7 @@ class Client:
             event.set()
 
     def broadcast(self, identity_address, body,
-                   encoding=BITMESSAGE_ENCODING_TRIVIAL):
+                  encoding=BITMESSAGE_ENCODING_TRIVIAL):
         from ..protocol.const import MAX_OBJECT_LENGTH
         keys = self.identities.get(identity_address)
         if keys is None:
@@ -864,7 +908,7 @@ class Client:
         return self._derive_chan_keys(address, stored.strip(), stream)
 
     def broadcast_chan(self, address, body,
-                        encoding=BITMESSAGE_ENCODING_TRIVIAL, name=None):
+                       encoding=BITMESSAGE_ENCODING_TRIVIAL, name=None):
         from ..protocol.const import MAX_OBJECT_LENGTH
         try:
             if len((body or '').encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
@@ -940,63 +984,75 @@ class Client:
             except Exception as exc:
                 self._log('rede', 'reannounce: %r' % exc)
 
+    def _scan_pubkey_rows(self, rows, keys, address):
+        for row in rows:
+            try:
+                raw = bytes(row['raw'])
+            except Exception:
+                continue
+            try:
+                incoming = objects.process_pubkey(raw, keys)
+            except Exception:
+                continue
+            if incoming is None:
+                continue
+            try:
+                self.net.announce_object(raw)
+            except Exception:
+                pass
+            self._log('rede', 'pubkey de %s reanunciada' % address[:18])
+            break
+
+    def _maybe_reannounce_identity(self, identity, now):
+        address = identity['address']
+        try:
+            keys = AddressKeys.from_address(address)
+        except Exception:
+            return
+        try:
+            rows = self.db.query(
+                'SELECT raw FROM objects WHERE type=1 AND version=4 AND '
+                'expires > ? ORDER BY expires DESC LIMIT 5',
+                (now,))
+        except Exception:
+            return
+        self._scan_pubkey_rows(rows, keys, address)
+
     def _reannounce_pubkeys_once(self):
         now = int(time.time())
         for identity in self.db.all_identities(enabled_only=False):
             if not self.started:
                 return
-            address = identity['address']
-            try:
-                keys = AddressKeys.from_address(address)
-            except Exception:
-                continue
-            try:
-                rows = self.db.query(
-                    'SELECT raw FROM objects WHERE type=1 AND version=4 AND '
-                    'expires > ? ORDER BY expires DESC LIMIT 5',
-                    (now,))
-            except Exception:
-                continue
-            for row in rows:
-                try:
-                    raw = bytes(row['raw'])
-                except Exception:
-                    continue
-                try:
-                    incoming = objects.process_pubkey(raw, keys)
-                except Exception:
-                    continue
-                if incoming is None:
-                    continue
-                try:
-                    self.net.announce_object(raw)
-                except Exception:
-                    pass
-                self._log('rede', 'pubkey de %s reanunciada' % address[:18])
-                break
+            self._maybe_reannounce_identity(identity, now)
 
     def _reannounce_pubkeys(self):
         # compat: testes antigos chamam direto (1-shot)
         return self._reannounce_pubkeys_once()
 
+    def _send_due_scheduled(self):
+        pending = self.db.get_pending_scheduled()
+        for msg in pending:
+            if not self.started:
+                return
+            try:
+                self._send_one_scheduled(msg)
+            except Exception as exc:
+                self._log('agendada', f'erro ao enviar: {exc}')
+
+    def _send_one_scheduled(self, msg):
+        identity = msg['identity_address']
+        to_addr = msg['to_address']
+        body = msg['body']
+        if identity in self.identities:
+            self.send_message(identity, to_addr, '', body)
+            self.db.mark_scheduled_sent(msg['id'])
+            self._log('agendada', f'mensagem para {to_addr[:18]} enviada')
+
     def _scheduled_sender_loop(self):
         """Background thread to send scheduled messages."""
         while self.started:
             try:
-                pending = self.db.get_pending_scheduled()
-                for msg in pending:
-                    if not self.started:
-                        return
-                    try:
-                        identity = msg['identity_address']
-                        to_addr = msg['to_address']
-                        body = msg['body']
-                        if identity in self.identities:
-                            self.send_message(identity, to_addr, '', body)
-                            self.db.mark_scheduled_sent(msg['id'])
-                            self._log('agendada', f'mensagem para {to_addr[:18]} enviada')
-                    except Exception as exc:
-                        self._log('agendada', f'erro ao enviar: {exc}')
+                self._send_due_scheduled()
             except Exception as exc:
                 self._log('agendada', f'erro no loop: {exc}')
             # Check every 30 seconds

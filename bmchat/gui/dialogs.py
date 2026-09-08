@@ -124,23 +124,8 @@ def _make_button_bar(dialog, on_ok, on_cancel):
     return ok, cancel
 
 
-def _run_modal(parent, dialog, on_ok, on_cancel, focus_widget=None):
-    """Loop modal comum: WM_DELETE, binds, centro, grab, foco, espera.
-
-    ``on_ok``/``on_cancel`` recebem ``event=None`` e fecham via ``_close``.
-    Ordem sem cintilação: a casca nasce em ``withdraw`` (ver
-    ``_make_shell``), centraliza ainda oculta e só então ``deiconify``.
-    Foco é aplicado após mapear (foco imediato). Nunca deixa grab vazado:
-    libera em ``finally`` (tolera janela morta e duplo close). ``wait_window``
-    nunca é órfão: ``TclError`` (pai morto/diálogo já destruído) é absorvido.
-    Único ``update_idletasks`` do arquivo vive em ``_center_on_parent``
-    (não bloqueante; sem ``update``/``wait_visibility`` e sem ``after``).
-    """
-    dialog.protocol('WM_DELETE_WINDOW', lambda: on_cancel())
-    dialog.bind('<Return>', on_ok)
-    dialog.bind('<KP_Enter>', on_ok)
-    dialog.bind('<Escape>', on_cancel)
-    _center_on_parent(dialog, parent)
+def _reveal_modal(dialog, focus_widget=None):
+    """Map, grab and focus the dialog (all steps tolerate dead windows)."""
     try:
         dialog.deiconify()
     except Exception:
@@ -160,6 +145,10 @@ def _run_modal(parent, dialog, on_ok, on_cancel, focus_widget=None):
             dialog.focus_set()
     except Exception:
         pass
+
+
+def _await_modal_close(parent, dialog):
+    """Wait for the dialog; never leak the grab, never orphan wait_window."""
     try:
         try:
             parent.wait_window(dialog)
@@ -169,33 +158,67 @@ def _run_modal(parent, dialog, on_ok, on_cancel, focus_widget=None):
         _release_grab(dialog)
 
 
+def _run_modal(parent, dialog, on_ok, on_cancel, focus_widget=None):
+    """Loop modal comum: WM_DELETE, binds, centro, grab, foco, espera.
+
+    ``on_ok``/``on_cancel`` recebem ``event=None`` e fecham via ``_close``.
+    Ordem sem cintilação: a casca nasce em ``withdraw`` (ver
+    ``_make_shell``), centraliza ainda oculta e só então ``deiconify``.
+    Foco é aplicado após mapear (foco imediato). Nunca deixa grab vazado:
+    libera em ``finally`` (tolera janela morta e duplo close). ``wait_window``
+    nunca é órfão: ``TclError`` (pai morto/diálogo já destruído) é absorvido.
+    Único ``update_idletasks`` do arquivo vive em ``_center_on_parent``
+    (não bloqueante; sem ``update``/``wait_visibility`` e sem ``after``).
+    """
+    dialog.protocol('WM_DELETE_WINDOW', lambda: on_cancel())
+    dialog.bind('<Return>', on_ok)
+    dialog.bind('<KP_Enter>', on_ok)
+    dialog.bind('<Escape>', on_cancel)
+    _center_on_parent(dialog, parent)
+    _reveal_modal(dialog, focus_widget)
+    _await_modal_close(parent, dialog)
+
+
+def _build_simple_entries(dialog, fields, values):
+    """Build the label/entry form; return [(field, entry)]."""
+    form = tk.Frame(dialog, bg=BG)
+    form.pack(padx=16, pady=16, fill='both', expand=True)
+    entries = []
+    for row, field in enumerate(fields):
+        tk.Label(form, text=field.replace('_', ' ').title(),
+                 bg=BG, fg=FG).grid(row=row, column=0, sticky='w', pady=4)
+        entry = tk.Entry(form, **_ENTRY_STYLE)
+        entry.grid(row=row, column=1, sticky='we', pady=4, padx=(12, 0))
+        try:
+            entry.insert(0, str(values.get(field, '')))
+        except Exception:
+            pass
+        entries.append((field, entry))
+    form.columnconfigure(1, weight=1)
+    return entries
+
+
+def _read_simple_entries(entries):
+    """Collect stripped entry values into a dict."""
+    result = {}
+    for field, entry in entries:
+        try:
+            result[field] = entry.get().strip()
+        except Exception:
+            result[field] = ''
+    return result
+
+
 def ask_simple(parent, title, fields, values=None):
     fields = list(fields or [])
     values = values or {}
     dialog = _make_shell(parent, title, minsize=(360, 120))
     result = {}
     try:
-        form = tk.Frame(dialog, bg=BG)
-        form.pack(padx=16, pady=16, fill='both', expand=True)
-        entries = []
-        for row, field in enumerate(fields):
-            tk.Label(form, text=field.replace('_', ' ').title(),
-                     bg=BG, fg=FG).grid(row=row, column=0, sticky='w', pady=4)
-            entry = tk.Entry(form, **_ENTRY_STYLE)
-            entry.grid(row=row, column=1, sticky='we', pady=4, padx=(12, 0))
-            try:
-                entry.insert(0, str(values.get(field, '')))
-            except Exception:
-                pass
-            entries.append((field, entry))
-        form.columnconfigure(1, weight=1)
+        entries = _build_simple_entries(dialog, fields, values)
 
         def on_ok(event=None):
-            for field, entry in entries:
-                try:
-                    result[field] = entry.get().strip()
-                except Exception:
-                    result[field] = ''
+            result.update(_read_simple_entries(entries))
             _close(dialog)
 
         def on_cancel(event=None):
@@ -211,6 +234,38 @@ def ask_simple(parent, title, fields, values=None):
         _close(dialog)
         raise
     return result or None
+
+
+def _fill_listbox(listbox, options):
+    """Batch insert with per-item fallback for exotic option values."""
+    if not options:
+        return
+    try:
+        listbox.insert(tk.END, *options)
+    except Exception:
+        for option in options:
+            try:
+                listbox.insert(tk.END, option)
+            except Exception:
+                pass
+
+
+def _preselect_listbox(listbox, options):
+    if options:
+        try:
+            listbox.selection_set(0)
+            listbox.see(0)
+        except Exception:
+            pass
+
+
+def _take_listbox_selection(listbox):
+    """Return selected index or None (tolerates dead widgets)."""
+    try:
+        selection = listbox.curselection()
+    except Exception:
+        return None
+    return selection[0] if selection else None
 
 
 def choose(parent, title, options, prompt='Selecione:'):
@@ -235,29 +290,13 @@ def choose(parent, title, options, prompt='Selecione:'):
         scrollbar.pack(side='right', fill='y')
         # Inserção em lote: 1 chamada Tcl em vez de N (500 itens abre sem
         # engasgo). Fallback em loop se o unpack falhar (opções exóticas).
-        if options:
-            try:
-                listbox.insert(tk.END, *options)
-            except Exception:
-                for option in options:
-                    try:
-                        listbox.insert(tk.END, option)
-                    except Exception:
-                        pass
-        if options:
-            try:
-                listbox.selection_set(0)
-                listbox.see(0)
-            except Exception:
-                pass
+        _fill_listbox(listbox, options)
+        _preselect_listbox(listbox, options)
 
         def on_ok(event=None):
-            try:
-                selection = listbox.curselection()
-            except Exception:
-                selection = ()
-            if selection:
-                result['index'] = selection[0]
+            index = _take_listbox_selection(listbox)
+            if index is not None:
+                result['index'] = index
             _close(dialog)
 
         def on_cancel(event=None):
