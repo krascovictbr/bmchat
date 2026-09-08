@@ -13,6 +13,8 @@
 - [Correções aplicadas (2026-09-07, com aprovação — TUDO)](#correções-aplicadas-2026-09-07-com-aprovação--tudo)
 - [optimization/performance-20260907 (2026-09-07)](#changelog--branch-optimizationperformance-20260907)
 - [fix/ci-lint-20260907 (2026-09-08)](#changelog--branch-fixci-lint-20260907)
+- [fix/security-20260908 (2026-09-08)](#changelog--branch-fixsecurity-20260908)
+- [anti-alucinação fix/security-20260908 (2026-09-08)](#caça-a-alucinações--fixsecurity-20260908)
 
 ---
 
@@ -796,3 +798,118 @@ merge). Formato: Adicionado / Mudado / Corrigido.
 - Fluxos reais com clones: auto-apply ff (`v1→v2`), draft preservado,
   `no-upstream` autoresolvido (`upstream_fixed=True`), árvore suja
   recusada com mensagem clara.
+
+---
+
+# Changelog — branch `fix/security-20260908`
+
+Auditoria nova (3 agentes: pesquisa → programação → correções), foco
+exclusivo em vulnerabilidades, erros críticos e lógica de negócios.
+A auditoria `analysis/complete-audit` tinha parado em `d199a10`; a
+superfície nova (anexos, agendadas, backup `.enc`, notificações,
+auto-update) nunca tinha sido auditada. Método: leitura + AST/grep +
+bandit + PoCs inofensivas; `pip-audit` indisponível (sem rede) —
+dependências inconclusivas, `requirements.txt` segue sem pins/hashes.
+Formato: Adicionado / Mudado / Corrigido.
+
+## [fix/security-20260908] — 2026-09-08
+
+### Adicionado
+- Testes: `tests/test_security_fixes.py` (+46) e
+  `tests/test_adversarial_fixes.py` (+8); `test_retry_republishes`
+  atualizado para 1 peer online (comportamento offline consistente).
+- `MAX_WIRE_BODY_BYTES=200_000` (`protocol/const.py`) + `PUBKEY_*_MAX`.
+- `Client.resend_message` (limite 3, retry de `ack-failed`).
+- Pool de ACK (`ThreadPoolExecutor(3)` + dedupe 512) e rate-limits de
+  rede (inv/getdata por peer, store 50/60s).
+- Prune periódica de `objects` + caps (DB 20000, inventário 8000).
+- `run._ensure_writable_dir` e chmod 0600 no `.db`.
+
+### Mudado
+- Notificações sem interpolação: Windows via `-EncodedCommand` Base64,
+  macOS via `argv`; `win10toast` removido (fora dos requirements).
+- Lockfile com PID (`kill(pid,0)`): 2ª instância viva é barrada com
+  `RuntimeError`; `unlink` só do dono.
+- `stop()` com join de workers (5s); `_ack_watch` com TTL+sweep.
+- Agendadas: `broadcast_chan` para canal; erros permanentes descartados
+  com log (sem pendente eterno).
+- `announce_object` via `store_object()` + `known_hashes`.
+- Anexos: `getsize` antes de ler; regex tolera `:` no nome (`]`/`[`
+  sanitizados); PIL com `MAX_IMAGE_PIXELS` + thumbnail + `_chat_images`
+  reconstruída por redraw.
+- Segredos sempre 0600 na criação (`os.open`/mkstemp): keys.dat, backup
+  txt, `.enc`, tmp com `finally: unlink` + `.bak` do original.
+- Senha do backup `.enc` com mínimo de 8 chars e `encode('utf-8')`;
+  campo senha sem `strip()` e com `•`.
+- `EncryptedDB` (placeholder quebrado) removida; código declara DB em
+  claro com 0700/0600.
+
+### Corrigido
+- **C1**: `PBKDF2(hmac_hash_module=hashlib.sha256)` passava função em vez
+  de módulo (`AttributeError`, backup cifrado sempre falhava) → round-trip
+  verificado, inclusive senha unicode.
+- **C2**: `ask_simple` sem `labels=`/`password=` (`TypeError` em agendar e
+  nos 4 fluxos de backup/senha) → kwargs + teste sem Tk.
+- **C3**: anexos impossíveis (tetos 1 MB vs 5000 chars vs 256 KB
+  contraditórios; 1 MB virava 1,4M chars) → teto único pré-PoW.
+- **C4**: RCE via notificação com corpo recebido (`$(...)` no PowerShell,
+  breakout no osascript) → sem interpolação.
+- **A1**: pubkey com `ntpb` absurdo → `target=0`, PoW infinito → rejeitada
+  fora de `[1000,1000000]`.
+- **A2**: `sending` preso para sempre (stop sem join + retry não cobria) →
+  join + reversão de `sending` antiga para `awaiting-pubkey`.
+- **A4b/QA**: layout PIL divergia do render; lock sem TOCTOU; retry
+  queimava PoW offline; `store` aceitava 8001; `.bak` órfão; slot de ACK
+  consumido sem trabalho (8 regressões achadas e corrigidas pelo agente
+  de correções, todas com teste).
+- Falsos-positivos revalidados (não mexidos): SQLi parametrizado,
+  B413/B404/B603/B606/B104/B110 do bandit, path traversal, segredos no
+  diagnóstico, tamanhos de rede, `UNIQUE(obj_hash)`.
+
+### Verificação
+- `pytest tests/ -q`: **119 passed, 1 skipped** (+54).
+- `flake8` (2 comandos do CI): exit 0; `mypy`: limpo (32 arqs).
+- 14/14 PoCs re-executadas pelo agente de correções; smoke GUI próprio
+  (30 msgs + anexo, envio, dark, 0 erros de callback).
+- Riscos residuais: rate por peer burlável por Sybil; 1 thread por
+  `notify()`; `PUBKEY_MAX`/wire 200k arbitrários; PID-reuse no lock;
+  update segue sem assinatura (confiar no remoto).
+
+---
+
+## Caça a alucinações — `fix/security-20260908`
+
+Varredura pós-refactor (3 refactors seguidos no ramo): `py_compile` +
+`pyflakes` (zero F821/F822) + `import` em runtime dos 26 módulos +
+cruzamento AST `def` × chamadas + eventos `ui_queue` (emitidos ×
+tratados) + `command`/`bind`/`after`/`getattr` (75 refs) + `__all__`,
+`_chat_layouts`, flags, settings keys, colunas SQL, assinaturas,
+`_FakeApp` (31 métodos) + amostragem protocolo/cripto vs consenso
+documentado. Método: 1 agente de programação ( achar + corrigir +
+testar).
+
+### Alucinações reais (2)
+- **H1 [ALTA] `request_pubkey` estourava em v3** (`client.py`):
+  `send_message` tinha guarda `version!=4` (fix B4), mas `request_pubkey`
+  não — `ValueError` subia até `report_callback_exception` ao adicionar
+  contato v3 (permitido pelo `add_contact`). Fix: retorna `'unsupported'`
+  / `'invalid'`, sem queimar PoW. Teste
+  `test_hall_request_pubkey_v3_returns_unsupported`.
+- **H2 [BAIXA] `_lock_backup_file` órfão** (`app.py`): refactor trocou o
+  caller por `_secret_write_text` e o helper ficou morto (6 linhas).
+  Removido (prova de zero uso por grep) + teste-guarda
+  `test_hall_lock_backup_file_removed`.
+
+### Falsos-positivos descartados
+- 31 `calls=0` são dead antigo já documentado (intencionais, mantidos);
+  closures (`done`/`worker`) e alvos de `Thread`/`pool.submit` vivos
+  confirmados por grep; imports `update`/`dialogs` OK em runtime.
+- Todos os eventos `ui_queue` tratados; protocolo/cripto sem divergência
+  do consenso (só endurecimentos intencionais).
+
+### Verificação
+- `pytest tests/ -q`: **121 passed, 1 skipped** (+2).
+- `flake8` (2 comandos do CI): exit 0; `mypy`: limpo (32 arqs);
+  `py_compile` OK.
+- Smoke GUI (abrir/enviar, dark/light, maximizar, `request v3`):
+  zero `report_callback_exception`.

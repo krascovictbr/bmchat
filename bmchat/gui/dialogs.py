@@ -179,15 +179,19 @@ def _run_modal(parent, dialog, on_ok, on_cancel, focus_widget=None):
     _await_modal_close(parent, dialog)
 
 
-def _build_simple_entries(dialog, fields, values):
+def _build_simple_entries(dialog, fields, values, labels=None,
+                          password=False):
     """Build the label/entry form; return [(field, entry)]."""
     form = tk.Frame(dialog, bg=BG)
     form.pack(padx=16, pady=16, fill='both', expand=True)
     entries = []
+    labels = labels or {}
+    secret = _secret_fields(fields, password)
     for row, field in enumerate(fields):
-        tk.Label(form, text=field.replace('_', ' ').title(),
+        text = labels.get(field) or field.replace('_', ' ').title()
+        tk.Label(form, text=text,
                  bg=BG, fg=FG).grid(row=row, column=0, sticky='w', pady=4)
-        entry = tk.Entry(form, **_ENTRY_STYLE)
+        entry = tk.Entry(form, show='•' if field in secret else '', **_ENTRY_STYLE)
         entry.grid(row=row, column=1, sticky='we', pady=4, padx=(12, 0))
         try:
             entry.insert(0, str(values.get(field, '')))
@@ -198,27 +202,46 @@ def _build_simple_entries(dialog, fields, values):
     return entries
 
 
-def _read_simple_entries(entries):
-    """Collect stripped entry values into a dict."""
+def _secret_fields(fields, password):
+    """Return set of fields whose content is secret (no strip, masked)."""
+    if password is True:
+        return set(fields)
+    if isinstance(password, (list, tuple, set, frozenset)):
+        wanted = set(password)
+        return {f for f in fields if f in wanted}
+    return set()
+
+
+def _read_simple_entries(entries, secret=None):
+    """Collect entry values; secret fields keep verbatim (no strip)."""
+    secret = secret or set()
     result = {}
     for field, entry in entries:
         try:
-            result[field] = entry.get().strip()
+            raw = entry.get()
+        except Exception:
+            result[field] = ''
+            continue
+        try:
+            result[field] = raw if field in secret else raw.strip()
         except Exception:
             result[field] = ''
     return result
 
 
-def ask_simple(parent, title, fields, values=None):
+def ask_simple(parent, title, fields, values=None, labels=None,
+               password=False):
     fields = list(fields or [])
     values = values or {}
     dialog = _make_shell(parent, title, minsize=(360, 120))
     result = {}
     try:
-        entries = _build_simple_entries(dialog, fields, values)
+        secret = _secret_fields(fields, password)
+        entries = _build_simple_entries(dialog, fields, values,
+                                        labels=labels, password=password)
 
         def on_ok(event=None):
-            result.update(_read_simple_entries(entries))
+            result.update(_read_simple_entries(entries, secret=secret))
             _close(dialog)
 
         def on_cancel(event=None):

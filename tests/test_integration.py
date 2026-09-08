@@ -319,6 +319,9 @@ def test_retry_republishes_getpubkey(client):
     original = client.net.announce_object
     client.net.announce_object = lambda data, source=None: \
         announced.append(bytes(data))
+    # ADV: retry só queima PoW online (gate offline). Simula 1 peer.
+    orig_established = type(client.net).established_count
+    type(client.net).established_count = property(lambda self: 1)
     client.started = True
     try:
         client._retry_awaiting()
@@ -328,6 +331,13 @@ def test_retry_republishes_getpubkey(client):
     finally:
         client.started = False
         client.net.announce_object = original
+        try:
+            if orig_established is not None:
+                type(client.net).established_count = orig_established
+            else:
+                delattr(type(client.net), 'established_count')
+        except Exception:
+            pass
     assert announced, 'retry não republicou o getpubkey'
     assert objects.ParsedObject(announced[0]).object_type == 0
 

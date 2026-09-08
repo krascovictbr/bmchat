@@ -1,5 +1,17 @@
-"""Cross-platform notification system."""
+"""Cross-platform notification system.
 
+Segurança (C4): título/mensagem vêm de mensagens recebidas (texto
+não-confiável, ex. preview em ``app.py``). Nunca interpolar esse texto
+em shell/script de outro interpretador:
+
+- Windows: usa ``powershell -EncodedCommand`` (UTF-16LE + Base64), sem
+  interpolação — sequências como ``$(...)`` chegam como dado morto.
+- macOS: passa título/mensagem como ``argv`` separados e usa
+  ``quoted form of`` no AppleScript (``\\"`` sozinho não escapa).
+- Linux notify-send/dbus: já usam argv (sem shell); mantidos.
+"""
+
+import base64
 import os
 import platform
 import subprocess
@@ -27,12 +39,7 @@ class NotificationManager:
         elif self.system == 'darwin':
             return 'osascript'
         elif self.system == 'windows':
-            # Check for win10toast or powershell
-            try:
-                import win10toast  # noqa: F401 -- availability probe
-                return 'win10toast'
-            except ImportError:
-                return 'powershell'
+            return 'powershell'
         return 'none'
 
     def _check_command(self, cmd: list) -> bool:
@@ -71,8 +78,6 @@ class NotificationManager:
                 self._notify_send(title, message, urgency, timeout, icon)
             elif self._backend == 'osascript':
                 self._notify_osascript(title, message)
-            elif self._backend == 'win10toast':
-                self._notify_win10toast(title, message)
             elif self._backend == 'powershell':
                 self._notify_powershell(title, message)
             elif self._backend == 'dbus':
@@ -82,7 +87,7 @@ class NotificationManager:
 
     def _notify_send(self, title: str, message: str, urgency: str,
                      timeout: int, icon: Optional[str]):
-        """Send notification using notify-send."""
+        """Send notification using notify-send (argv, sem shell)."""
         cmd = ['notify-send', f'--urgency={urgency}', f'--expire-time={timeout}']
         if icon and os.path.exists(icon):
             cmd.extend(['--icon', icon])
@@ -90,38 +95,52 @@ class NotificationManager:
         cmd.append(message)
         subprocess.run(cmd, timeout=5)
 
+    @staticmethod
+    def _osascript_args(title: str, message: str) -> list:
+        """Build osascript argv sem interpolar texto não-confiável."""
+        # Título/mensagem via argv ($1/$2) + 'quoted form of' evita
+        # breakout com aspas/barras (\" não escapa em AppleScript).
+        script = ('on run argv\n'
+                  'display notification (item 2 of argv) '
+                  'with title (item 1 of argv)\n'
+                  'end run')
+        return ['osascript', '-e', script, str(title), str(message)]
+
     def _notify_osascript(self, title: str, message: str):
         """Send notification using osascript (macOS)."""
-        # Escape quotes
-        title = title.replace('"', '\\"')
-        message = message.replace('"', '\\"')
-        script = f'display notification "{message}" with title "{title}"'
-        subprocess.run(['osascript', '-e', script], timeout=5)
+        subprocess.run(self._osascript_args(title, message), timeout=5)
 
-    def _notify_win10toast(self, title: str, message: str):
-        """Send notification using win10toast."""
-        try:
-            from win10toast import ToastNotifier
-            toaster = ToastNotifier()
-            toaster.show_toast(title, message, duration=5, threaded=True)
-        except Exception:
-            pass
+    @staticmethod
+    def build_powershell_encoded(title: str, message: str) -> list:
+        """Build powershell argv com -EncodedCommand (sem interpolação)."""
+        # Script fixo; título/mensagem entram como literais .NET via
+        # Base64(UTF-16LE) — nunca concatenados no script.
+        script = (
+            "$t=[System.Text.Encoding]::UTF8.GetString("
+            "[System.Convert]::FromBase64String($env:BMCHAT_NT));"
+            "$m=[System.Text.Encoding]::UTF8.GetString("
+            "[System.Convert]::FromBase64String($env:BMCHAT_NM));"
+            "Add-Type -AssemblyName System.Windows.Forms;"
+            "$n=New-Object System.Windows.Forms.NotifyIcon;"
+            "$n.Icon=[System.Drawing.SystemIcons]::Information;"
+            "$n.Visible=$true;"
+            "$n.ShowBalloonTip(5000,$t,$m,"
+            "[System.Windows.Forms.ToolTipIcon]::Info);"
+            "Start-Sleep -Seconds 6;$n.Dispose()")
+        encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+        return ['powershell', '-NoProfile', '-NonInteractive',
+                '-EncodedCommand', encoded]
 
     def _notify_powershell(self, title: str, message: str):
-        """Send notification using PowerShell (Windows)."""
-        # Escape quotes
-        title = title.replace('"', '`"').replace("'", "''")
-        message = message.replace('"', '`"').replace("'", "''")
-        script = f'''
-        Add-Type -AssemblyName System.Windows.Forms
-        $notify = New-Object System.Windows.Forms.NotifyIcon
-        $notify.Icon = [System.Drawing.SystemIcons]::Information
-        $notify.Visible = $true
-        $notify.ShowBalloonTip(5000, "{title}", "{message}", [System.Windows.Forms.ToolTipIcon]::Info)
-        Start-Sleep -Seconds 6
-        $notify.Dispose()
-        '''
-        subprocess.run(['powershell', '-Command', script], timeout=10)
+        """Send notification using PowerShell (Windows, sem RCE)."""
+        import os as _os
+        cmd = self.build_powershell_encoded(str(title), str(message))
+        env = dict(_os.environ)
+        env['BMCHAT_NT'] = base64.b64encode(
+            str(title).encode('utf-8')).decode('ascii')
+        env['BMCHAT_NM'] = base64.b64encode(
+            str(message).encode('utf-8')).decode('ascii')
+        subprocess.run(cmd, timeout=10, env=env)
 
     def _notify_dbus(self, title: str, message: str, urgency: str, timeout: int):
         """Send notification using DBus (Linux fallback)."""

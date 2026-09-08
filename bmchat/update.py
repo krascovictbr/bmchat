@@ -5,6 +5,13 @@ aplica com ``git merge --ff-only @{u}`` (equivale a ``git pull --ff-only``:
 nunca cria commit de merge nem toca em trabalho local) -> reinicia o
 programa no mesmo interpretador.
 
+Segurança declarada (M8): NÃO há verificação de assinatura de commit
+(verify-commit) e NÃO há pin de commit/tag. Qualquer commit alcançável
+em ``origin/rolling-release`` é aplicado após confirmação do usuário.
+O diálogo de confirmação (``App._update_offer_text``) mantém o aviso
+explícito de que o código remoto será executado ao reiniciar e que só
+se deve atualizar a partir de fontes confiáveis.
+
 Auto-apply (ver ``App._auto_update_check``): com opt-in ligado
 (``auto_update=1``) e árvore limpa, o check de startup/periódico aplica
 sozinho em worker e reinicia; qualquer outra coisa (árvore suja,
@@ -400,7 +407,9 @@ def perform_update(repo_root: str = _REPO_ROOT,
                    progress: Optional[Callable[[str], None]] = None) -> Tuple[bool, str]:
     """Baixa e aplica com fast-forward. Retorna (ok, mensagem).
 
-    ``progress`` (opcional) recebe ``'fetch'`` antes de baixar e
+    Sem verify-commit e sem pin (ver docstring do módulo): aplica o
+    ``@{u}`` após ``fetch`` + árvore limpa, com confirmação prévia na
+    GUI. ``progress`` (opcional) recebe ``'fetch'`` antes de baixar e
     ``'merge'`` antes de aplicar; erros nele são ignorados.
     """
     if not os.path.isdir(os.path.join(repo_root, '.git')):
