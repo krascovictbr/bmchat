@@ -13,6 +13,10 @@ from .tooltip import ToolTip
 from .notification import notify
 from .. import SUPPORT_ADDRESS, SUPPORT_LABEL
 from ..core.client import Client
+from ..protocol.const import (
+    MSG_TTL_DEFAULT, MSG_TTL_MAX, MSG_TTL_MIN, MSG_TTL_PRESETS,
+    format_ttl_pt,
+)
 from ..crypto.encrypted_db import (
     is_encrypted, export_encrypted_backup, import_encrypted_backup,
     change_password
@@ -277,6 +281,17 @@ def _diagnostics_report(snapshot):
 
 def _avatar_color(key):
     return SENDER_COLORS[abs(hash(key)) % len(SENDER_COLORS)]
+
+
+def _short_address(address):
+    """Endereço curto ex.: BM-2cX8…91qZ (rótulo + … + sufixo)."""
+    text = str(address or '')
+    if len(text) <= 13:
+        return text
+    return text[:7] + '…' + text[-4:]
+
+
+CURRENT_IDENTITY_KEY = 'current_identity'
 
 
 def _initials(label):
@@ -584,6 +599,9 @@ class App(tk.Tk):
         self.conv_list = _ConvListAdapter(self)
         self.chat_text = _ChatTextAdapter()
         self._identity_map = {}
+        self._updating_identity = False
+        self._identity_tooltip = None
+        self._badge_tooltip = None
         self._open_menu = None
         self._menu_opened_at = 0.0
         self.bind_all('<ButtonPress>', self._dismiss_open_menu, add='+')
@@ -714,6 +732,8 @@ class App(tk.Tk):
             return
         self._ensure_default_identity()
         self._refresh_quietly(self._refresh_identity_menu)
+        self._refresh_quietly(self._update_identity_indicator)
+        self._refresh_quietly(self._check_restored_identity_fallback)
         self._refresh_quietly(self._refresh_conversations)
         self._refresh_quietly(self._restore_pending_draft)
         if getattr(self, '_closed', False):
@@ -839,7 +859,7 @@ class App(tk.Tk):
         id_row.pack(fill='x', side='bottom')
         tk.Frame(id_row, bg=LINE, height=1).pack(fill='x')
         inner = tk.Frame(id_row, bg=PANEL_BG)
-        inner.pack(fill='x', padx=8, pady=6)
+        inner.pack(fill='x', padx=8, pady=(6, 2))
         tk.Label(inner, text='Enviar como:', bg=PANEL_BG, fg=TEXT_GRAY,
                  font=self.small_font).pack(side='left')
         self.identity_var = tk.StringVar()
@@ -849,7 +869,7 @@ class App(tk.Tk):
                                      font=self.preview_font)
         self.identity_menu['menu'].configure(bg=PANEL_BG, fg=TEXT_INK)
         self.identity_menu.pack(side='left', padx=4, fill='x', expand=True)
-        ToolTip(self.identity_menu, 'Selecionar identidade')
+        ToolTip(self.identity_menu, 'Selecionar identidade (1 clique p/ trocar)')
         self.new_identity_btn = tk.Button(inner, text='+', command=self._new_identity, bg=FAB_BG,
                                           fg='white', relief='flat', width=3,
                                           font=self.preview_font)
@@ -860,6 +880,37 @@ class App(tk.Tk):
                                     font=self.small_font)
         self.backup_btn.pack(side='left', padx=(4, 0))
         ToolTip(self.backup_btn, 'Backup de identidade')
+        self._build_identity_indicator(id_row)
+        try:
+            self.identity_var.trace_add('write', self._on_identity_var_changed)
+        except Exception:
+            pass
+
+    def _build_identity_indicator(self, id_row):
+        box = tk.Frame(id_row, bg=PANEL_BG)
+        box.pack(fill='x', padx=8, pady=(0, 6))
+        self.identity_avatar = tk.Canvas(box, width=24, height=24,
+                                         highlightthickness=0, bd=0,
+                                         bg=PANEL_BG)
+        self.identity_avatar.pack(side='left')
+        self.identity_avatar.bind('<Button-1>',
+                                  lambda _e: self._copy_current_identity_address())
+        self.identity_indicator_label = tk.Label(
+            box, bg=PANEL_BG, fg=TEXT_INK, font=self.preview_font,
+            anchor='w', justify='left', cursor='hand2')
+        self.identity_indicator_label.pack(side='left', padx=(6, 0),
+                                           fill='x', expand=True)
+        self.identity_indicator_label.bind(
+            '<Button-1>',
+            lambda _e: self._copy_current_identity_address())
+        self._identity_tooltip = ToolTip(self.identity_indicator_label, '')
+        ToolTip(self.identity_avatar, 'Clique p/ copiar o endereço')
+        self.manage_identities_btn = tk.Button(
+            box, text='⚙', command=self._manage_identities,
+            bg=PANEL_BG, fg=TEXT_INK, relief='flat',
+            font=self.preview_font, width=3)
+        self.manage_identities_btn.pack(side='right')
+        ToolTip(self.manage_identities_btn, 'Gerenciar identidades')
 
     def _build_widgets_right(self):
         # Segunda metade: cabeçalho/chat/input/statusbar (roda no próximo idle).
@@ -881,6 +932,27 @@ class App(tk.Tk):
                                       fg=HEADER_DIM, font=self.small_font,
                                       anchor='w')
         self.chat_subtitle.pack(anchor='w')
+        self.chat_header.columnconfigure(2, weight=0)
+        self.identity_badge = tk.Frame(self.chat_header, bg=HEADER_BG)
+        self.identity_badge.grid(row=0, column=2, padx=(4, 10), pady=8,
+                                 sticky='e')
+        self.identity_badge_avatar = tk.Canvas(
+            self.identity_badge, width=28, height=28,
+            highlightthickness=0, bd=0, bg=HEADER_BG)
+        self.identity_badge_avatar.pack(side='left')
+        self.identity_badge_avatar.bind(
+            '<Button-1>',
+            lambda _e: self._copy_current_identity_address())
+        self.identity_badge_label = tk.Label(
+            self.identity_badge, bg=HEADER_BG, fg=HEADER_FG,
+            font=self.small_font, anchor='e', justify='right',
+            cursor='hand2')
+        self.identity_badge_label.pack(side='left', padx=(6, 0))
+        self.identity_badge_label.bind(
+            '<Button-1>',
+            lambda _e: self._copy_current_identity_address())
+        self._badge_tooltip = ToolTip(self.identity_badge_label, '')
+        ToolTip(self.identity_badge_avatar, 'Identidade atual (clique p/ copiar)')
 
         # ---- chat canvas ----
         self.chat_frame = tk.Frame(self.right, bg=CHAT_BG)
@@ -1112,6 +1184,8 @@ class App(tk.Tk):
         submenu.add_cascade(label='Tema', menu=theme_menu)
         submenu.add_command(label='Legenda de confirmações',
                             command=self._confirmation_legend)
+        submenu.add_command(label='Tempo de vida das mensagens…',
+                            command=self._msg_ttl_dialog)
         submenu.add_command(label='Sobre', command=self._about)
         submenu._theme_menu = theme_menu
         return submenu
@@ -1266,7 +1340,13 @@ class App(tk.Tk):
     # -------------------------------------------------- input bar
 
     def _set_placeholder(self):
-        self.input_var.set('Mensagem')
+        try:
+            address = self._current_identity()
+            label = self._identity_label(address) if address else ''
+        except Exception:
+            label = ''
+        text = 'Mensagem como %s' % label if label else 'Mensagem'
+        self.input_var.set(text)
         try:
             self.input_entry.config(fg=_c('input_placeholder'))
         except Exception:
@@ -1329,7 +1409,7 @@ class App(tk.Tk):
         if getattr(self, '_placeholder_on', False) or \
                 not self.input_var.get().strip():
             try:
-                self.input_var.set('Mensagem')
+                self.input_var.set(self._placeholder_text())
             except Exception:
                 pass
             try:
@@ -1337,6 +1417,14 @@ class App(tk.Tk):
             except Exception:
                 pass
             self._placeholder_on = True
+
+    def _placeholder_text(self):
+        try:
+            address = self._current_identity()
+            label = self._identity_label(address) if address else ''
+        except Exception:
+            label = ''
+        return 'Mensagem como %s' % label if label else 'Mensagem'
 
     def _set_input_enabled(self, enabled):
         self._input_enabled = enabled
@@ -1420,7 +1508,8 @@ class App(tk.Tk):
 
     _KNOWN_UI_EVENTS = frozenset([
         'log', 'message', 'broadcast', 'pubkey', 'status',
-        'identity-created', 'contact-added', 'contact-removed', 'subscribed',
+        'identity-created', 'identity-updated', 'identity-removed',
+        'contact-added', 'contact-removed', 'subscribed',
         'channel-created', 'broadcast-sent', 'pow-progress',
         'pow-cancelled', 'ack', 'update-available', 'update-check-result',
         'update-result',
@@ -1591,6 +1680,11 @@ class App(tk.Tk):
             self._reload_chat()
         elif kind == 'identity-created':
             self._refresh_identity_menu()
+            self._update_identity_indicator()
+            self._refresh_conversations()
+        elif kind in ('identity-updated', 'identity-removed'):
+            self._refresh_identity_menu()
+            self._update_identity_indicator()
             self._refresh_conversations()
         else:
             self._handle_event_tail(event, kind)
@@ -1653,25 +1747,631 @@ class App(tk.Tk):
         label = (row['label'] if row else '') or 'Identidade'
         return '%s (%s…)' % (label, address[:12])
 
+    def _identity_label(self, address):
+        try:
+            row = self.client.db.get_identity(address)
+        except Exception:
+            row = None
+        if row and row.get('label'):
+            return row['label']
+        return 'Identidade'
+
     def _current_identity(self):
-        value = self.identity_var.get()
+        try:
+            value = self.identity_var.get()
+        except Exception:
+            return ''
         return self._identity_map.get(value, value)
 
-    def _refresh_identity_menu(self):
+    def _load_saved_identity(self):
+        try:
+            return str(self.client.db.get_setting(
+                CURRENT_IDENTITY_KEY, '') or '')
+        except Exception:
+            return ''
+
+    def _save_current_identity(self, address):
+        try:
+            self.client.db.set_setting(CURRENT_IDENTITY_KEY, address)
+        except Exception:
+            pass
+
+    def _check_restored_identity_fallback(self):
+        saved = self._load_saved_identity()
+        if not saved:
+            return
+        try:
+            current = self._current_identity()
+        except Exception:
+            return
+        if saved in self.client.identities:
+            return
+        label = self._identity_label(current)
+        self._flash_status(
+            'Identidade anterior não encontrada; usando %s (sem popup)'
+            % label)
+
+    def _on_identity_var_changed(self, *_args):
+        if getattr(self, '_updating_identity', False):
+            return
+        if getattr(self, '_closed', False):
+            return
+        try:
+            address = self._current_identity()
+        except Exception:
+            return
+        if not address or address not in self.client.identities:
+            return
+        self._save_current_identity(address)
+        self._update_identity_indicator()
+        self._after_identity_switch(address)
+
+    def _after_identity_switch(self, address):
+        label = self._identity_label(address)
+        self._update_identity_composer()
+        self._update_identity_subtitle()
+        try:
+            self._refresh_conversations()
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'current_address', None):
+                self._reload_chat()
+            else:
+                self._redraw_chat()
+        except Exception:
+            pass
+        self._flash_status('Enviando como %s (%s)'
+                           % (label, _short_address(address)))
+
+    def _set_current_identity(self, address):
+        if not address or address not in self.client.identities:
+            return False
+        try:
+            current = self._current_identity()
+        except Exception:
+            current = ''
+        if current == address:
+            self._save_current_identity(address)
+            self._update_identity_indicator()
+            self._after_identity_switch(address)
+            return True
+        self._updating_identity = True
+        try:
+            self.identity_var.set(self._identity_display(address))
+        except Exception:
+            self._updating_identity = False
+            return False
+        self._updating_identity = False
+        self._save_current_identity(address)
+        self._update_identity_indicator()
+        self._after_identity_switch(address)
+        return True
+
+    def _pick_identity_target(self, addresses, previous, saved):
+        if previous in addresses:
+            return previous
+        if saved in addresses:
+            return saved
+        return addresses[0]
+
+    def _rebuild_identity_map(self, addresses):
+        mapping = {}
         menu = self.identity_menu['menu']
         menu.delete(0, 'end')
-        addresses = list(self.client.identities.keys())
-        if not addresses:
-            return
-        self._identity_map = {}
         for address in addresses:
             display = self._identity_display(address)
-            self._identity_map[display] = address
+            mapping[display] = address
             menu.add_command(
                 label=display,
                 command=lambda disp=display: self.identity_var.set(disp))
+        return mapping
+
+    def _refresh_identity_menu(self):
+        addresses = list(self.client.identities.keys())
+        if not addresses:
+            return
+        try:
+            previous = self._current_identity()
+        except Exception:
+            previous = ''
+        saved = self._load_saved_identity()
+        self._identity_map = self._rebuild_identity_map(addresses)
+        target = self._pick_identity_target(addresses, previous, saved)
         if self.identity_var.get() not in self._identity_map:
-            self.identity_var.set(self._identity_display(addresses[0]))
+            self._updating_identity = True
+            try:
+                self.identity_var.set(self._identity_display(target))
+            finally:
+                self._updating_identity = False
+            self._save_current_identity(target)
+        self._update_identity_indicator()
+
+    def _paint_identity_avatar(self, canvas, address, label, size):
+        try:
+            canvas.delete('all')
+        except Exception:
+            return
+        color = _avatar_color(address or label)
+        try:
+            canvas.create_oval(1, 1, size - 1, size - 1,
+                               fill=color, outline=color)
+            canvas.create_text(size / 2, size / 2, text=_initials(label),
+                               fill='white', font=('', 9, 'bold'))
+        except Exception:
+            pass
+
+    def _set_identity_label_texts(self, indicator, badge):
+        try:
+            self.identity_indicator_label.config(text=indicator)
+        except Exception:
+            pass
+        try:
+            self.identity_badge_label.config(text=badge)
+        except Exception:
+            pass
+
+    def _set_identity_tooltips(self, address):
+        try:
+            if self._identity_tooltip is not None:
+                self._identity_tooltip.update_text(address)
+        except Exception:
+            pass
+        try:
+            if self._badge_tooltip is not None:
+                self._badge_tooltip.update_text(address)
+        except Exception:
+            pass
+
+    def _update_identity_texts(self, address, label, short):
+        indicator = '%s  %s' % (label, short)
+        badge = '%s\n%s' % (label, short)
+        self._set_identity_label_texts(indicator, badge)
+        self._set_identity_tooltips(address)
+
+    def _update_identity_indicator(self):
+        try:
+            address = self._current_identity()
+        except Exception:
+            return
+        if not address:
+            return
+        if address not in self.client.identities:
+            addrs = list(self.client.identities.keys())
+            if not addrs:
+                return
+            address = addrs[0]
+        label = self._identity_label(address)
+        short = _short_address(address)
+        try:
+            self._paint_identity_avatar(self.identity_avatar, address,
+                                        label, 24)
+        except Exception:
+            pass
+        try:
+            self._paint_identity_avatar(self.identity_badge_avatar,
+                                        address, label, 28)
+        except Exception:
+            pass
+        self._update_identity_texts(address, label, short)
+
+    def _update_identity_composer(self):
+        if not getattr(self, '_placeholder_on', False):
+            return
+        try:
+            self._set_placeholder()
+        except Exception:
+            pass
+
+    def _update_identity_subtitle(self):
+        if getattr(self, 'current_address', None):
+            return
+        try:
+            address = self._current_identity()
+        except Exception:
+            return
+        if not address:
+            return
+        label = self._identity_label(address)
+        try:
+            self.chat_subtitle.config(
+                text='Enviando como %s (%s)'
+                % (label, _short_address(address)))
+        except Exception:
+            pass
+
+    def _copy_current_identity_address(self):
+        try:
+            address = self._current_identity()
+        except Exception:
+            return
+        if not address:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(address)
+        except Exception:
+            return
+        self._flash_status('Endereço copiado: %s'
+                           % _short_address(address))
+
+    def _identity_stats(self, address):
+        try:
+            rows = self.client.db.query(
+                'SELECT from_address, to_address FROM messages WHERE '
+                'from_address=? OR to_address=?', (address, address))
+        except Exception:
+            rows = []
+        peers = set()
+        for row in rows:
+            other = row['to_address'] if row['from_address'] == address \
+                else row['from_address']
+            if other:
+                peers.add(other)
+        return len(rows), len(peers)
+
+    @staticmethod
+    def _format_identity_created(created):
+        try:
+            stamp = int(created or 0)
+        except Exception:
+            return '—'
+        if not stamp:
+            return '—'
+        try:
+            return datetime.datetime.fromtimestamp(stamp).strftime(
+                '%d/%m/%Y %H:%M')
+        except Exception:
+            return '—'
+
+    def _identity_row(self, address):
+        try:
+            return self.client.db.get_identity(address)
+        except Exception:
+            return None
+
+    def _refresh_after_identity_change(self):
+        try:
+            self._refresh_identity_menu()
+        except Exception:
+            pass
+        try:
+            self._update_identity_indicator()
+        except Exception:
+            pass
+        try:
+            self._refresh_conversations()
+        except Exception:
+            pass
+
+    def _rename_identity(self, address, new_label=None):
+        row = self._identity_row(address)
+        if row is None:
+            dialogs.warn(self, 'Renomear',
+                         'Identidade não encontrada.')
+            return False
+        if new_label is None:
+            result = dialogs.ask_simple(
+                self, 'Renomear identidade', ['label'],
+                {'label': row.get('label') or ''})
+            if not result:
+                return False
+            new_label = result.get('label') or ''
+        new_label = (new_label or '').strip()
+        if not new_label:
+            dialogs.warn(self, 'Renomear', 'Rótulo vazio.')
+            return False
+        status, error = self.client.rename_identity(address, new_label)
+        if status != 'success':
+            dialogs.warn(self, 'Renomear', error or status)
+            return False
+        self._refresh_after_identity_change()
+        self._flash_status('Identidade renomeada para %s' % new_label)
+        return True
+
+    def _set_identity_enabled_ui(self, address, enabled):
+        row = self._identity_row(address)
+        if row is None:
+            dialogs.warn(self, 'Identidade',
+                         'Identidade não encontrada.')
+            return False
+        status, error = self.client.set_identity_enabled(address, enabled)
+        if status != 'success':
+            dialogs.warn(self, 'Identidade', error or status)
+            return False
+        self._refresh_after_identity_change()
+        try:
+            current = self._current_identity()
+            label = self._identity_label(current) if current else ''
+        except Exception:
+            current, label = '', ''
+        if enabled:
+            self._flash_status('Identidade ativada: %s' % label)
+        else:
+            self._flash_status('Identidade desativada; enviando como %s'
+                               % label)
+        return True
+
+    def _delete_identity(self, address):
+        row = self._identity_row(address)
+        if row is None:
+            dialogs.warn(self, 'Excluir',
+                         'Identidade não encontrada.')
+            return False
+        try:
+            enabled = self.client.db.all_identities(enabled_only=True)
+            addrs = [r['address'] for r in enabled]
+        except Exception:
+            addrs = []
+        if len(addrs) <= 1 and address in addrs:
+            dialogs.warn(self, 'Excluir',
+                         'Não é possível excluir a última identidade ativa; '
+                         'crie outra antes.')
+            return False
+        label = (row.get('label') if row else '') or address
+        ok = dialogs.confirm(
+            self, 'Excluir identidade',
+            'Excluir a identidade "%s" (%s)?\n\n'
+            '• Faça BACKUP das chaves antes: sem backup é IMPOSSÍVEL '
+            'recuperar.\n'
+            '• As chaves privadas serão removidas deste dispositivo.\n'
+            '• O histórico de mensagens é mantido.\n\n'
+            'Continuar?' % (label, _short_address(address)))
+        if not ok:
+            return False
+        status, error = self.client.delete_identity(address)
+        if status != 'success':
+            dialogs.warn(self, 'Excluir', error or status)
+            return False
+        self._refresh_after_identity_change()
+        try:
+            current = self._current_identity()
+            label_now = self._identity_label(current) if current else ''
+        except Exception:
+            label_now = ''
+        self._flash_status('Identidade excluída; enviando como %s'
+                           % label_now)
+        return True
+
+    def _copy_identity_address(self, address):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(address)
+        except Exception:
+            return
+        self._flash_status('Endereço copiado: %s'
+                           % _short_address(address))
+
+    def _show_identity_details(self, address):
+        row = self._identity_row(address)
+        if row is None:
+            dialogs.warn(self, 'Identidade',
+                         'Identidade não encontrada.')
+            return None
+        label = (row.get('label') if row else '') or 'Identidade'
+        window = self._dialog_shell('Identidade — %s' % label[:24])
+        window.resizable(False, False)
+        self._fill_identity_details(window, address, row)
+        return window
+
+    def _identity_detail_fields(self, address, row):
+        try:
+            total, peers = self._identity_stats(address)
+        except Exception:
+            total, peers = 0, 0
+        try:
+            current = self._current_identity()
+        except Exception:
+            current = ''
+        if address == current:
+            status = 'em uso'
+        elif row.get('enabled'):
+            status = 'ativa'
+        else:
+            status = 'desativada'
+        return [
+            ('Rótulo', (row.get('label') if row else '') or '—'),
+            ('Endereço', address),
+            ('Stream', str(row.get('stream') if row else '—')),
+            ('Criada em',
+             self._format_identity_created((row or {}).get('created'))),
+            ('Mensagens', str(total)),
+            ('Conversas', str(peers)),
+            ('Estado', status),
+        ]
+
+    def _fill_identity_details(self, window, address, row):
+        try:
+            alive = bool(window.winfo_exists())
+        except Exception:
+            return
+        if not alive or getattr(self, '_closed', False):
+            return
+        frame = tk.Frame(window, bg=PANEL_BG)
+        frame.pack(padx=16, pady=16, fill='both', expand=True)
+        fields = self._identity_detail_fields(address, row)
+        for number, (name, value) in enumerate(fields):
+            tk.Label(frame, text=name + ':', bg=PANEL_BG, fg=TEXT_GRAY,
+                     font=self.small_font).grid(row=number, column=0,
+                                                sticky='nw', pady=3)
+            text = tk.Label(frame, text=str(value), bg=PANEL_BG, fg=TEXT_INK,
+                            font=self.preview_font, wraplength=360,
+                            justify='left')
+            text.grid(row=number, column=1, sticky='w', pady=3, padx=(10, 0))
+        buttons = tk.Frame(window, bg=PANEL_BG)
+        buttons.pack(side='bottom', fill='x', padx=12, pady=10)
+        tk.Button(buttons, text='Copiar endereço',
+                  command=lambda: self._copy_identity_address(address),
+                  bg=PANEL_BG, fg=TEXT_INK, relief='solid',
+                  bd=1).pack(side='left')
+        tk.Button(buttons, text='Fechar', command=window.destroy,
+                  bg=FAB_BG, fg='white', relief='flat').pack(side='right')
+
+    def _manage_list_entries(self):
+        try:
+            rows = self.client.db.all_identities(enabled_only=False)
+        except Exception:
+            rows = []
+        try:
+            current = self._current_identity()
+        except Exception:
+            current = ''
+        entries = []
+        for row in rows:
+            address = row.get('address')
+            label = (row.get('label') if row else '') or 'Identidade'
+            short = _short_address(address)
+            suffix = ''
+            if not row.get('enabled'):
+                suffix += ' (desativada)'
+            if address == current:
+                suffix += ' [em uso]'
+            entries.append((address, '%s  %s%s' % (label, short, suffix)))
+        return entries
+
+    def _refresh_manage_window(self, window):
+        try:
+            listbox = window._ident_listbox
+        except Exception:
+            return
+        try:
+            entries = self._manage_list_entries()
+        except Exception:
+            entries = []
+        try:
+            window._ident_addrs = [a for a, _d in entries]
+            listbox.delete(0, 'end')
+            for _address, display in entries:
+                listbox.insert('end', display)
+        except Exception:
+            return
+        try:
+            window._ident_count.config(
+                text='%d identidade(s)' % len(entries))
+        except Exception:
+            pass
+
+    def _manage_selected_address(self, window):
+        try:
+            listbox = window._ident_listbox
+            selection = listbox.curselection()
+        except Exception:
+            return None
+        if not selection:
+            return None
+        try:
+            return window._ident_addrs[selection[0]]
+        except Exception:
+            return None
+
+    def _use_selected_identity(self, window):
+        address = self._manage_selected_address(window)
+        if address is None:
+            self._flash_status('Selecione uma identidade')
+            return
+        if not self._set_current_identity(address):
+            dialogs.warn(self, 'Identidade',
+                         'Selecione uma identidade ativa.')
+            return
+        self._refresh_manage_window(window)
+
+    def _details_selected_identity(self, window):
+        address = self._manage_selected_address(window)
+        if address is None:
+            self._flash_status('Selecione uma identidade')
+            return
+        self._show_identity_details(address)
+
+    def _rename_selected_identity(self, window):
+        address = self._manage_selected_address(window)
+        if address is None:
+            self._flash_status('Selecione uma identidade')
+            return
+        if self._rename_identity(address):
+            self._refresh_manage_window(window)
+
+    def _toggle_selected_identity(self, window):
+        address = self._manage_selected_address(window)
+        if address is None:
+            self._flash_status('Selecione uma identidade')
+            return
+        row = self._identity_row(address)
+        if row is None:
+            return
+        enabled = not bool(row.get('enabled'))
+        if self._set_identity_enabled_ui(address, enabled):
+            self._refresh_manage_window(window)
+
+    def _delete_selected_identity(self, window):
+        address = self._manage_selected_address(window)
+        if address is None:
+            self._flash_status('Selecione uma identidade')
+            return
+        if self._delete_identity(address):
+            self._refresh_manage_window(window)
+
+    def _new_from_manage(self, window):
+        self._new_identity()
+        try:
+            self._refresh_manage_window(window)
+        except Exception:
+            pass
+
+    def _manage_identities(self):
+        window = self._dialog_shell('Gerenciar identidades', '560x420')
+        header = tk.Frame(window, bg=PANEL_BG)
+        header.pack(fill='x', padx=12, pady=(10, 4))
+        count = tk.Label(header, text='…', bg=PANEL_BG, fg=TEXT_GRAY,
+                         font=self.small_font)
+        count.pack(side='left')
+        body = tk.Frame(window, bg=PANEL_BG)
+        body.pack(fill='both', expand=True, padx=12)
+        scrollbar = tk.Scrollbar(body, orient='vertical')
+        listbox = tk.Listbox(body, bg='#f1f3f5', fg=TEXT_INK,
+                             selectbackground=FAB_BG,
+                             selectforeground='white', height=12,
+                             yscrollcommand=scrollbar.set,
+                             exportselection=False, activestyle='none',
+                             highlightthickness=0, bd=0,
+                             font=self.preview_font)
+        scrollbar.config(command=listbox.yview)
+        listbox.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        buttons = tk.Frame(window, bg=PANEL_BG)
+        buttons.pack(side='bottom', fill='x', padx=12, pady=10)
+        tk.Button(buttons, text='Usar',
+                  command=lambda: self._use_selected_identity(window),
+                  bg=FAB_BG, fg='white', relief='flat').pack(side='left')
+        tk.Button(buttons, text='Detalhes',
+                  command=lambda: self._details_selected_identity(window),
+                  bg=PANEL_BG, fg=TEXT_INK, relief='solid',
+                  bd=1).pack(side='left', padx=(8, 0))
+        tk.Button(buttons, text='Renomear',
+                  command=lambda: self._rename_selected_identity(window),
+                  bg=PANEL_BG, fg=TEXT_INK, relief='solid',
+                  bd=1).pack(side='left', padx=(8, 0))
+        tk.Button(buttons, text='Ativar/Desativar',
+                  command=lambda: self._toggle_selected_identity(window),
+                  bg=PANEL_BG, fg=TEXT_INK, relief='solid',
+                  bd=1).pack(side='left', padx=(8, 0))
+        tk.Button(buttons, text='Excluir',
+                  command=lambda: self._delete_selected_identity(window),
+                  bg=PANEL_BG, fg='#b00020', relief='solid',
+                  bd=1).pack(side='left', padx=(8, 0))
+        second = tk.Frame(window, bg=PANEL_BG)
+        second.pack(side='bottom', fill='x', padx=12, pady=(0, 10))
+        tk.Button(second, text='Nova identidade…',
+                  command=lambda: self._new_from_manage(window),
+                  bg=PANEL_BG, fg=TEXT_INK, relief='solid',
+                  bd=1).pack(side='left')
+        tk.Button(second, text='Fechar', command=window.destroy,
+                  bg=PANEL_BG, fg=TEXT_INK, relief='solid',
+                  bd=1).pack(side='right')
+        window._ident_listbox = listbox
+        window._ident_count = count
+        window._ident_addrs = []
+        self._refresh_manage_window(window)
+        return window
 
     # -------------------------------------------------- conversations
 
@@ -2601,11 +3301,17 @@ class App(tk.Tk):
         if status == 'awaiting-pubkey':
             return ('Aguardando chave pública do destinatário — '
                     'a mensagem ainda não foi publicada na rede')
+        if status == 'sending':
+            return ('Enviando — calculando a prova de trabalho e '
+                    'publicando na rede')
         if status == 'sent':
             return ('Publicada na rede — aguardando a confirmação (ACK) '
                     'do destinatário')
         if status == 'ackreceived':
             return 'Entregue — confirmação (ACK) recebida do destinatário'
+        if status == 'ack-failed':
+            return ('Sem confirmação (ACK não recebido antes da expiração) — '
+                    'o destinatário pode não ter recebido')
         return str(status)
 
     def _calc_attachment_height(self, attachment, max_width, out):
@@ -3004,6 +3710,9 @@ class App(tk.Tk):
                 menu.add_command(
                     label='Encaminhar',
                     command=lambda: self._forward_message(row))
+                menu.add_command(
+                    label='Excluir mensagem',
+                    command=lambda: self._delete_message(row))
                 menu.add_separator()
                 menu.add_command(
                     label='Detalhes',
@@ -3051,6 +3760,40 @@ class App(tk.Tk):
                               else '')
         self._flash_status('Texto copiado')
 
+    @staticmethod
+    def _take_message_id(row):
+        try:
+            return row.get('id') if hasattr(row, 'get') else None
+        except Exception:
+            return None
+
+    def _redraw_after_message_delete(self):
+        for action in (self._reload_chat, self._refresh_conversations):
+            try:
+                action()
+            except Exception:
+                pass
+
+    def _delete_message(self, row):
+        """Exclui uma mensagem individual (confirma; redesenha a conversa)."""
+        message_id = self._take_message_id(row)
+        if message_id is None:
+            return
+        ok = dialogs.confirm(
+            self, 'Excluir mensagem',
+            'Apagar esta mensagem?\n'
+            'Só apaga neste dispositivo; quem já recebeu mantém a cópia.')
+        if not ok:
+            return
+        try:
+            self.client.db.delete_message(message_id)
+        except Exception as exc:
+            dialogs.warn(self, 'Excluir mensagem',
+                         'Não foi possível excluir: %r' % exc)
+            return
+        self._flash_status('Mensagem excluída')
+        self._redraw_after_message_delete()
+
     def _message_details(self, row):
         # Item 5: casca aparece já; campos em after_idle.
         window = self._dialog_shell('Detalhes da mensagem')
@@ -3081,6 +3824,7 @@ class App(tk.Tk):
             ('De', row['from_address']),
             ('Para', row['to_address']),
             ('Data/hora', _format_time(row['timestamp'])),
+            ('Expira em', self._format_expiry(row)),
             ('Hash', hash_text),
         ]
         for number, (name, value) in enumerate(fields):
@@ -3095,6 +3839,23 @@ class App(tk.Tk):
                   fg='white', relief='flat', width=12).grid(
                       row=len(fields), column=0, columnspan=2, pady=(12, 0))
 
+    @staticmethod
+    def _format_expiry(row):
+        """Texto de expiração p/ Detalhes: 'Expira em X', 'expirada' ou '—'."""
+        try:
+            expires = row.get('expires') if hasattr(row, 'get') else None
+        except Exception:
+            return '—'
+        if not expires:
+            return '—'
+        try:
+            remaining = int(expires) - int(time.time())
+        except (TypeError, ValueError):
+            return '—'
+        if remaining <= 0:
+            return 'expirada'
+        return 'Expira em %s' % format_ttl_pt(remaining)
+
     def _confirmation_legend(self):
         dialogs.info(
             self, 'Confirmações de mensagem',
@@ -3105,6 +3866,147 @@ class App(tk.Tk):
             '✓✓  Entregue: o destinatário recebeu e a rede devolveu o ACK.\n\n'
             'O Bitmessage não tem "online" nem "visto por último": a única '
             'confirmação real é a da mensagem, via ACK.')
+
+    @staticmethod
+    def _parse_ttl_hours(text):
+        """Horas (texto livre, vírgula ou ponto) → segundos; None se inválido."""
+        try:
+            hours = float(str(text or '').strip().replace(',', '.'))
+        except (TypeError, ValueError):
+            return None
+        if hours <= 0:
+            return None
+        return int(hours * 3600)
+
+    def _msg_ttl_current(self):
+        try:
+            return int(self.client.get_msg_ttl())
+        except Exception:
+            return MSG_TTL_DEFAULT
+
+    def _apply_msg_ttl_seconds(self, seconds):
+        """Salva o TTL global e avisa em status; retorna (efetivo, clampado)."""
+        try:
+            effective, clamped = self.client.set_msg_ttl(seconds)
+        except Exception as exc:
+            dialogs.warn(self, 'Tempo de vida',
+                         'Não foi possível salvar: %r' % exc)
+            return None
+        if clamped:
+            self._flash_status(
+                'TTL ajustado para %s (a rede só aceita de %s a %s).'
+                % (format_ttl_pt(effective), format_ttl_pt(MSG_TTL_MIN),
+                   format_ttl_pt(MSG_TTL_MAX)))
+        else:
+            self._flash_status(
+                'Tempo de vida das mensagens: %s. '
+                'Vale para as próximas mensagens.' % format_ttl_pt(effective))
+        return effective, clamped
+
+    def _msg_ttl_dialog(self):
+        current = self._msg_ttl_current()
+        window = self._dialog_shell('Tempo de vida das mensagens')
+        try:
+            self._fill_msg_ttl_dialog(window, current)
+        except Exception:
+            try:
+                window.destroy()
+            except Exception:
+                pass
+            return None
+        return window
+
+    def _fill_msg_ttl_dialog(self, window, current):
+        frame = tk.Frame(window, bg=PANEL_BG)
+        frame.pack(padx=16, pady=16, fill='both', expand=True)
+        tk.Label(
+            frame, bg=PANEL_BG, fg=TEXT_GRAY, font=self.preview_font,
+            wraplength=420, justify='left',
+            text='Quanto tempo cada mensagem vive na rede antes de expirar.\n'
+                 'Vale para todas as mensagens de todos os contatos e canais, '
+                 'a partir do próximo envio.\n'
+                 'A rede descarta objetos fora da janela (de %s a '
+                 '%s): TTL maior dá mais chance de entrega, '
+                 'mas exige mais prova de trabalho.'
+                 % (format_ttl_pt(MSG_TTL_MIN),
+                    format_ttl_pt(MSG_TTL_MAX))).pack(anchor='w')
+        tk.Label(frame, bg=PANEL_BG, fg=TEXT_INK, font=self.preview_font,
+                 text='Atual: %s' % format_ttl_pt(current)).pack(
+                     anchor='w', pady=(10, 2))
+        choice = tk.IntVar(value=current if self._is_ttl_preset(current)
+                           else -1)
+        for value, label in MSG_TTL_PRESETS:
+            tk.Radiobutton(frame, text=label, variable=choice, value=value,
+                           bg=PANEL_BG, fg=TEXT_INK,
+                           activebackground=PANEL_BG,
+                           selectcolor=PANEL_BG).pack(anchor='w')
+        custom_row = tk.Frame(frame, bg=PANEL_BG)
+        custom_row.pack(anchor='w', pady=(8, 0))
+        tk.Radiobutton(custom_row, text='Outro:', variable=choice, value=-1,
+                       bg=PANEL_BG, fg=TEXT_INK,
+                       activebackground=PANEL_BG,
+                       selectcolor=PANEL_BG).pack(side='left')
+        hours = tk.StringVar(value=self._ttl_hours_text(current))
+        entry = tk.Entry(custom_row, textvariable=hours, width=10,
+                         bg='#f1f3f5', fg=TEXT_INK,
+                         insertbackground=TEXT_INK)
+        entry.pack(side='left', padx=(6, 4))
+        tk.Label(custom_row, text='horas', bg=PANEL_BG, fg=TEXT_GRAY,
+                 font=self.preview_font).pack(side='left')
+        buttons = tk.Frame(frame, bg=PANEL_BG)
+        buttons.pack(pady=(14, 0))
+        tk.Button(buttons, text='Salvar',
+                  command=lambda: self._save_msg_ttl_dialog(
+                      window, choice, hours),
+                  bg=FAB_BG, fg='white', relief='flat', width=10).pack(
+                      side='left', padx=6)
+        tk.Button(buttons, text='Cancelar', command=window.destroy,
+                  bg='#e6ebf0', fg=TEXT_INK, relief='flat',
+                  width=10).pack(side='left', padx=6)
+
+    @staticmethod
+    def _is_ttl_preset(value):
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return False
+        return any(number == preset for preset, _label in MSG_TTL_PRESETS)
+
+    @staticmethod
+    def _ttl_hours_text(current):
+        try:
+            hours = int(current) / 3600.0
+        except (TypeError, ValueError):
+            return ''
+        if hours == int(hours):
+            return str(int(hours))
+        return ('%.2f' % hours).rstrip('0').rstrip('.')
+
+    def _save_msg_ttl_dialog(self, window, choice, hours):
+        try:
+            selected = int(choice.get())
+        except Exception:
+            selected = -1
+        if selected < 0:
+            try:
+                raw = hours.get()
+            except Exception:
+                raw = ''
+            seconds = self._parse_ttl_hours(raw)
+            if seconds is None:
+                dialogs.warn(self, 'Tempo de vida',
+                             'Informe as horas (número maior que zero) ou '
+                             'escolha um valor pronto.')
+                return
+        else:
+            seconds = selected
+        result = self._apply_msg_ttl_seconds(seconds)
+        if result is None:
+            return
+        try:
+            window.destroy()
+        except Exception:
+            pass
 
     def _attach_file(self):
         """Open file dialog and prepare attachment."""
@@ -3319,7 +4221,7 @@ class App(tk.Tk):
         address = self.client.create_identity(
             result.get('label') or 'Nova identidade', stream)
         self._refresh_identity_menu()
-        self.identity_var.set(self._identity_display(address))
+        self._set_current_identity(address)
         dialogs.info(self, 'Identidade criada', address)
 
     def _new_contact(self):

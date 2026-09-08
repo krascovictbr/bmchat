@@ -132,7 +132,15 @@ BMCHAT_DATA=/caminho/para/dados python3 run.py
   busca pela lupa; mensagens em ordem cronológica, sempre as novas embaixo.
 - **Mouse**: botão direito na conversa abre/inicia (Abrir, Copiar endereço,
   Excluir conversa, Remover contato); botão direito na
-  bolha copia o texto ou mostra detalhes (estado, remetente, data, hash).
+  bolha copia o texto, exclui a mensagem ou mostra detalhes (estado,
+  remetente, data, expiração, hash).
+- **Tempo de vida das mensagens (TTL)**: toda mensagem nasce com prazo de
+  validade — passado ele, a rede descarta o objeto. O padrão é **1 dia**
+  para todas as mensagens de todos os contatos; mude em Sistema →
+  **Tempo de vida das mensagens…** (1 hora a 21 dias, conforme as regras
+  do protocolo; fora disso o valor é ajustado e avisado). TTL maior exige
+  mais prova de trabalho e demora mais para enviar; o ACK expira junto.
+  Os Detalhes da bolha mostram "Expira em".
 - **Backup** (botão na barra da identidade ou menu): mostra as chaves
   privadas em WIF **com aviso explícito** — guarde em lugar seguro (papel,
   gerenciador de senhas, pendrive offline); **perdeu, acabou: não há como

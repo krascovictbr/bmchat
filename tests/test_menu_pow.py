@@ -27,7 +27,8 @@ EXPECTED_GROUPS = {
         'Proxy / Darknet...', 'Apagar objetos…', 'Verificar POW ativos'],
     'Contatos': ['Novo contato'],
     'Sistema': [
-        'Verificar atualizações', 'Tema', 'Legenda de confirmações', 'Sobre'],
+        'Verificar atualizações', 'Tema', 'Legenda de confirmações',
+        'Tempo de vida das mensagens…', 'Sobre'],
 }
 
 EXPECTED_THEME = ['☀️  Claro', '🌙  Escuro']
@@ -49,6 +50,7 @@ LABEL_TO_METHOD = {
     'Novo contato': '_new_contact',
     'Verificar atualizações': '_check_updates_manual',
     'Legenda de confirmações': '_confirmation_legend',
+    'Tempo de vida das mensagens…': '_msg_ttl_dialog',
     'Sobre': '_about',
     'Suporte…': '_support',
 }
@@ -192,7 +194,7 @@ def _assert_theme_nested(menu):
 
 def _assert_no_item_missing(menu):
     leaves = _leaf_labels(menu)
-    assert len(leaves) == 20, leaves
+    assert len(leaves) == 21, leaves
     for label in LABEL_TO_METHOD:
         assert label in leaves, label
     for label in EXPECTED_THEME:

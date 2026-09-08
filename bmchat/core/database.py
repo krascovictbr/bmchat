@@ -5,6 +5,15 @@ import threading
 import time
 
 
+def _opt_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class Database:
 
     def __init__(self, data_dir):
@@ -62,7 +71,9 @@ CREATE TABLE IF NOT EXISTS messages (
     timestamp INTEGER,
     direction TEXT,
     status TEXT,
-    target_stream INTEGER
+    target_stream INTEGER,
+    ttl INTEGER,
+    expires INTEGER
 );
 CREATE TABLE IF NOT EXISTS objects (
     hash BLOB PRIMARY KEY,
@@ -103,6 +114,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
 ''')
             self.conn.commit()
         self._migrate_message_timestamps()
+        self._ensure_message_ttl_columns()
+
+    def _ensure_message_ttl_columns(self):
+        # Bancos criados antes do TTL global não têm as colunas novas.
+        with self.lock:
+            cols = [row[1] for row in self.conn.execute(
+                'PRAGMA table_info(messages)').fetchall()]
+            if 'ttl' not in cols:
+                self.conn.execute(
+                    'ALTER TABLE messages ADD COLUMN ttl INTEGER')
+            if 'expires' not in cols:
+                self.conn.execute(
+                    'ALTER TABLE messages ADD COLUMN expires INTEGER')
+            self.conn.commit()
 
     def _migrate_message_timestamps(self):
         now = int(time.time())
@@ -217,6 +242,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
         self.execute('UPDATE identities SET label=? WHERE address=?',
                      (label, address))
 
+    def set_identity_enabled(self, address, enabled):
+        self.execute('UPDATE identities SET enabled=? WHERE address=?',
+                     (1 if enabled else 0, address))
+
     def set_identity_difficulty(self, address, noncetrials, extrabytes):
         self.execute(
             'UPDATE identities SET noncetrials=?, extrabytes=? '
@@ -283,13 +312,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
 
     def add_message(self, obj_hash, from_address, to_address, subject, body,
                     encoding, timestamp, direction, status,
-                    target_stream=None):
+                    target_stream=None, ttl=None, expires=None):
         return self.execute('''
             INSERT INTO messages(obj_hash, from_address, to_address, subject,
-                body, encoding, timestamp, direction, status, target_stream)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
+                body, encoding, timestamp, direction, status, target_stream,
+                ttl, expires)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
         ''', (obj_hash, from_address, to_address, subject or '', body or '',
-              encoding, int(timestamp), direction, status, target_stream))
+              encoding, int(timestamp), direction, status, target_stream,
+              _opt_int(ttl), _opt_int(expires)))
 
     def message_exists(self, obj_hash):
         rows = self.query('SELECT id FROM messages WHERE obj_hash=?',
@@ -338,6 +369,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
             raise ValueError('status inválido: %r' % (status,))
         self.execute('UPDATE messages SET status=? WHERE id=?',
                      (status, message_id))
+
+    def set_message_expiry(self, message_id, expires):
+        self.execute('UPDATE messages SET expires=? WHERE id=?',
+                     (_opt_int(expires), message_id))
+
+    def delete_message(self, message_id):
+        self.execute('DELETE FROM messages WHERE id=?', (message_id,))
 
     def delete_conversation(self, address):
         self.execute('DELETE FROM messages WHERE from_address=? OR '

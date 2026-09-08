@@ -35,4 +35,41 @@ MSG_TTL = 4 * 24 * 3600
 PUBKEY_TTL = 28 * 24 * 3600
 GETPUBKEY_TTL = 4 * 24 * 3600
 
+# TTL global das mensagens (setting `msg_ttl_seconds`): vale para todas as
+# mensagens de todos os contatos/canais. A rede descarta objetos com `expires`
+# além da janela de aceitação, por isso o máximo é 21 dias (dentro de
+# +28d+3h) e o mínimo é 1 hora.
+MSG_TTL_DEFAULT = 86400
+MSG_TTL_MIN = 3600
+MSG_TTL_MAX = 1814400
+
+MSG_TTL_PRESETS = (
+    (3600, '1 hora'),
+    (86400, '1 dia'),
+    (604800, '7 dias'),
+    (1814400, '21 dias'),
+)
+
+
+def format_ttl_pt(seconds):
+    """Rótulo curto PT-BR para uma duração em segundos (TTL/expiração)."""
+    try:
+        total = int(seconds)
+    except (TypeError, ValueError):
+        return '—'
+    for value, label in MSG_TTL_PRESETS:
+        if total == value:
+            return label
+    if total < 60:
+        return '%d s' % max(0, total)
+    minutes = total // 60
+    if minutes < 60:
+        return '1 min' if minutes == 1 else '%d min' % minutes
+    hours = total // 3600
+    if hours < 24:
+        return '1 hora' if hours == 1 else '%d horas' % hours
+    days = total // 86400
+    return '1 dia' if days == 1 else '%d dias' % days
+
+
 USER_AGENT = '/bmchat:%s/' % user_agent_version()

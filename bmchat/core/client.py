@@ -16,7 +16,8 @@ from ..protocol import objects
 from ..protocol import packets
 from ..protocol.const import (
     OBJECT_GETPUBKEY, OBJECT_PUBKEY, OBJECT_MSG, OBJECT_BROADCAST,
-    MSG_TTL, GETPUBKEY_TTL, PUBKEY_TTL,
+    GETPUBKEY_TTL, PUBKEY_TTL,
+    MSG_TTL_DEFAULT, MSG_TTL_MIN, MSG_TTL_MAX, format_ttl_pt,
     BITMESSAGE_ENCODING_TRIVIAL,
 )
 from ..util.hashing import double_sha512, sha512
@@ -151,6 +152,8 @@ class Client:
         return [r['to_address'] for r in rows if r['to_address']]
 
     def _retry_awaiting(self):
+        # Sweep de ACKs vencidos antes do retry (nunca espera além do expires).
+        self._retry_ack_failed()
         # B7: limite de paralelismo (20/vez) evita fork-bomb
         for address in self._awaiting_addresses()[:20]:
             if not self.started:
@@ -227,6 +230,48 @@ class Client:
         self._refresh_streams()
         self.ui_queue.put(('identity-created', keys.address, label))
         return keys.address
+
+    def rename_identity(self, address, label):
+        label = (label or '').strip()
+        if not label:
+            return 'invalid', 'rótulo vazio'
+        if self.db.get_identity(address) is None:
+            return 'not-found', 'identidade não encontrada'
+        self.db.set_identity_label(address, label)
+        self.ui_queue.put(('identity-updated', address, label))
+        return 'success', None
+
+    def set_identity_enabled(self, address, enabled):
+        if self.db.get_identity(address) is None:
+            return 'not-found', 'identidade não encontrada'
+        if not enabled:
+            enabled_rows = self.db.all_identities(enabled_only=True)
+            addrs = [r['address'] for r in enabled_rows]
+            if len(addrs) <= 1 and address in addrs:
+                return 'last-active', (
+                    'não é possível desabilitar a última identidade ativa; '
+                    'crie outra antes')
+        self.db.set_identity_enabled(address, enabled)
+        self._load_identities()
+        self._refresh_streams()
+        self.ui_queue.put(('identity-updated', address, ''))
+        return 'success', None
+
+    def delete_identity(self, address):
+        if self.db.get_identity(address) is None:
+            return 'not-found', 'identidade não encontrada'
+        enabled = self.db.all_identities(enabled_only=True)
+        addrs = [r['address'] for r in enabled]
+        if len(addrs) <= 1 and address in addrs:
+            return 'last-active', (
+                'não é possível excluir a última identidade ativa; '
+                'crie outra antes')
+        self.db.delete_identity(address)
+        with self._lock:
+            self.identities.pop(address, None)
+        self._refresh_streams()
+        self.ui_queue.put(('identity-removed', address, ''))
+        return 'success', None
 
     def create_channel(self, name, stream=1, label=None):
         name = (name or '').strip()
@@ -465,9 +510,12 @@ class Client:
         try:
             key = bytes(parsed.raw[16:])
             with self._lock:
-                message_id = self._ack_watch.pop(key, None)
+                entry = self._ack_watch.pop(key, None)
         except Exception:
             return
+        if entry is None:
+            return
+        message_id = entry[0] if isinstance(entry, tuple) else entry
         if message_id:
             try:
                 self.db.set_message_status(message_id, 'ackreceived')
@@ -539,7 +587,8 @@ class Client:
         self.db.add_message(
             incoming.inventory_hash, incoming.sender_address,
             incoming.to_identity.address, '', body,
-            incoming.encoding, int(time.time()), 'in', 'received')
+            incoming.encoding, int(time.time()), 'in', 'received',
+            expires=parsed.expires)
         self._log('rede', 'mensagem recebida de %s' %
                   incoming.sender_address[:18])
         self.ui_queue.put(('message', incoming.sender_address,
@@ -597,7 +646,8 @@ class Client:
         body = _decode_body(incoming.encoding, incoming.message)
         self.db.add_message(
             incoming.inventory_hash, incoming.address, channel_address,
-            '', body, incoming.encoding, int(time.time()), 'in', 'received')
+            '', body, incoming.encoding, int(time.time()), 'in', 'received',
+            expires=parsed.expires)
         self._log('rede', 'postagem recebida no canal %s' %
                   str(channel_address)[:18])
         self.ui_queue.put(('broadcast', channel_address, incoming.address,
@@ -611,6 +661,86 @@ class Client:
         if incoming is None:
             return
         self._store_incoming_broadcast(parsed, incoming, reverse)
+
+    # ---------- TTL global das mensagens ----------
+
+    @staticmethod
+    def _clamp_ttl(value):
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return MSG_TTL_DEFAULT
+        return max(MSG_TTL_MIN, min(MSG_TTL_MAX, number))
+
+    def get_msg_ttl(self):
+        """TTL vigente (s) para as próximas mensagens; sempre dentro da faixa."""
+        try:
+            raw = self.db.get_setting('msg_ttl_seconds', MSG_TTL_DEFAULT)
+        except Exception:
+            return MSG_TTL_DEFAULT
+        return self._clamp_ttl(raw)
+
+    def set_msg_ttl(self, seconds):
+        """Salva o TTL global, clampando para [1h, 21d] e avisando em status.
+
+        Retorna (efetivo, clampado). Nunca trava, nunca aceita silenciosamente.
+        """
+        try:
+            number = int(seconds)
+        except (TypeError, ValueError):
+            effective, clamped = MSG_TTL_DEFAULT, True
+        else:
+            effective = self._clamp_ttl(number)
+            clamped = effective != number
+        self.db.set_setting('msg_ttl_seconds', str(effective))
+        if clamped:
+            hint = ('TTL das mensagens fora da faixa; usando %s '
+                    '(a rede só aceita de 1 hora a 21 dias).')
+            self._log('rede', hint % format_ttl_pt(effective))
+        return effective, clamped
+
+    def _resolve_message_ttl(self, message_id, ttl=None):
+        # Retry usa o TTL guardado na linha; linhas legadas usam o vigente.
+        if ttl is not None:
+            return self._clamp_ttl(ttl)
+        try:
+            rows = self.db.query('SELECT ttl FROM messages WHERE id=?',
+                                 (message_id,))
+            stored = rows[0].get('ttl') if rows else None
+        except Exception:
+            stored = None
+        if stored:
+            return self._clamp_ttl(stored)
+        return self.get_msg_ttl()
+
+    def _prune_ack_watch(self, now=None):
+        """Descarta watches além da vida do objeto; vencidos viram ack-failed."""
+        moment = int(now) if now is not None else int(time.time())
+        expired = []
+        with self._lock:
+            for key, entry in list(self._ack_watch.items()):
+                deadline = entry[1] if isinstance(entry, tuple) else None
+                if deadline is not None and int(deadline) < moment:
+                    expired.append((key, entry[0]))
+            for key, _message_id in expired:
+                self._ack_watch.pop(key, None)
+        for _key, message_id in expired:
+            try:
+                rows = self.db.query(
+                    'SELECT status FROM messages WHERE id=?', (message_id,))
+                if rows and rows[0]['status'] == 'sent':
+                    self.db.set_message_status(message_id, 'ack-failed')
+                    self.ui_queue.put(('status', message_id, 'ack-failed'))
+            except Exception:
+                pass
+        return len(expired)
+
+    def _retry_ack_failed(self):
+        """Sweep periódico do ACK/watch acompanhando o TTL do objeto."""
+        try:
+            return self._prune_ack_watch()
+        except Exception:
+            return 0
 
     # ---------- envio ----------
 
@@ -638,7 +768,7 @@ class Client:
         for row in rows:
             self._pow_and_publish_message(
                 row['id'], row['from_address'], to_address,
-                row['body'], row['encoding'])
+                row['body'], row['encoding'], ttl=row.get('ttl'))
 
     def send_message(self, identity_address, to_address, subject, body,
                      encoding=BITMESSAGE_ENCODING_TRIVIAL):
@@ -660,13 +790,14 @@ class Client:
                 return 'too-large', 'mensagem grande demais para um objeto'
         except Exception:
             return 'invalid', 'corpo de mensagem inválido'
+        ttl = self.get_msg_ttl()
         message_id = self.db.add_message(
             None, identity_address, to_address, subject or '', body,
-            encoding, int(time.time()), 'out', 'awaiting-pubkey')
+            encoding, int(time.time()), 'out', 'awaiting-pubkey', ttl=ttl)
         self.ui_queue.put(('status', message_id, 'sending'))
         if to_address in self.pubkeys:
             self._pow_and_publish_message(message_id, identity_address,
-                                          to_address, body, encoding)
+                                          to_address, body, encoding, ttl=ttl)
             return 'success', None
         unsigned = objects.build_getpubkey_unsigned(
             int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
@@ -723,13 +854,13 @@ class Client:
         self.ui_queue.put(('status', message_id, 'sent'))
 
     def _send_message_worker(self, message_id, stream, keys, pub,
-                             to_address, body, encoding, expires, ripe):
-        ack_packet, watch = self._build_ack_packet(stream)
+                             to_address, body, encoding, expires, ripe, ttl):
+        ack_packet, watch = self._build_ack_packet(stream, expires=expires)
         if not watch:
             self._fail_message_no_ack(message_id)
             return
         with self._lock:
-            self._ack_watch[watch] = message_id
+            self._ack_watch[watch] = (message_id, expires)
         wire_bytes = self._message_wire_body(message_id, body)
         if wire_bytes is None:
             return
@@ -739,7 +870,7 @@ class Client:
         target = calculate_target(
             pub['nonce_trials_per_byte'],
             pub['payload_length_extra_bytes'],
-            len(unsigned) + 8, MSG_TTL)
+            len(unsigned) + 8, ttl)
 
         def done(complete, nonce):
             self._finish_message_send(message_id, complete)
@@ -761,7 +892,7 @@ class Client:
             raise
 
     def _pow_and_publish_message(self, message_id, identity_address,
-                                 to_address, body, encoding):
+                                 to_address, body, encoding, ttl=None):
         pub = self.pubkeys.get(to_address)
         if pub is None:
             return
@@ -779,21 +910,31 @@ class Client:
             self.db.set_message_status(message_id, 'sending')
         except Exception:
             pass
-        expires = int(time.time()) + MSG_TTL
+        ttl = self._resolve_message_ttl(message_id, ttl)
+        expires = int(time.time()) + ttl
+        try:
+            self.db.set_message_expiry(message_id, expires)
+        except Exception:
+            pass
         threading.Thread(target=self._send_message_worker,
                          args=(message_id, stream, keys, pub, to_address,
-                               body, encoding, expires, ripe),
+                               body, encoding, expires, ripe, ttl),
                          daemon=True,
                          name='msg-pow-%s' % message_id).start()
 
-    def _build_ack_packet(self, stream):
-        ack_ttl = 28 * 24 * 3600 if MSG_TTL >= 28 * 24 * 3600 else \
-            (7 * 24 * 3600 if MSG_TTL >= 7 * 24 * 3600 else 24 * 3600)
-        ack_ttl = int(ack_ttl + (os.urandom(1)[0] - 128) * 5)
-        expires = int(time.time()) + ack_ttl
+    def _build_ack_packet(self, stream, expires=None, ttl=None):
+        # O ACK acompanha a vida do objeto: expira junto, nunca além dele.
+        now = int(time.time())
+        if expires is None:
+            ttl = self._clamp_ttl(
+                ttl if ttl is not None else self.get_msg_ttl())
+            expires = now + ttl
+        else:
+            expires = int(expires)
+            ttl = max(300, expires - now)
         watch = os.urandom(32)
         unsigned = objects.build_ack_unsigned(expires, watch, stream)
-        target = calculate_target(1000, 1000, len(unsigned) + 8, ack_ttl)
+        target = calculate_target(1000, 1000, len(unsigned) + 8, ttl)
         try:
             nonce = self._quick_pow(unsigned, target)
         except Exception:
@@ -997,19 +1138,21 @@ class Client:
                 return 'too-large'
         except Exception:
             return 'error'
-        expires = int(time.time()) + MSG_TTL
+        ttl = self.get_msg_ttl()
+        expires = int(time.time()) + ttl
         unsigned = objects.build_broadcast_unsigned(
             expires, keys.stream, keys, body.encode('utf-8'), encoding)
         target = calculate_target(
             keys.nonce_trials_per_byte,
             keys.payload_length_extra_bytes,
-            len(unsigned) + 8, MSG_TTL)
+            len(unsigned) + 8, ttl)
 
         def done(complete, nonce):
             self.net.announce_object(complete)
             self.db.add_message(
                 None, identity_address, identity_address, '', body, encoding,
-                int(time.time()), 'out', 'sent', keys.stream)
+                int(time.time()), 'out', 'sent', keys.stream,
+                ttl=ttl, expires=expires)
             self.ui_queue.put(('broadcast-sent', identity_address))
 
         self._pow_and_publish(
@@ -1063,19 +1206,21 @@ class Client:
                 self.db.set_subscription_name(address, (name or '').strip())
             except Exception:
                 pass
-        expires = int(time.time()) + MSG_TTL
+        ttl = self.get_msg_ttl()
+        expires = int(time.time()) + ttl
         unsigned = objects.build_broadcast_unsigned(
             expires, keys.stream, keys, body.encode('utf-8'), encoding)
         target = calculate_target(
             keys.nonce_trials_per_byte,
             keys.payload_length_extra_bytes,
-            len(unsigned) + 8, MSG_TTL)
+            len(unsigned) + 8, ttl)
 
         def done(complete, nonce):
             self.net.announce_object(complete)
             self.db.add_message(
                 None, address, address, '', body, encoding,
-                int(time.time()), 'out', 'sent', keys.stream)
+                int(time.time()), 'out', 'sent', keys.stream,
+                ttl=ttl, expires=expires)
             self.ui_queue.put(('broadcast-sent', address))
 
         self._pow_and_publish(
