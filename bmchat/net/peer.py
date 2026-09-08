@@ -28,6 +28,10 @@ class PeerConnection(threading.Thread):
         self.write_lock = threading.Lock()
         self.started_at = time.time()
         self.connected_at = None
+        # Último addr/inv/object recebido (getdata inbound também conta,
+        # via manager.on_getdata; version/verack/ping NÃO: handshake e
+        # keepalive não provam par falante). None = mudo.
+        self.last_useful_at = None
         self.bytes_sent = 0
         self.bytes_received = 0
         self._closing = False
@@ -84,7 +88,20 @@ class PeerConnection(threading.Thread):
                 self.peer.host, self.peer.port, exc))
         finally:
             self.close()
-            self.manager.connections.pop(self.peer_key, None)
+            # Só remove se o mapa ainda aponta para ESTA conexão: após
+            # um wipe a reconexão imediata pode já ter registrado uma
+            # conexão nova com a mesma chave; remover à toa orfana a
+            # conexão nova (some do diagnóstico e do prune).
+            try:
+                with self.manager.lock:
+                    if self.manager.connections.get(
+                            self.peer_key) is self:
+                        self.manager.connections.pop(self.peer_key, None)
+            except Exception:
+                try:
+                    self.manager.connections.pop(self.peer_key, None)
+                except Exception:
+                    pass
             if not self.established:
                 try:
                     self.manager.peers.record_failure(
@@ -111,28 +128,54 @@ class PeerConnection(threading.Thread):
         sock.settimeout(max(10, min(recv_timeout, 600)))
         return sock
 
+    def _handshake_timeout(self):
+        try:
+            timeout = float(getattr(
+                self.manager, 'HANDSHAKE_TIMEOUT', 25))
+        except Exception:
+            timeout = 25.0
+        return max(5.0, min(timeout, 120.0))
+
+    def _log_handshake_timeout(self):
+        try:
+            self.manager.log(
+                'peer %s handshake sem resposta há %ds '
+                '(sem version/verack)' % (
+                    self.peer, int(time.time() - self.started_at)))
+        except Exception:
+            pass
+
+    def _handshake_once(self, digest):
+        magic, command, length, checksum = self._read_header()
+        payload = self._recv_exact(self.sock, length)
+        try:
+            if digest(payload)[:4] != checksum:
+                return
+        except Exception:
+            return
+        try:
+            self._handle(command, payload)
+        except Exception as exc:
+            try:
+                self.manager.log('peer %s handshake %r falhou: %s' % (
+                    self.peer, command, exc))
+            except Exception:
+                pass
+
     def _handshake(self):
         self.send_packet(b'version', packets.assemble_version_payload(
             self.peer.host, self.peer.port, self.manager.streams,
             nonce=self.manager.nonce))
         from ..util.hashing import sha512 as _sha512hs
-        end = time.time() + 60
+        # Referência (connectionpool.py, reaper): par não-estabelecido sem
+        # tráfego há 20s é fechado ("Timeout"). Aqui: deadline único para
+        # version+verack; _prune_connections aplica o mesmo limite a
+        # conexões presas no TCP-connect (↑0B ↓0B) que nem chegaram aqui.
+        end = time.time() + self._handshake_timeout()
         while not self._closing and time.time() < end and not self.established:
-            magic, command, length, checksum = self._read_header()
-            payload = self._recv_exact(self.sock, length)
-            try:
-                if _sha512hs(payload)[:4] != checksum:
-                    continue
-            except Exception:
-                continue
-            try:
-                self._handle(command, payload)
-            except Exception as exc:
-                try:
-                    self.manager.log('peer %s handshake %r falhou: %s' % (
-                        self.peer, command, exc))
-                except Exception:
-                    pass
+            self._handshake_once(_sha512hs)
+        if not self.established and not self._closing:
+            self._log_handshake_timeout()
 
     def _receive_payload(self, header):
         _magic, command, length, checksum = header
@@ -284,6 +327,7 @@ class PeerConnection(threading.Thread):
         self.manager.send_inventory(self)
 
     def _on_addr(self, payload):
+        self.last_useful_at = time.time()
         entries = packets.parse_addr(payload)
         for timestamp, stream, services, ip_bytes, port in entries[:200]:
             try:
@@ -307,10 +351,12 @@ class PeerConnection(threading.Thread):
         return None
 
     def _on_inv(self, payload):
+        self.last_useful_at = time.time()
         self.manager.on_inv(self, payload)
 
     def _on_getdata(self, payload):
         self.manager.on_getdata(self, payload)
 
     def _on_object(self, payload):
+        self.last_useful_at = time.time()
         self.manager.received_object(payload, self)

@@ -16,6 +16,8 @@
 - [fix/security-20260908 (2026-09-08)](#changelog--branch-fixsecurity-20260908)
 - [anti-alucinação fix/security-20260908 (2026-09-08)](#caça-a-alucinações--fixsecurity-20260908)
 - [identidades + TTL (2026-09-08, ramo principal)](#identidades-e-ttl--ramo-principal-2026-09-08)
+- [re-download pós-wipe (2026-09-08, ramo principal)](#re-download-pós-wipe--ramo-principal-2026-09-08)
+- [rotação de pares / sync do zero (2026-09-08, ramo principal)](#rotação-de-pares--ramo-principal-2026-09-08)
 
 ---
 
@@ -968,3 +970,70 @@ Formato: Adicionado / Mudado / Corrigido.
 - Caminho completo ao vivo: TTL 2h → enviada com `ttl=7200` e
   `expires=t0+7200` (contato com pubkey; sem pubkey fica corretamente em
   `awaiting-pubkey` sem expires).
+
+---
+
+# Re-download pós-wipe — ramo principal, 2026-09-08
+
+Bug real testado pelo dono: "Apagar objetos" limpava e nada voltava.
+
+## Causa raiz
+`wipe_objects` mantinha as conexões abertas — e no Bitmessage não existe
+"me mande seu inventário": `inv` só chega em handshake novo ou objeto
+novo. Pares já conectados nunca reenviavam. Agravante descoberto contra a
+referência real (`PyBitmessage/src`: `skipUntil`/`antiIntersectionDelay`):
+o par descarta `getdata` nos primeiros segundos pós-handshake e a
+referência repete o pedido; nós pedíamos **uma única vez** → 100% caía na
+janela de descarte. A simulação anterior passou à toa (manager nosso nos
+dois lados + `inv` injetado à mão).
+
+## Correção
+- `wipe_objects` derruba as conexões; o maintenance reconecta e o
+  handshake novo traz os `inv`s (único mecanismo que o protocolo suporta).
+- Todo hash pedido é lembrado (`pending_getdata`) e o `getdata` é
+  repetido (15s) até chegar ou expirar (1h); `received_object` limpa o
+  pendente. Estado `resync` visível (`Re-sync: N pendentes…`).
+- Reconexão fura o cooldown dos pares derrubados (`peers.prefer()`);
+  corrigida race que orfanava conexão nova no `pop`.
+- Textos honestos: só volta o não-expirado que os pares guardam.
+- Testes `test_wipe_download_retry.py` (7) + `test_wipe_resync.py` (4).
+
+## Verificação
+- Loopback real: puro 0,11s; com descarte 1,99s (sem retry seria ∞,
+  provado no controle negativo). Boot após wipe+restart sincroniza
+  (testado); mensagens/contatos/chaves intactos.
+
+---
+
+# Rotação de pares — ramo principal, 2026-09-08
+
+Bug real (print do dono, pasta `~/.bmchat` apagada, 4m12s): 1
+estabelecida de 7, 6 "negociando" com ↑0B↓0B, 1 estabelecida muda,
+**0 invs em 4 minutos**.
+
+## Causa raiz
+- Handshake sem timeout efetivo (60s ocupando slot, +30s de TCP-connect
+  sem byte); referência fecha não-estabelecido sem TX em 20s.
+- Estabelecido silencioso ficava para sempre (`_read_loop` engolia
+  `socket.timeout` com `continue`); sync dependia de 1 par mudo.
+- 7/8 slots ocupados → 1 tentativa a cada 5s; `best()` sem bônus para
+  quem já entregou `inv`; DNS resolvido 1× no start, reciclando mortos.
+
+## Correção
+- Handshake sem resposta fecha em 25s (punição leve, sem ban);
+  estabelecido que nunca entregou nada útil é evictado em 90s (`record_mute`,
+  sem ban; quem já entregou e aquietou é saudável e fica; `getdata`
+  conta como vivo).
+- Boot vazio abre +4 tentativas extras; re-resolve DNS a cada 120s quando
+  a lista esgota; `best()` dá +2 para par produtivo (`inv_count`/`last_inv`
+  persistidos).
+- Diagnóstico e rodapé honestos: `procurando pares…`, `aguardando
+  inventário (0 invs em …)`, `silencioso há Ns (evicção em ~90s)`.
+- Testes `test_sync_rotation.py` (13, inclui simulação 6 mortos + 1 mudo
+  + 1 falante tardio).
+
+## Verificação
+- `pytest tests/ -q`: **117 passed, 1 skipped**; flake8/mypy limpos.
+- Simulação: mortos despejados em 0,31s, mudo em 0,52s, sync 0→3 em
+  0,82s. Limite honesto: sem nenhum par falante alcançável, nada
+  sincroniza — mas a tela mostra isso em vez de fingir.

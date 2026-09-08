@@ -229,6 +229,83 @@ def _build_support_report(client):
     return '\n'.join(lines)
 
 
+def _snap_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _snap_timeouts(snapshot):
+    timeouts = snapshot.get('timeouts') or {}
+    return (_snap_int(timeouts.get('handshake', 25), 25),
+            _snap_int(timeouts.get('silent', 90), 90))
+
+
+def _state_line(snapshot, established, stats):
+    """Estado honesto: distingue "procurando" de "parado" (0 invs)."""
+    state = snapshot.get('net_state')
+    handshake, silent = _snap_timeouts(snapshot)
+    invs = _snap_int(stats.get('invs', 0))
+    pending = _snap_int(snapshot.get('pending_getdata', 0))
+    uptime = _fmt_uptime(snapshot.get('uptime', 0))
+    if state == 'parado':
+        return 'Estado: rede parada.'
+    if state == 'procurando-pares':
+        return ('Estado: procurando pares… (nenhuma conexão; girando a '
+                'lista e re-consultando as sementes DNS)')
+    if state == 'negociando':
+        return ('Estado: negociando com %d par(es)… (sem version/verack '
+                'há ~%ds o handshake fecha e tenta outro)'
+                % (snapshot['connection_count'], handshake))
+    if state == 'aguardando-inv':
+        return ('Estado: %d estabelecida(s), aguardando inventário '
+                '(0 invs em %s; par mudo há ~%ds é desconectado)'
+                % (established, uptime, silent))
+    if state == 'sincronizando':
+        return 'Estado: sincronizando: %d objeto(s) pendente(s)…' % pending
+    if invs == 0 and not snapshot.get('inventory'):
+        return ('Estado: conectado, mas nenhum inventário chegou ainda '
+                '(0 invs em %s).' % uptime)
+    return 'Estado: conectado (%d estabelecida(s)).' % established
+
+
+def _conn_extra(conn, snapshot):
+    """Anotação por par: handshake há Ns / silencioso há Ns."""
+    handshake, silent = _snap_timeouts(snapshot)
+    if not conn['established']:
+        age = _snap_int(conn.get('handshake_for', conn['age']), conn['age'])
+        return ', handshake há %ds (fecha em ~%ds sem resposta)' % (
+            age, handshake)
+    if not conn.get('has_useful', False):
+        quiet = _snap_int(conn.get('silent_for', conn['age']), conn['age'])
+        return (', silencioso há %ds (sem addr/inv/objeto; '
+                'evicção em ~%ds)' % (quiet, silent))
+    return ''
+
+
+def _status_state_part(snap, established):
+    """Trecho honesto da barra de status ('' = nada a acrescentar)."""
+    resync = snap.get('resync') or {}
+    if resync.get('active'):
+        return ('Re-sync: %d pendentes (há %s; pode levar minutos)'
+                % (_snap_int(resync.get('pending', 0)),
+                   _fmt_uptime(resync.get('elapsed', 0))))
+    if not snap.get('running', True):
+        return 'rede parada'
+    if established == 0 and snap['connection_count'] == 0:
+        return 'procurando pares…'
+    if established == 0:
+        return 'negociando…'
+    invs = _snap_int((snap.get('stats') or {}).get('invs', 0))
+    if invs == 0 and not snap.get('inventory'):
+        return 'aguardando inventário… (0 invs)'
+    if _snap_int(snap.get('pending_getdata', 0)) > 0:
+        return 'sincronizando: %d pendente(s)' % _snap_int(
+            snap.get('pending_getdata', 0))
+    return ''
+
+
 def _diagnostics_report(snapshot):
     established = sum(1 for c in snapshot['connections'] if c['established'])
     stats = snapshot.get('stats') or {}
@@ -253,6 +330,7 @@ def _diagnostics_report(snapshot):
         % (stats.get('objects_received', 0),
            stats.get('objects_announced', 0), stats.get('invs', 0),
            stats.get('getdatas', 0)),
+        _state_line(snapshot, established, stats),
         '',
     ]
     if not snapshot['connections']:
@@ -270,8 +348,9 @@ def _diagnostics_report(snapshot):
                 clock += ' (DIVERGENTE: ajuste o relógio!)'
         lines.append(
             '%s:%s — %s, versão %s, streams [%s], serviços %s, nota %.0f, '
-            '%s' % (conn['host'], conn['port'], state, version, streams,
-                    conn['services'], conn.get('rating', 0), clock))
+            '%s%s' % (conn['host'], conn['port'], state, version, streams,
+                      conn['services'], conn.get('rating', 0), clock,
+                      _conn_extra(conn, snapshot)))
         lines.append(
             '  ↑ %s  ↓ %s  há %ds' % (
                 _fmt_bytes(conn['bytes_sent']),
@@ -1728,6 +1807,9 @@ class App(tk.Tk):
                 'Pendentes: %d' % len(self.client._awaiting_addresses()),
                 'Proxy: %s' % snap['proxy'],
             ]
+            state_part = _status_state_part(snap, established)
+            if state_part:
+                parts.append(state_part)
             self.statusbar.config(text=' | '.join(parts))
         except Exception:
             pass
@@ -4738,7 +4820,10 @@ class App(tk.Tk):
             self, 'Apagar objetos',
             'Apagar todos os %d objetos guardados?\n\n'
             '• O histórico de conversas é preservado.\n'
-            '• Os objetos serão baixados novamente dos pares.' % total)
+            '• Os objetos serão baixados novamente dos pares, '
+            'aos poucos — pode levar vários minutos.\n'
+            '• Só volta o que ainda não expirou e o que os pares '
+            'ainda guardam.' % total)
         if not ok:
             return
         # wipe_objects limpa banco/memória e já derruba as conexões
@@ -4748,7 +4833,8 @@ class App(tk.Tk):
         removed = self.client.net.wipe_objects()
         dialogs.info(
             self, 'Objetos',
-            '%d objetos apagados. Baixando tudo de novo…' % removed)
+            '%d objetos apagados. Baixando tudo de novo… '
+            'acompanhe o progresso na barra de status.' % removed)
 
     def _copy_diagnostics(self, text):
         self.clipboard_clear()
