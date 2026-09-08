@@ -337,21 +337,67 @@ class NetworkManager:
             self.on_log('network', '%d objetos já conhecidos '
                         '(sem rebaixar)' % len(rows))
 
-    def wipe_objects(self):
+    def _drop_connections_for_resync(self):
         with self.lock:
+            conns = list(self.connections.values())
+            self.connections.clear()
+        for conn in conns:
             try:
-                rows = self.db.query('SELECT COUNT(*) AS n FROM objects')
-                total = rows[0]['n'] if rows else 0
+                conn.close()
             except Exception:
-                total = 0
+                pass
+
+    def _kick_reconnect(self):
+        if not self.running:
+            return
+
+        def _reconnect():
+            try:
+                self._ensure_connections()
+            except Exception as exc:
+                try:
+                    self.on_log('network', 're-sync: %s' % exc)
+                except Exception:
+                    pass
+
+        try:
+            threading.Thread(
+                target=_reconnect, daemon=True,
+                name='net-resync').start()
+        except Exception:
+            pass
+
+    def wipe_objects(self):
+        # Re-sync automático: o protocolo Bitmessage não tem mensagem
+        # "me mande seu inventário". Os pares só anunciam (inv) no
+        # handshake (_maybe_send_initial_data/send_inventory) e ao
+        # receber objeto novo (announce_object). Por isso, após apagar,
+        # pares já conectados nunca reenviariam os invs antigos e o nó
+        # ficaria parado. A correção é derrubar as conexões aqui; o
+        # _maintenance reconecta (_ensure_connections) e cada handshake
+        # novo faz os pares re-anunciarem tudo, retomando o download
+        # via on_inv->getdata->object (com PoW/expiração validados em
+        # received_object, sem loop: known_hashes/inventory dedup).
+        # Não há o que re-anunciar localmente: inventory vazio envia
+        # nada e on_getdata sem linhas no banco responde nada.
+        try:
+            rows = self.db.query('SELECT COUNT(*) AS n FROM objects')
+            total = rows[0]['n'] if rows else 0
+        except Exception:
+            total = 0
+        with self.lock:
             self.inventory.clear()
             self.known_hashes.clear()
-            try:
-                self.db.execute('DELETE FROM objects')
-            except Exception as exc:
-                self.on_log('network', 'limpeza: %s' % exc)
-                return 0
-        self.on_log('network', '%d objetos apagados' % total)
+        try:
+            self.db.execute('DELETE FROM objects')
+        except Exception as exc:
+            self.on_log('network', 'limpeza: %s' % exc)
+            return 0
+        self._drop_connections_for_resync()
+        self.on_log(
+            'network',
+            '%d objetos apagados. Baixando tudo de novo…' % total)
+        self._kick_reconnect()
         return total
 
     def snapshot(self):

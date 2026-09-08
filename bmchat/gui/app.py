@@ -1050,45 +1050,88 @@ class App(tk.Tk):
         self._track_menu(menu)
 
     def _hamburger_menu(self):
-        menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label='Minha identidade', command=self._show_welcome)
-        menu.add_command(label='Suporte…', command=self._support)
-        menu.add_separator()
-        menu.add_command(label='Nova identidade', command=self._new_identity)
-        menu.add_command(label='Novo contato', command=self._new_contact)
-        menu.add_separator()
-        menu.add_command(label='Backup de identidade…',
-                         command=self._backup_identity)
-        menu.add_command(label='Backup criptografado…',
-                         command=self._encrypted_backup)
-        menu.add_command(label='Restaurar backup criptografado…',
-                         command=self._restore_encrypted_backup)
-        menu.add_separator()
-        menu.add_command(label='Criptografar banco de dados…',
-                         command=self._encrypt_database)
-        menu.add_command(label='Alterar senha do banco…',
-                         command=self._change_db_password)
-        menu.add_separator()
-        menu.add_command(label='Diagnóstico de rede…',
-                         command=self._network_diagnostics)
-        menu.add_command(label='Ver log…', command=self._show_log)
-        menu.add_command(label='Configurações de rede…',
-                         command=self._network_settings)
-        menu.add_command(label='Apagar objetos…', command=self._wipe_objects)
-        menu.add_command(label='Proxy / Darknet...', command=self._proxy_dialog)
-        menu.add_command(label='Verificar POW ativos', command=self._show_pows)
-        menu.add_command(label='Verificar atualizações',
-                         command=self._check_updates_manual)
-        menu.add_separator()
-        # Theme submenu
-        theme_menu = tk.Menu(menu, tearoff=0)
-        theme_menu.add_command(label='☀️  Claro', command=lambda: self._set_theme('light'))
-        theme_menu.add_command(label='🌙  Escuro', command=lambda: self._set_theme('dark'))
-        menu.add_cascade(label='Tema', menu=theme_menu)
-        menu.add_command(label='Legenda de confirmações',
-                         command=self._confirmation_legend)
-        menu.add_command(label='Sobre', command=self._about)
+        menu = self._build_hamburger_menu()
         self._popup(menu, self.left_header)
+        return menu
+
+    def _build_identity_submenu(self, parent):
+        submenu = tk.Menu(parent, tearoff=0)
+        submenu.add_command(label='Minha identidade',
+                            command=self._show_welcome)
+        submenu.add_command(label='Nova identidade',
+                            command=self._new_identity)
+        submenu.add_separator()
+        submenu.add_command(label='Backup de identidade…',
+                            command=self._backup_identity)
+        return submenu
+
+    def _build_security_submenu(self, parent):
+        submenu = tk.Menu(parent, tearoff=0)
+        submenu.add_command(label='Backup criptografado…',
+                            command=self._encrypted_backup)
+        submenu.add_command(label='Restaurar backup criptografado…',
+                            command=self._restore_encrypted_backup)
+        submenu.add_separator()
+        submenu.add_command(label='Criptografar banco de dados…',
+                            command=self._encrypt_database)
+        submenu.add_command(label='Alterar senha do banco…',
+                            command=self._change_db_password)
+        return submenu
+
+    def _build_network_submenu(self, parent):
+        submenu = tk.Menu(parent, tearoff=0)
+        submenu.add_command(label='Diagnóstico de rede…',
+                            command=self._network_diagnostics)
+        submenu.add_command(label='Ver log…', command=self._show_log)
+        submenu.add_command(label='Configurações de rede…',
+                            command=self._network_settings)
+        submenu.add_command(label='Proxy / Darknet...',
+                            command=self._proxy_dialog)
+        submenu.add_separator()
+        submenu.add_command(label='Apagar objetos…',
+                            command=self._wipe_objects)
+        submenu.add_command(label='Verificar POW ativos',
+                            command=self._show_pows)
+        return submenu
+
+    def _build_contacts_submenu(self, parent):
+        submenu = tk.Menu(parent, tearoff=0)
+        submenu.add_command(label='Novo contato', command=self._new_contact)
+        return submenu
+
+    def _build_system_submenu(self, parent):
+        submenu = tk.Menu(parent, tearoff=0)
+        submenu.add_command(label='Verificar atualizações',
+                            command=self._check_updates_manual)
+        submenu.add_separator()
+        theme_menu = tk.Menu(submenu, tearoff=0)
+        theme_menu.add_command(label='☀️  Claro',
+                               command=lambda: self._set_theme('light'))
+        theme_menu.add_command(label='🌙  Escuro',
+                               command=lambda: self._set_theme('dark'))
+        submenu.add_cascade(label='Tema', menu=theme_menu)
+        submenu.add_command(label='Legenda de confirmações',
+                            command=self._confirmation_legend)
+        submenu.add_command(label='Sobre', command=self._about)
+        submenu._theme_menu = theme_menu
+        return submenu
+
+    def _build_hamburger_menu(self):
+        menu = tk.Menu(self, tearoff=0)
+        identity = self._build_identity_submenu(menu)
+        menu.add_cascade(label='Identidade', menu=identity)
+        security = self._build_security_submenu(menu)
+        menu.add_cascade(label='Segurança', menu=security)
+        network = self._build_network_submenu(menu)
+        menu.add_cascade(label='Rede', menu=network)
+        contacts = self._build_contacts_submenu(menu)
+        menu.add_cascade(label='Contatos', menu=contacts)
+        system = self._build_system_submenu(menu)
+        menu.add_cascade(label='Sistema', menu=system)
+        menu.add_command(label='Suporte…', command=self._support)
+        menu._bm_submenus = (identity, security, network, contacts,
+                             system, system._theme_menu)
+        return menu
 
     def _set_theme(self, name: str):
         """Switch application theme."""
@@ -3796,8 +3839,14 @@ class App(tk.Tk):
             '• Os objetos serão baixados novamente dos pares.' % total)
         if not ok:
             return
+        # wipe_objects limpa banco/memória e já derruba as conexões
+        # para forçar re-sync (ver NetworkManager.wipe_objects); o
+        # DELETE é único e rápido, e a reconexão roda em thread no
+        # manager, então a UI não trava.
         removed = self.client.net.wipe_objects()
-        dialogs.info(self, 'Objetos', '%d objetos apagados.' % removed)
+        dialogs.info(
+            self, 'Objetos',
+            '%d objetos apagados. Baixando tudo de novo…' % removed)
 
     def _copy_diagnostics(self, text):
         self.clipboard_clear()
@@ -3886,14 +3935,197 @@ class App(tk.Tk):
                      'Usando %s. Reconectando...' % profile.describe())
 
     def _show_pows(self):
+        window = self._dialog_shell('Gerenciar POW', '640x420')
         try:
-            total = self.client.net.connection_count
-            established = self.client.net.established_count
+            window.after_idle(lambda: self._fill_pow_window(window))
         except Exception:
-            total = established = 0
-        dialogs.info(self, 'Rede',
-                     'Conexões: %d estabelecidas de %d\nPOW em andamento: %d'
-                     % (established, total, len(self.client._pow_stops)))
+            pass
+        return window
+
+    @staticmethod
+    def _pow_short_dest(dest):
+        if not dest:
+            return '—'
+        text = str(dest)
+        return text if len(text) <= 24 else text[:21] + '…'
+
+    @staticmethod
+    def _pow_row_text(task):
+        try:
+            token = task.get('token')
+            dest = App._pow_short_dest(task.get('dest'))
+            preview = str(task.get('preview') or '').replace(
+                '\n', ' ').strip()
+            if len(preview) > 32:
+                preview = preview[:31] + '…'
+            tried = int(task.get('tried') or 0)
+            rate = float(task.get('rate') or 0.0)
+            elapsed = int(task.get('elapsed') or 0)
+            status = 'cancelando…' if task.get('cancelling') \
+                else 'calculando'
+            label = '#%s · %s' % (token, dest)
+            if preview:
+                label += ' · “%s”' % preview
+            return '%s · %d tent. · %.0f H/s · %ds · %s' % (
+                label, tried, rate, elapsed, status)
+        except Exception:
+            return '#? · — · calculando'
+
+    def _fill_pow_window(self, window):
+        try:
+            alive = bool(window.winfo_exists())
+        except Exception:
+            return
+        if not alive or getattr(self, '_closed', False):
+            return
+        header = tk.Frame(window, bg=PANEL_BG)
+        header.pack(fill='x', padx=12, pady=(10, 4))
+        count = tk.Label(header, text='…', bg=PANEL_BG, fg=TEXT_GRAY,
+                         font=self.small_font)
+        count.pack(side='left')
+        body = tk.Frame(window, bg=PANEL_BG)
+        body.pack(fill='both', expand=True, padx=12)
+        scrollbar = tk.Scrollbar(body, orient='vertical')
+        listbox = tk.Listbox(body, bg='#f1f3f5', fg=TEXT_INK,
+                             selectbackground=FAB_BG,
+                             selectforeground='white', height=12,
+                             yscrollcommand=scrollbar.set,
+                             exportselection=False, activestyle='none',
+                             highlightthickness=0, bd=0,
+                             font=self.preview_font)
+        scrollbar.config(command=listbox.yview)
+        listbox.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        empty = tk.Label(window, text='Nenhum cálculo em andamento',
+                         bg=PANEL_BG, fg=TEXT_GRAY, font=self.preview_font)
+        buttons = tk.Frame(window, bg=PANEL_BG)
+        buttons.pack(side='bottom', fill='x', padx=12, pady=10)
+        tk.Button(buttons, text='Cancelar selecionado',
+                  command=lambda: self._cancel_selected_pow(window),
+                  bg=PANEL_BG, fg=TEXT_INK, relief='solid',
+                  bd=1).pack(side='left')
+        tk.Button(buttons, text='Cancelar todos',
+                  command=lambda: self._cancel_all_pows_ui(window),
+                  bg=PANEL_BG, fg='#b00020', relief='solid',
+                  bd=1).pack(side='left', padx=(8, 0))
+        tk.Button(buttons, text='Fechar', command=window.destroy,
+                  bg=FAB_BG, fg='white', relief='flat').pack(side='right')
+        window._pow_listbox = listbox
+        window._pow_empty = empty
+        window._pow_count = count
+        window._pow_tokens = []
+        self._refresh_pow_window(window, force=True)
+
+    def _refresh_pow_window(self, window, force=False):
+        try:
+            reschedule = None if force else \
+                lambda: self._refresh_pow_window(window)
+            if not self._refresh_window_visible(window, reschedule):
+                return
+            try:
+                tasks = self.client.list_pow_tasks()
+            except Exception:
+                tasks = []
+            self._render_pow_tasks(window, tasks)
+        except Exception:
+            pass
+        try:
+            window._refresh_after = window.after(
+                1000, lambda: self._refresh_pow_window(window))
+        except Exception:
+            pass
+
+    def _render_pow_tasks(self, window, tasks):
+        try:
+            listbox = window._pow_listbox
+        except Exception:
+            return
+        try:
+            window._pow_tokens = [task.get('token') for task in tasks]
+            listbox.delete(0, 'end')
+            for task in tasks:
+                listbox.insert('end', self._pow_row_text(task))
+        except Exception:
+            return
+        self._render_pow_state(window, tasks)
+
+    def _render_pow_state(self, window, tasks):
+        try:
+            empty = window._pow_empty
+            count = window._pow_count
+        except Exception:
+            return
+        if tasks:
+            self._render_pow_busy(window, count, empty, len(tasks))
+        else:
+            self._render_pow_empty(window, count, empty)
+
+    def _render_pow_busy(self, window, count, empty, total):
+        try:
+            count.config(text='%d cálculo(s) em andamento' % total)
+        except Exception:
+            pass
+        try:
+            if empty.winfo_manager():
+                empty.pack_forget()
+        except Exception:
+            pass
+
+    def _render_pow_empty(self, window, count, empty):
+        try:
+            count.config(text='Nenhum cálculo em andamento')
+        except Exception:
+            pass
+        try:
+            if not empty.winfo_manager():
+                empty.pack(pady=8)
+        except Exception:
+            pass
+
+    def _pow_selected_token(self, window):
+        try:
+            listbox = window._pow_listbox
+            selection = listbox.curselection()
+        except Exception:
+            return None
+        if not selection:
+            return None
+        try:
+            return window._pow_tokens[selection[0]]
+        except Exception:
+            return None
+
+    def _cancel_selected_pow(self, window):
+        token = self._pow_selected_token(window)
+        if token is None:
+            self._flash_status('Selecione um POW para cancelar')
+            return
+        try:
+            self.client.cancel_pow(token)
+        except Exception:
+            pass
+        self._flash_status('POW %s: cancelamento pedido' % token)
+        try:
+            self._refresh_pow_window(window, force=True)
+        except Exception:
+            pass
+
+    def _cancel_all_pows_ui(self, window):
+        try:
+            tasks = self.client.list_pow_tasks()
+        except Exception:
+            tasks = []
+        if not tasks:
+            return
+        try:
+            self.client.cancel_all_pow()
+        except Exception:
+            pass
+        self._flash_status('Cancelando %d POW(s)…' % len(tasks))
+        try:
+            self._refresh_pow_window(window, force=True)
+        except Exception:
+            pass
 
     def _auto_update_enabled(self):
         try:

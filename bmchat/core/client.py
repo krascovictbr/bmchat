@@ -33,6 +33,7 @@ class Client:
         self.identities = {}
         self.pubkeys = {}
         self._pow_stops = {}
+        self._pow_meta = {}
         self._pow_sequencer = 0
         self._ack_watch = {}
         self._msg_in_flight = set()
@@ -86,11 +87,7 @@ class Client:
         self._threads.append(scheduled)
 
     def _cancel_all_pow(self):
-        for event in list(self._pow_stops.values()):
-            try:
-                event.set()
-            except Exception:
-                pass
+        self.cancel_all_pow()
 
     def _stop_network_quietly(self):
         try:
@@ -629,7 +626,9 @@ class Client:
                                   GETPUBKEY_TTL)
         self._pow_and_publish(
             unsigned, target,
-            done_cb=lambda complete, nonce: self.net.announce_object(complete))
+            done_cb=lambda complete, nonce: self.net.announce_object(complete),
+            dest=address_text, preview='pedido de chave pública',
+            kind='getpubkey')
         return 'success'
 
     def _send_queued(self, to_address):
@@ -676,7 +675,9 @@ class Client:
         # A1: antes o PoW era descartado (sem done_cb) — agora anuncia
         self._pow_and_publish(
             unsigned, target,
-            done_cb=lambda complete, nonce: self.net.announce_object(complete))
+            done_cb=lambda complete, nonce: self.net.announce_object(complete),
+            dest=to_address, preview='pedido de chave pública',
+            kind='getpubkey')
         return 'success', None
 
     def _fail_message_no_ack(self, message_id):
@@ -743,9 +744,17 @@ class Client:
         def done(complete, nonce):
             self._finish_message_send(message_id, complete)
 
+        with self._lock:
+            self._pow_sequencer += 1
+            token = self._pow_sequencer
+            stop_event = threading.Event()
+        self._track_pow(token, stop_event, message_id=message_id,
+                        dest=to_address, preview=self._pow_preview(body),
+                        kind='msg')
         try:
             self._run_pow_and_done(
-                unsigned, target, message_id=message_id, done_cb=done)
+                unsigned, target, message_id=message_id, done_cb=done,
+                token=token, stop_event=stop_event)
         except Exception:
             with self._lock:
                 self._msg_in_flight.discard(message_id)
@@ -800,12 +809,13 @@ class Client:
         ).run(initial_hash_of(unsigned), target)
 
     def _pow_and_publish(self, unsigned, target, message_id=None,
-                         done_cb=None):
+                         done_cb=None, dest=None, preview=None, kind=None):
         with self._lock:
             self._pow_sequencer += 1
             token = self._pow_sequencer
             stop_event = threading.Event()
-            self._pow_stops[token] = stop_event
+        self._track_pow(token, stop_event, message_id=message_id,
+                        dest=dest, preview=preview, kind=kind)
 
         def worker():
             self._run_pow_and_done(
@@ -814,6 +824,39 @@ class Client:
 
         threading.Thread(target=worker, daemon=True,
                          name='pow-%d' % token).start()
+        return token
+
+    def _ensure_pow_entry(self, token, stop_event, message_id):
+        with self._lock:
+            self._pow_stops[token] = stop_event
+            meta = self._pow_meta.get(token)
+            if meta is None:
+                self._pow_meta[token] = {
+                    'token': token,
+                    'message_id': message_id,
+                    'dest': None,
+                    'preview': '',
+                    'kind': '',
+                    'started': time.time(),
+                    'tried': 0,
+                    'rate': 0.0,
+                }
+            elif message_id is not None and meta.get('message_id') is None:
+                meta['message_id'] = message_id
+
+    def _fail_pow(self, token, message_id):
+        self.ui_queue.put(('pow-cancelled', token))
+        if message_id is not None:
+            with self._lock:
+                self._msg_in_flight.discard(message_id)
+        else:
+            with self._lock:
+                meta = self._pow_meta.get(token)
+                pending = meta.get('message_id') if meta else None
+            if pending is not None:
+                with self._lock:
+                    self._msg_in_flight.discard(pending)
+        self._untrack_pow(token)
 
     def _run_pow_and_done(self, unsigned, target, message_id=None,
                           done_cb=None, token=None, stop_event=None):
@@ -823,7 +866,7 @@ class Client:
                 token = self._pow_sequencer
             if stop_event is None:
                 stop_event = threading.Event()
-            self._pow_stops[token] = stop_event
+        self._ensure_pow_entry(token, stop_event, message_id)
         executor = PowExecutor(
             workers=max(1, self.db.get_int('pow_workers', 0) or 0) or
             max(1, os.cpu_count() or 2),
@@ -832,18 +875,16 @@ class Client:
         try:
             nonce = executor.run(initial_hash_of(unsigned), target)
         except Exception:
-            self.ui_queue.put(('pow-cancelled', token))
-            with self._lock:
-                self._pow_stops.pop(token, None)
+            self._fail_pow(token, message_id)
             return
         complete = objects.complete_object(unsigned, nonce)
-        with self._lock:
-            self._pow_stops.pop(token, None)
+        self._untrack_pow(token)
         if done_cb is not None:
             done_cb(complete, nonce)
 
     def _pow_progress(self, token):
         def progress(tried, rate):
+            self._note_pow_progress(token, tried, rate)
             self.ui_queue.put(('pow-progress', token, tried, rate))
         return progress
 
@@ -852,6 +893,98 @@ class Client:
             event = self._pow_stops.get(token)
         if event is not None:
             event.set()
+
+    @staticmethod
+    def _pow_preview(body, limit=40):
+        try:
+            text = str(body or '').replace('\n', ' ').strip()
+        except Exception:
+            return ''
+        if len(text) <= limit:
+            return text
+        if limit <= 1:
+            return '…'
+        return text[:limit - 1] + '…'
+
+    def _track_pow(self, token, stop_event, message_id=None,
+                   dest=None, preview=None, kind=None):
+        with self._lock:
+            self._pow_stops[token] = stop_event
+            current = self._pow_meta.get(token)
+            if current is None:
+                self._pow_meta[token] = {
+                    'token': token,
+                    'message_id': message_id,
+                    'dest': dest,
+                    'preview': preview or '',
+                    'kind': kind or '',
+                    'started': time.time(),
+                    'tried': 0,
+                    'rate': 0.0,
+                }
+                return
+            if message_id is not None:
+                current['message_id'] = message_id
+            if dest is not None:
+                current['dest'] = dest
+            if preview:
+                current['preview'] = preview
+            if kind:
+                current['kind'] = kind
+
+    def _untrack_pow(self, token):
+        with self._lock:
+            self._pow_stops.pop(token, None)
+            self._pow_meta.pop(token, None)
+
+    def _note_pow_progress(self, token, tried, rate):
+        with self._lock:
+            meta = self._pow_meta.get(token)
+            if meta is not None:
+                meta['tried'] = tried
+                meta['rate'] = rate
+
+    def cancel_all_pow(self):
+        with self._lock:
+            events = list(self._pow_stops.values())
+        for event in events:
+            try:
+                event.set()
+            except Exception:
+                pass
+
+    def list_pow_tasks(self):
+        now = time.time()
+        with self._lock:
+            items = list(self._pow_meta.values())
+            stops = dict(self._pow_stops)
+        tasks = []
+        for meta in items:
+            tasks.append(self._describe_pow_task(meta, stops, now))
+        tasks.sort(key=lambda item: item['token'] or 0)
+        return tasks
+
+    @staticmethod
+    def _describe_pow_task(meta, stops, now):
+        token = meta.get('token')
+        event = stops.get(token)
+        try:
+            cancelling = bool(event is not None and event.is_set())
+        except Exception:
+            cancelling = False
+        started = meta.get('started') or now
+        return {
+            'token': token,
+            'message_id': meta.get('message_id'),
+            'dest': meta.get('dest'),
+            'preview': meta.get('preview') or '',
+            'kind': meta.get('kind') or '',
+            'started': started,
+            'elapsed': max(0.0, now - started),
+            'tried': meta.get('tried') or 0,
+            'rate': meta.get('rate') or 0.0,
+            'cancelling': cancelling,
+        }
 
     def broadcast(self, identity_address, body,
                   encoding=BITMESSAGE_ENCODING_TRIVIAL):
@@ -879,7 +1012,9 @@ class Client:
                 int(time.time()), 'out', 'sent', keys.stream)
             self.ui_queue.put(('broadcast-sent', identity_address))
 
-        self._pow_and_publish(unsigned, target, done_cb=done)
+        self._pow_and_publish(
+            unsigned, target, done_cb=done, dest=identity_address,
+            preview=self._pow_preview(body), kind='broadcast')
         return 'success'
 
     def _derive_chan_keys(self, address, name, stream):
@@ -943,7 +1078,9 @@ class Client:
                 int(time.time()), 'out', 'sent', keys.stream)
             self.ui_queue.put(('broadcast-sent', address))
 
-        self._pow_and_publish(unsigned, target, done_cb=done)
+        self._pow_and_publish(
+            unsigned, target, done_cb=done, dest=address,
+            preview=self._pow_preview(body), kind='chan')
         return 'success', None
 
     # ---------- publicação de chave pública ----------
@@ -968,7 +1105,9 @@ class Client:
                 pass
             self._log('rede', 'pubkey publicada na rede')
 
-        self._pow_and_publish(unsigned, target, done_cb=done)
+        self._pow_and_publish(
+            unsigned, target, done_cb=done, dest=getattr(keys, 'address', None),
+            preview='publicação de chave pública', kind='pubkey')
 
     def _reannounce_loop(self):
         self._reannounce_pubkeys_once()
