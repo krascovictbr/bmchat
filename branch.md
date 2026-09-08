@@ -18,6 +18,7 @@
 - [identidades + TTL (2026-09-08, ramo principal)](#identidades-e-ttl--ramo-principal-2026-09-08)
 - [re-download pós-wipe (2026-09-08, ramo principal)](#re-download-pós-wipe--ramo-principal-2026-09-08)
 - [rotação de pares / sync do zero (2026-09-08, ramo principal)](#rotação-de-pares--ramo-principal-2026-09-08)
+- [bootstrap rápido / lista fresca (2026-09-08, ramo principal)](#bootstrap-rápido--ramo-principal-2026-09-08)
 
 ---
 
@@ -1037,3 +1038,37 @@ estabelecida de 7, 6 "negociando" com ↑0B↓0B, 1 estabelecida muda,
 - Simulação: mortos despejados em 0,31s, mudo em 0,52s, sync 0→3 em
   0,82s. Limite honesto: sem nenhum par falante alcançável, nada
   sincroniza — mas a tela mostra isso em vez de fingir.
+
+---
+
+# Bootstrap rápido — ramo principal, 2026-09-08
+
+Problema do dono: entrar na rede demorava muito testando IP por IP uma
+lista cheia de mortos/proxies/rotativos.
+
+## Diagnóstico (medido no código antigo)
+- Sementes DNS: 2 (`bootstrap8080`/`bootstrap8444.bitmessage.org`),
+  iguais às da referência — nada a completar, nenhum IP fixo.
+- Resolução serial sem timeout: 1 semente lenta travava tudo (20,3s).
+- Dial: `connect_timeout` 30s, 1 giro/5s, cooldown fixo 60s, sem poda:
+  100 mortos → ~6min, 715 mortos → ~44min até a 1ª estabelecida.
+
+## Correção
+- Resolução paralela (1 thread/hostname, timeout 8s) + refresh periódico
+  a cada 30min + re-DNS ao esgotar; merge sem duplicar.
+- `connect_timeout` default 30→10s (setting do usuário continua valendo).
+- Backoff exponencial por par (1min→…→teto 1h + jitter) + **poda na 5ª
+  falha seguida** (morto/rotativo some da lista); sucesso zera; janela
+  respeitada (sem retestar IP:porta em backoff); produtivo primeiro com
+  penalidade por falha. Contadores persistidos no `knownnodes.dat`.
+- Burst +4 contínuo; status honesto ("procurando pares: X tentativas, Y
+  conhecidos, Z ignorados…"). Testes `test_bootstrap.py` (11).
+
+## Verificação
+- Simulação: 100 mortos 361s→81s (4,5×); 715 mortos 2671s→591s; DNS
+  20,3s→8s; 2º boot só disca desconhecidos (podados).
+- `pytest tests/ -q`: **128 passed, 1 skipped**; flake8/mypy limpos.
+- Flake real caçado e corrigido: `test_pow_and_publish_sucesso_limpa_meta`
+  tinha race (worker instantâneo limpava antes dos asserts) → executor do
+  teste com gate determinístico (15/15 estável). Código de produção
+  intacto — era bug só no teste.

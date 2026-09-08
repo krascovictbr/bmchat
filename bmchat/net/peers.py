@@ -1,6 +1,16 @@
 import json
 import os
+import random
 import time
+
+
+# Backoff exponencial por par (testar rápido, desistir rápido):
+# 1ª falha → 1min, 2ª → 2min, 3ª → 4min … teto ~1h, com jitter para
+# não fazer N pares voltarem ao giro no mesmo tick. Referência
+# (PyBitmessage knownnodes.BOOTSTRAP_RETRY_COOLDOWN): 1h fixo.
+BACKOFF_BASE_SECONDS = 60
+BACKOFF_CAP_SECONDS = 3600
+MAX_CONSECUTIVE_FAILURES = 5
 
 
 DEFAULT_NODES = [
@@ -59,6 +69,7 @@ def _parse_store_entry(item):
             'inv_count': int(info.get('invs', 0) or 0),
             'last_inv': int(info.get('lastinv', 0) or 0),
             'mute_count': int(info.get('mutes', 0) or 0),
+            'fail_count': int(info.get('fails', 0) or 0),
         }
     except Exception:
         return None
@@ -100,7 +111,7 @@ class PeerStore:
             self.entries[(host, port)] = {
                 'stream': 1, 'services': 1, 'last_seen': now, 'rating': 0,
                 'last_try': 0, 'inv_count': 0, 'last_inv': 0,
-                'mute_count': 0}
+                'mute_count': 0, 'fail_count': 0}
 
     def save(self):
         if not self.path:
@@ -118,6 +129,7 @@ class PeerStore:
                     'invs': info.get('inv_count', 0),
                     'lastinv': info.get('last_inv', 0),
                     'mutes': info.get('mute_count', 0),
+                    'fails': info.get('fail_count', 0),
                 },
             })
         directory = os.path.dirname(self.path)
@@ -152,7 +164,7 @@ class PeerStore:
             'stream': stream, 'services': services,
             'last_seen': int(time.time()), 'rating': rating,
             'last_try': 0, 'inv_count': 0, 'last_inv': 0,
-            'mute_count': 0})
+            'mute_count': 0, 'fail_count': 0})
         entry['last_seen'] = int(time.time())
         entry['stream'] = stream
         entry['services'] = services
@@ -161,6 +173,7 @@ class PeerStore:
         entry.setdefault('inv_count', 0)
         entry.setdefault('last_inv', 0)
         entry.setdefault('mute_count', 0)
+        entry.setdefault('fail_count', 0)
         self.entries[key] = entry
         if len(self.entries) > self.MAX_PEERS:
             # evicta piores (rating baixo, vistos há mais tempo)
@@ -177,16 +190,37 @@ class PeerStore:
             entry['last_try'] = int(time.time())
 
     def record_failure(self, host, port):
-        entry = self.entries.get((host, int(port)))
-        if entry is not None:
-            entry['rating'] = entry.get('rating', 0) - 1
-            entry['last_try'] = int(time.time())
+        """Falha de dial/handshake: rating -1 + conta falha seguida.
+
+        Na N-ésima seguida (MAX_CONSECUTIVE_FAILURES) o par é podado da
+        loja (morto/rotativo some da lista = lista sempre fresca).
+        Devolve True se podou.
+        """
+        try:
+            key = (host, int(port))
+        except Exception:
+            return False
+        entry = self.entries.get(key)
+        if entry is None:
+            return False
+        entry['rating'] = entry.get('rating', 0) - 1
+        entry['last_try'] = int(time.time())
+        try:
+            fails = int(entry.get('fail_count', 0) or 0) + 1
+        except Exception:
+            fails = 1
+        entry['fail_count'] = fails
+        if fails >= MAX_CONSECUTIVE_FAILURES:
+            self.entries.pop(key, None)
+            return True
+        return False
 
     def record_success(self, host, port):
         entry = self.entries.get((host, int(port)))
         if entry is not None:
             entry['rating'] = min(entry.get('rating', 0) + 1, 10)
             entry['last_try'] = int(time.time())
+            entry['fail_count'] = 0
 
     def record_inv(self, host, port):
         """Par entregou inv: marca como produtivo (priorizado no giro).
@@ -252,11 +286,13 @@ class PeerStore:
 
     @staticmethod
     def _effective_rating(info):
-        """Rating + bônus limitado por produtividade (já entregou inv).
+        """Rating + bônus limitado por produtividade − falha seguida.
 
         +2 coloca o par falante à frente de novato (0) e de morto (-1),
         mas sem blindar: cada falha/mudez derruba o rating e o cooldown
-        continua valendo para rating negativo. Sem inv: rating puro.
+        continua valendo para rating negativo. -1 por falha seguida
+        afunda o morto recorrente para o fim da fila. Sem inv: rating
+        puro menos a penalidade de falha.
         """
         try:
             base = float(info.get('rating', 0))
@@ -266,7 +302,61 @@ class PeerStore:
             productive = int(info.get('inv_count', 0) or 0) > 0
         except Exception:
             productive = False
-        return base + (2.0 if productive else 0.0)
+        try:
+            fails = int(info.get('fail_count', 0) or 0)
+        except Exception:
+            fails = 0
+        return base + (2.0 if productive else 0.0) - \
+            float(min(max(fails, 0), 8))
+
+    @staticmethod
+    def backoff_for(info, base=BACKOFF_BASE_SECONDS):
+        """Janela de backoff (s) para o par: base×2^falhas, teto 1h+jitter.
+
+        base<=0 (ex.: best(cooldown=0)) desliga: devolve 0 sem jitter.
+        """
+        try:
+            fails = int((info or {}).get('fail_count', 0) or 0)
+        except Exception:
+            fails = 0
+        if fails < 0:
+            fails = 0
+        try:
+            base = float(base)
+        except Exception:
+            base = float(BACKOFF_BASE_SECONDS)
+        if base <= 0:
+            return 0.0
+        window = base * (2.0 ** min(fails, 10))
+        window = min(window, float(BACKOFF_CAP_SECONDS))
+        try:
+            window += random.uniform(0.0, min(60.0, window * 0.25))
+        except Exception:
+            pass
+        return window
+
+    def in_backoff(self, now=None, cooldown=BACKOFF_BASE_SECONDS):
+        """Quantos pares estão dentro da janela de backoff (diagnóstico)."""
+        try:
+            now = int(time.time() if now is None else now)
+        except Exception:
+            now = int(time.time())
+        count = 0
+        for info in list(self.entries.values()):
+            try:
+                rating = info.get('rating', 0)
+                fails = int(info.get('fail_count', 0) or 0)
+            except Exception:
+                continue
+            if rating < 0 or fails > 0:
+                try:
+                    window = self.backoff_for(info, cooldown)
+                    last = int(info.get('last_try', 0) or 0)
+                except Exception:
+                    continue
+                if window > 0 and now - last < window:
+                    count += 1
+        return count
 
     def best(self, limit=None, exclude=None, cooldown=60):
         exclude = exclude or set()
@@ -280,9 +370,17 @@ class PeerStore:
         for (host, port), info in ranked:
             if (host, port) in exclude:
                 continue
-            if info.get('rating', 0) < 0 and \
-                    now - info.get('last_try', 0) < cooldown:
-                continue
+            # Nunca retesta o mesmo IP:porta dentro da janela de backoff
+            # (exponencial por sequência de falha, teto ~1h+jitter).
+            try:
+                fails = int(info.get('fail_count', 0) or 0)
+            except Exception:
+                fails = 0
+            if info.get('rating', 0) < 0 or fails > 0:
+                window = self.backoff_for(info, cooldown)
+                if window > 0 and \
+                        now - info.get('last_try', 0) < window:
+                    continue
             result.append((Peer(host, port), info))
             if limit and len(result) >= limit:
                 break

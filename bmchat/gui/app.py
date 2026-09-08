@@ -284,6 +284,23 @@ def _conn_extra(conn, snapshot):
     return ''
 
 
+def _search_counts(snap):
+    """(tentativas, conhecidos, ignorados) p/ o status de procura."""
+    try:
+        attempts = int((snap.get('stats') or {}).get('dial_attempts', 0))
+    except Exception:
+        attempts = 0
+    try:
+        known = int(snap.get('peers_stored', 0))
+    except Exception:
+        known = 0
+    try:
+        ignored = int(snap.get('peers_backoff', 0))
+    except Exception:
+        ignored = 0
+    return attempts, known, ignored
+
+
 def _status_state_part(snap, established):
     """Trecho honesto da barra de status ('' = nada a acrescentar)."""
     resync = snap.get('resync') or {}
@@ -294,7 +311,10 @@ def _status_state_part(snap, established):
     if not snap.get('running', True):
         return 'rede parada'
     if established == 0 and snap['connection_count'] == 0:
-        return 'procurando pares…'
+        attempts, known, ignored = _search_counts(snap)
+        return ('procurando pares: %d tentativa(s), %d conhecido(s), '
+                '%d ignorado(s) por falha recente…'
+                % (attempts, known, ignored))
     if established == 0:
         return 'negociando…'
     invs = _snap_int((snap.get('stats') or {}).get('invs', 0))

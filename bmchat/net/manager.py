@@ -36,6 +36,7 @@ class NetworkManager:
             'objects_announced': 0,
             'invs': 0,
             'getdatas': 0,
+            'dial_attempts': 0,
         }
         self._maintenance_thread = None
         # Re-download robusto (ver wipe_objects): hashes pedidos via
@@ -64,7 +65,14 @@ class NetworkManager:
         self.SILENT_TIMEOUT = 90
         self.BOOT_EXTRA_SLOTS = 4
         self.DNS_REFRESH_INTERVAL = 120
+        # Refresh contínuo: re-resolve periódico (30min) independente de
+        # o giro ter esgotado — descobre pares novos/rotativos que
+        # voltaram sem depender de addr de par mudo.
+        self.DNS_PERIODIC_INTERVAL = 1800
+        # Timeout curto por hostname: 1 semente lenta não trava as outras.
+        self.DNS_RESOLVE_TIMEOUT = 8
         self._last_dns_resolve = 0.0
+        self._last_periodic_dns = 0.0
         # Re-sync após wipe: pares derrubados por nós têm prioridade e
         # furam o cooldown até o re-download engrenar ou expirar.
         self.resync = {
@@ -93,6 +101,7 @@ class NetworkManager:
     def start(self, streams):
         self.running = True
         self.started_at = time.time()
+        self._last_periodic_dns = time.time()
         self._prune_expired_objects()
         self._load_known_hashes()
         self.streams = list(streams)
@@ -103,23 +112,69 @@ class NetworkManager:
             target=self._resolve_seeds, daemon=True, name='net-dnsseeds')
         resolver.start()
 
-    def _resolve_seeds(self):
+    def _resolve_one_seed(self, host, port):
+        """Resolve 1 hostname e mescla na loja (add dedupa por IP:porta)."""
         import socket as _socket
+        try:
+            infos = _socket.getaddrinfo(host, port, _socket.AF_INET,
+                                        _socket.SOCK_STREAM)
+        except Exception as exc:
+            self.on_log('network', 'semente DNS %s: %s' % (host, exc))
+            return 0
+        added = 0
+        for info in infos:
+            try:
+                self.add_peer(info[4][0], port)
+                added += 1
+            except Exception:
+                pass
+        self.on_log('network', 'semente DNS %s resolvida (%d par(es))'
+                    % (host, added))
+        return added
+
+    def _resolve_timeout(self):
+        try:
+            timeout = float(self.DNS_RESOLVE_TIMEOUT)
+        except Exception:
+            timeout = 8.0
+        return max(1.0, min(timeout, 60.0))
+
+    def _spawn_seed_workers(self):
+        workers = []
         for host, port in DNS_SEEDS:
             if not self.running:
-                return
+                break
             try:
-                infos = _socket.getaddrinfo(host, port, _socket.AF_INET,
-                                            _socket.SOCK_STREAM)
-            except Exception as exc:
-                self.on_log('network', 'semente DNS %s: %s' % (host, exc))
+                thread = threading.Thread(
+                    target=self._resolve_one_seed, args=(host, port),
+                    daemon=True, name='net-dnsseed-%s' % host)
+                thread.start()
+            except Exception:
                 continue
-            for info in infos:
-                try:
-                    self.add_peer(info[4][0], port)
-                except Exception:
-                    pass
-            self.on_log('network', 'semente DNS %s resolvida' % host)
+            workers.append(thread)
+        return workers
+
+    def _join_seed_workers(self, workers, timeout):
+        deadline = time.time() + timeout
+        for thread in workers:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                thread.join(min(remaining, timeout))
+            except Exception:
+                pass
+
+    def _resolve_seeds(self):
+        """1 thread por hostname + timeout curto + merge.
+
+        Antes era serial e sem timeout: 1 semente lenta travava as
+        outras (e o start). Cada worker mescla via add_peer (sem
+        duplicar); o join com timeout só limita a espera — worker lento
+        mescla quando terminar (daemon, não trava o desligamento).
+        """
+        self._join_seed_workers(
+            self._spawn_seed_workers(), self._resolve_timeout())
 
     def stop(self):
         self.running = False
@@ -139,6 +194,7 @@ class NetworkManager:
                 self._prune_connections()
                 self._retry_pending_getdata()
                 self._update_resync()
+                self._maybe_periodic_refresh()
             except Exception as exc:
                 self.on_log('network', 'manutenção: %s' % exc)
             try:
@@ -183,6 +239,33 @@ class NetworkManager:
         except Exception:
             pass
 
+    def _maybe_periodic_refresh(self):
+        """Re-resolve periódico (30min), independente de esgotar a lista.
+
+        O re-DNS ao esgotar (120s, _maybe_refresh_seeds) só dispara
+        quando não há mais ninguém para tentar; este roda sozinho para
+        descobrir pares novos/rotativos que voltaram à rede.
+        """
+        try:
+            interval = float(self.DNS_PERIODIC_INTERVAL)
+        except Exception:
+            interval = 1800.0
+        now = time.time()
+        if now - self._last_periodic_dns < max(60.0, interval):
+            return
+        self._last_periodic_dns = now
+        try:
+            threading.Thread(
+                target=self._resolve_seeds, daemon=True,
+                name='net-dnsseeds-periodic').start()
+        except Exception:
+            pass
+        try:
+            self.on_log('network', 'atualizando lista de pares '
+                        '(re-consulta periódica às sementes DNS)…')
+        except Exception:
+            pass
+
     def _resync_candidates(self, current):
         with self.lock:
             if not self.resync.get('active'):
@@ -200,6 +283,11 @@ class NetworkManager:
             return False
         self.peers.record_attempt(peer.host, peer.port)
         try:
+            self.stats['dial_attempts'] = \
+                int(self.stats.get('dial_attempts', 0)) + 1
+        except Exception:
+            pass
+        try:
             self.spawn(peer)
         except Exception:
             pass
@@ -215,7 +303,9 @@ class NetworkManager:
 
     def _connection_targets(self, max_connections):
         """(current, goal): meta é ter N ESTABELECIDAS; negociando tem
-        orçamento half-open à parte (maior no boot vazio)."""
+        orçamento half-open à parte (+BOOT_EXTRA_SLOTS, agora também em
+        regime contínuo, não só no boot vazio: com a lista cheia de
+        mortos, girar 1-a-1 por tick de 5s nunca acha o vivo)."""
         with self.lock:
             current = set(c.peer_key for c in self.connections.values())
             established = sum(
@@ -224,8 +314,7 @@ class NetworkManager:
         if need <= 0:
             return current, 0
         try:
-            extra = int(self.BOOT_EXTRA_SLOTS) if self._is_cold_start() \
-                else 0
+            extra = max(0, int(self.BOOT_EXTRA_SLOTS))
         except Exception:
             extra = 0
         budget = max_connections + max(0, extra) - len(current)
@@ -251,7 +340,8 @@ class NetworkManager:
             return
         # Antes: missing = max - len(current): 6 negociando mortas
         # ocupavam slot e o giro parava (1 tentativa/5s). Agora a meta
-        # conta estabelecidas e o boot vazio ganha half-open extra.
+        # conta estabelecidas e há orçamento half-open extra (+4) em
+        # qualquer regime, não só no boot vazio.
         spawned = 0
         for peer in self._resync_candidates(current):
             if spawned >= goal:
@@ -384,15 +474,14 @@ class NetworkManager:
                         continue
                     self.connections.pop(connection.peer_key, None)
         self._prune_stalled(time.time())
-        # Mesmo orçamento do _ensure: no boot vazio o burst half-open não
-        # é decapitado no mesmo tick; quando o sync engrena (não-cold),
-        # o teto volta a max_connections e as extras mais antigas caem.
+        # Mesmo orçamento do _ensure: o burst half-open (+BOOT_EXTRA)
+        # vale em regime contínuo, não só no boot vazio — senão o prune
+        # decapitaria no mesmo tick as discagens extras recém-abertas.
         try:
-            extra = int(self.BOOT_EXTRA_SLOTS) if self._is_cold_start() \
-                else 0
+            extra = max(0, int(self.BOOT_EXTRA_SLOTS))
         except Exception:
             extra = 0
-        self._trim_over_cap(max_connections + max(0, extra))
+        self._trim_over_cap(max_connections + extra)
 
     def spawn(self, peer):
         if not self.running or not peer:
@@ -824,6 +913,19 @@ class NetworkManager:
             return 'sincronizando'
         return 'conectado'
 
+    def _snapshot_backoff(self, now):
+        try:
+            return self.peers.in_backoff(now)
+        except Exception:
+            return 0
+
+    def _snapshot_connect_timeout(self):
+        try:
+            return max(
+                5, min(int(self.db.get_int('connect_timeout', 10)), 300))
+        except Exception:
+            return 10
+
     def snapshot(self):
         import struct as _struct
         now = time.time()
@@ -884,6 +986,8 @@ class NetworkManager:
         uptime = int(now - self.started_at) if self.started_at else 0
         stats = dict(self.stats)
         established = sum(1 for c in connections if c.established)
+        peers_backoff = self._snapshot_backoff(now)
+        connect_timeout = self._snapshot_connect_timeout()
         return {
             'proxy': proxy,
             'streams': list(self.streams),
@@ -895,6 +999,7 @@ class NetworkManager:
                 pending_size, stats),
             'connection_count': len(connections),
             'peers_stored': peers_stored,
+            'peers_backoff': peers_backoff,
             'inventory': inventory_size,
             'known_hashes': known_size,
             'objects_stored': objects_stored,
@@ -902,6 +1007,7 @@ class NetworkManager:
             'timeouts': {
                 'handshake': self.HANDSHAKE_TIMEOUT,
                 'silent': self.SILENT_TIMEOUT,
+                'connect': connect_timeout,
             },
             'resync': {
                 'active': bool(resync_info.get('active')),

@@ -332,6 +332,10 @@ def _wait_for(condition, timeout=5.0):
 def test_pow_and_publish_sucesso_limpa_meta(monkeypatch):
     import bmchat.core.client as client_mod
 
+    # O worker roda em thread e o executor fake retorna na hora: sem a
+    # cancela, ele pode registrar+limpar antes dos asserts (flake).
+    gate = threading.Event()
+
     class _FastExecutor:
         def __init__(self, workers=None, progress_cb=None, stop_event=None):
             self.progress_cb = progress_cb
@@ -339,6 +343,7 @@ def test_pow_and_publish_sucesso_limpa_meta(monkeypatch):
         def run(self, initial_hash, target):
             if self.progress_cb is not None:
                 self.progress_cb(10, 100.0)
+            assert gate.wait(timeout=5), 'gate do teste nunca abriu'
             return 999
 
     monkeypatch.setattr(client_mod, 'PowExecutor', _FastExecutor)
@@ -351,6 +356,7 @@ def test_pow_and_publish_sucesso_limpa_meta(monkeypatch):
             dest='BM-alvo', preview='corpo curto', kind='msg')
         assert token in client._pow_stops
         assert any(t['token'] == token for t in client.list_pow_tasks())
+        gate.set()
         assert _wait_for(lambda: not client.list_pow_tasks(), timeout=5)
         assert done, 'done_cb deveria rodar no sucesso'
         complete, nonce = done[0]

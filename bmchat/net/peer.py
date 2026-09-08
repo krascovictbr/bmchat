@@ -112,11 +112,14 @@ class PeerConnection(threading.Thread):
 
     def _connect(self):
         from ..net.proxy import connect_socket
+        # Dial rápido, desistência rápida: 10s (era 30s). Com a lista
+        # cheia de mortos, cada blackhole custava 30s de slot half-open;
+        # já IP recusado (RST) falha na hora de qualquer jeito.
         try:
             connect_timeout = int(
-                self.manager.db.get_int('connect_timeout', 30))
+                self.manager.db.get_int('connect_timeout', 10))
         except (TypeError, ValueError):
-            connect_timeout = 30
+            connect_timeout = 10
         try:
             recv_timeout = int(self.manager.db.get_int('recv_timeout', 60))
         except (TypeError, ValueError):
