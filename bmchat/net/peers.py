@@ -39,44 +39,55 @@ class Peer:
         return '%s:%s' % (self.host, self.port)
 
 
+def _parse_store_entry(item):
+    """Parse one stored peer entry; return ((host, port), info) or None."""
+    try:
+        if not isinstance(item, dict):
+            return None
+        peer = item.get('peer', {}) or {}
+        info = item.get('info', {}) or {}
+        host = str(peer.get('host', '')).strip()
+        port = int(peer.get('port', 0))
+        if not host or not 1 <= port <= 65535:
+            return None
+        return (host, port), {
+            'stream': int(item.get('stream', 1)),
+            'services': info.get('services', 1),
+            'last_seen': int(info.get('lastseen', time.time())),
+            'rating': float(info.get('rating', 0)),
+            'last_try': int(info.get('lasttry', 0)),
+        }
+    except Exception:
+        return None
+
+
 class PeerStore:
 
     def __init__(self, path=None):
         self.path = path
         self.entries = {}
 
-    def load(self):
+    def _read_store_data(self):
         if not self.path or not os.path.exists(self.path):
-            self.seed_defaults()
-            return
+            return None
         try:
             with open(self.path, 'r', encoding='utf-8') as handle:
                 data = json.load(handle)
         except Exception:
-            self.seed_defaults()
-            return
+            return None
         if not isinstance(data, list):
+            return None
+        return data
+
+    def load(self):
+        data = self._read_store_data()
+        if data is None:
             self.seed_defaults()
             return
         for item in data:
-            try:
-                if not isinstance(item, dict):
-                    continue
-                peer = item.get('peer', {}) or {}
-                info = item.get('info', {}) or {}
-                host = str(peer.get('host', '')).strip()
-                port = int(peer.get('port', 0))
-                if not host or not 1 <= port <= 65535:
-                    continue
-                self.entries[(host, port)] = {
-                    'stream': int(item.get('stream', 1)),
-                    'services': info.get('services', 1),
-                    'last_seen': int(info.get('lastseen', time.time())),
-                    'rating': float(info.get('rating', 0)),
-                    'last_try': int(info.get('lasttry', 0)),
-                }
-            except Exception:
-                continue
+            entry = _parse_store_entry(item)
+            if entry is not None:
+                self.entries[entry[0]] = entry[1]
         if not self.entries:
             self.seed_defaults()
 

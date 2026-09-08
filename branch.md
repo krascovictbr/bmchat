@@ -12,6 +12,7 @@
 - [analysis/complete-audit-20260907 — relatório completo](#bmchat--relatório-completo-de-auditoria-analysis_reportmd)
 - [Correções aplicadas (2026-09-07, com aprovação — TUDO)](#correções-aplicadas-2026-09-07-com-aprovação--tudo)
 - [optimization/performance-20260907 (2026-09-07)](#changelog--branch-optimizationperformance-20260907)
+- [fix/ci-lint-20260907 (2026-09-08)](#changelog--branch-fixci-lint-20260907)
 
 ---
 
@@ -741,3 +742,57 @@ Corrigido.
 - Smokes Tkinter: abrir 30 msgs, envio mockado, maximizar 1600 px,
   welcome↔conversa, temas claro/escuro, anexo, reply/forward, agendamento,
   `report_callback_exception` vazio, fechar sem erros.
+
+---
+
+# Changelog — branch `fix/ci-lint-20260907`
+
+Registro das atualizações vindas do branch `fix/ci-lint-20260907`
+(merge `--no-ff` em `rolling-release`, 2026-09-08; branch apagado após o
+merge). Formato: Adicionado / Mudado / Corrigido.
+
+## [fix/ci-lint-20260907] — 2026-09-08
+
+### Adicionado
+- CI verde: 174 erros do flake8 zerados sem mudar comportamento
+  (complexidades C901 quebradas em helpers, W292/W293/W391, E127/E128,
+  E302/E305, E402, E731, F401 com `__all__` nos re-exports e `noqa`
+  justificado nas sondas `win10toast`/`dbus`).
+- Atualização automática: aplica sozinha (`update-available` + opt-in +
+  árvore limpa) e reinicia sozinha com desligamento limpo; checagem no
+  startup + periódica (6h, configurável); toggle `auto_update` e
+  `update_interval_h` nas configurações de rede; rascunho + conversa
+  salvos e restaurados no restart; progresso via status; settings
+  `AUTO_UPDATE_KEY`/`UPDATE_INTERVAL_KEY`/`PENDING_DRAFT_KEY`.
+- `ensure_upstream()`: liga o ramo sozinho ao `origin/rolling-release`
+  antes de concluir `no-upstream` (só config git, nada aplicado).
+- Testes: `test_update.py` 3 → 43 casos (diverged, fetch-failed,
+  no-upstream, preview, auto-apply, dirty-hold, opt-out, rascunho,
+  restart, `ensure_upstream`).
+
+### Mudado
+- `perform_update` com callback de progresso (`fetch`/`merge`), mensagens
+  de erro PT-BR com ação e `cache_clear()` da versão (anunciava a antiga).
+- `check_for_updates` com `fetch_timeout` (15s check / 60s apply) e dicts
+  enriquecidos (`commits`, `local_short`, `remote_short`).
+- Diálogo de update mostra prévia (ramo, SHAs, até 10 commits) + aviso de
+  código remoto; `get_version` com sonda rápida e timeout 3s.
+- Erros de update viram status/log silencioso no automático; popup só no
+  caminho manual.
+
+### Corrigido
+- Restart sem `client.stop()` deixava `bmchat.lock` e gerava falso aviso
+  de "2ª instância" (hook `pre_exec` antes do `execv`).
+- Reentrância: N threads de check/apply (flags + throttle 10s + status).
+- Popup "Sem upstream configurado… atualize à mão com git pull": ramo é
+  ligado sozinho; **zero "atualize à mão"/"git pull"** em diálogos/status
+  (garantido por teste de varredura).
+- `except` desalinhado no `_send`, `os` não importado, tipos do
+  `encrypted_db.py`/`theme.py` (mypy).
+
+### Verificação
+- `pytest tests/ -q`: **65 passed, 1 skipped**.
+- `flake8` (2 comandos exatos do CI): exit 0; `mypy`: limpo (32 arqs).
+- Fluxos reais com clones: auto-apply ff (`v1→v2`), draft preservado,
+  `no-upstream` autoresolvido (`upstream_fixed=True`), árvore suja
+  recusada com mensagem clara.

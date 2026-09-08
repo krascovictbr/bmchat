@@ -289,7 +289,8 @@ class IncomingBroadcast:
                  'expires', 'sender_version', 'sender_stream')
 
 
-def process_broadcast(raw, subscriptions):
+def _open_broadcast(raw, subscriptions):
+    """Validate envelope and decrypt; return (obj, tag, plain) or None."""
     obj = ParsedObject(raw)
     if obj.object_type != OBJECT_BROADCAST:
         return None
@@ -306,25 +307,23 @@ def process_broadcast(raw, subscriptions):
             obj.data[32:], address_keys.encryption_private_from_address)
     except Exception:
         return None
+    return obj, tag, plain
+
+
+def _finish_broadcast(obj, tag, plain):
+    """Parse/verify decrypted broadcast; return IncomingBroadcast or None."""
     position = 0
     sender_version, position = _take_varint(plain, position)
     if sender_version < 4:
         return None
     sender_stream, position = _take_varint(plain, position)
-    position += 4
-    pub_signing = b'\x04' + plain[position:position + 64]
-    position += 64
-    pub_encryption = b'\x04' + plain[position:position + 64]
-    position += 64
+    position, pub_signing, pub_encryption = _take_broadcast_keys(plain, position)
     ntpb, position = _take_varint(plain, position)
     eb, position = _take_varint(plain, position)
     encoding, position = _take_varint(plain, position)
     if encoding == 0:
         return None
-    message_length, position = _take_varint(plain, position)
-    message = plain[position:position + message_length]
-    position += message_length
-    bottom_of_message = position
+    message, bottom_of_message, position = _take_broadcast_body(plain, position)
     signature_length, position = _take_varint(plain, position)
     signature = plain[position:position + signature_length]
     signed_data = (
@@ -341,8 +340,30 @@ def process_broadcast(raw, subscriptions):
     computed_tag = _tag_of(sender_version, sender_stream, computed_ripe)
     if computed_tag != tag:
         return None
+    return _make_broadcast(obj, sender_version, sender_stream,
+                           pub_signing, pub_encryption, encoding, message)
+
+
+def _take_broadcast_keys(plain, position):
+    position += 4
+    pub_signing = b'\x04' + plain[position:position + 64]
+    position += 64
+    pub_encryption = b'\x04' + plain[position:position + 64]
+    position += 64
+    return position, pub_signing, pub_encryption
+
+
+def _take_broadcast_body(plain, position):
+    message_length, position = _take_varint(plain, position)
+    message = plain[position:position + message_length]
+    position += message_length
+    return message, position, position
+
+
+def _make_broadcast(obj, sender_version, sender_stream,
+                    pub_signing, pub_encryption, encoding, message):
     item = IncomingBroadcast()
-    item.raw = raw
+    item.raw = obj.raw
     item.inventory_hash = obj.inventory_hash
     item.address = _address_from_pubkeys(
         sender_version, sender_stream, pub_signing, pub_encryption)
@@ -352,6 +373,14 @@ def process_broadcast(raw, subscriptions):
     item.sender_version = sender_version
     item.sender_stream = sender_stream
     return item
+
+
+def process_broadcast(raw, subscriptions):
+    opened = _open_broadcast(raw, subscriptions)
+    if opened is None:
+        return None
+    obj, tag, plain = opened
+    return _finish_broadcast(obj, tag, plain)
 
 
 def _take_varint(blob, position):

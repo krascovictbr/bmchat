@@ -73,6 +73,39 @@ class PowExecutor:
         self.stop_event = stop_event
         self.tried = 0
 
+    def _seed_futures(self, pool, futures, initial_hash, target,
+                      started, step):
+        for _ in range(self.workers):
+            future = pool.submit(search_range, (
+                initial_hash, target, started, step))
+            futures[future] = started
+            started += step
+        return started
+
+    def _poll_futures(self, pool, futures, initial_hash, target, step,
+                      begin):
+        import concurrent.futures
+        done, _pending = concurrent.futures.wait(
+            futures.keys(), timeout=0.4,
+            return_when=concurrent.futures.FIRST_COMPLETED)
+        for future in done:
+            start = futures.pop(future)
+            nonce, tried = future.result()
+            self.tried += tried
+            if nonce is not None:
+                for remaining in futures:
+                    remaining.cancel()
+                if self.progress_cb is not None:
+                    self.progress_cb(self.tried, self._rate(begin))
+                return nonce
+            next_start = start + step
+            new_future = pool.submit(search_range, (
+                initial_hash, target, next_start, step))
+            futures[new_future] = next_start
+        if self.progress_cb is not None and self.tried > 0:
+            self.progress_cb(self.tried, self._rate(begin))
+        return None
+
     def run(self, initial_hash, target, start_nonce=0):
         if len(initial_hash) != 64:
             raise ValueError('initial_hash deve ter 64 bytes')
@@ -83,34 +116,15 @@ class PowExecutor:
         begin = time.time()
         pool = ProcessPoolExecutor(max_workers=self.workers)
         try:
-            for _ in range(self.workers):
-                future = pool.submit(search_range, (
-                    initial_hash, target, started, step))
-                futures[future] = started
-                started += step
+            self._seed_futures(pool, futures, initial_hash, target,
+                               started, step)
             while futures:
                 if self.stop_event is not None and self.stop_event.is_set():
                     break
-                import concurrent.futures
-                done, pending = concurrent.futures.wait(
-                    futures.keys(), timeout=0.4,
-                    return_when=concurrent.futures.FIRST_COMPLETED)
-                for future in done:
-                    start = futures.pop(future)
-                    nonce, tried = future.result()
-                    self.tried += tried
-                    if nonce is not None:
-                        for remaining in futures:
-                            remaining.cancel()
-                        if self.progress_cb is not None:
-                            self.progress_cb(self.tried, self._rate(begin))
-                        return nonce
-                    next_start = start + step
-                    new_future = pool.submit(search_range, (
-                        initial_hash, target, next_start, step))
-                    futures[new_future] = next_start
-                if self.progress_cb is not None and self.tried > 0:
-                    self.progress_cb(self.tried, self._rate(begin))
+                found = self._poll_futures(pool, futures, initial_hash,
+                                           target, step, begin)
+                if found is not None:
+                    return found
         finally:
             for remaining in list(futures):
                 remaining.cancel()

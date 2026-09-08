@@ -8,7 +8,11 @@ import time
 import pytest
 
 from bmchat.core.client import Client
+import bmchat.core.client as client_mod
 from bmchat.crypto.keys import AddressKeys, generate_keys
+from bmchat.crypto.pow import (
+    find_nonce_single_threaded, initial_hash_of,
+)
 from bmchat.protocol import address as addr_module
 from bmchat.protocol import objects
 from bmchat.protocol import packets
@@ -26,10 +30,7 @@ def _ref_crypto():
         sys.path.insert(0, REF_SRC)
     import highlevelcrypto
     return highlevelcrypto
-from bmchat.crypto.pow import (
-    find_nonce_single_threaded, initial_hash_of,
-)
-import bmchat.core.client as client_mod
+
 
 TARGET = 2 ** 52
 

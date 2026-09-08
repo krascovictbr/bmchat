@@ -5,12 +5,12 @@ import time
 from ..protocol import packets
 from ..protocol.objects import ParsedObject
 from ..protocol.const import MAX_OBJECT_LENGTH
-
-MAX_FUTURE_SKEW = 28 * 24 * 3600 + 10800
-MAX_PAST_SKEW = 3600
 from ..crypto.pow import is_proof_of_work_sufficient
 from ..util.hashing import double_sha512
 from .peers import PeerStore, DNS_SEEDS
+
+MAX_FUTURE_SKEW = 28 * 24 * 3600 + 10800
+MAX_PAST_SKEW = 3600
 
 
 class NetworkManager:
@@ -180,7 +180,7 @@ class NetworkManager:
             pass
         return obj_hash
 
-    def received_object(self, raw, source):
+    def _parse_incoming_object(self, raw):
         try:
             if len(raw) > MAX_OBJECT_LENGTH + 64:
                 return None
@@ -193,6 +193,20 @@ class NetworkManager:
             if not is_proof_of_work_sufficient(raw):
                 return None
         except Exception:
+            return None
+        return parsed
+
+    def _deliver_object(self, parsed, raw, source):
+        if self.on_object is not None:
+            try:
+                self.on_object(parsed, raw, source)
+            except Exception:
+                pass
+        self.announce_object(raw, source)
+
+    def received_object(self, raw, source):
+        parsed = self._parse_incoming_object(raw)
+        if parsed is None:
             return None
         obj_hash = double_sha512(raw)[:32]
         with self.lock:
@@ -207,12 +221,7 @@ class NetworkManager:
             pass
         self.store_object(raw)
         self.stats['objects_received'] += 1
-        if self.on_object is not None:
-            try:
-                self.on_object(parsed, raw, source)
-            except Exception:
-                pass
-        self.announce_object(raw, source)
+        self._deliver_object(parsed, raw, source)
         return obj_hash
 
     def announce_object(self, raw, source=None):
@@ -254,9 +263,7 @@ class NetworkManager:
             connection.send_packet(b'getdata', packets.assemble_getdata(
                 wanted[i:i + 100]))
 
-    def on_getdata(self, connection, payload):
-        self.stats['getdatas'] += 1
-        hashes = packets.parse_inventory(payload)[:500]
+    def _split_cached_objects(self, hashes):
         blobs = []
         missing = []
         with self.lock:
@@ -266,26 +273,40 @@ class NetworkManager:
                     blobs.append(raw)
                 else:
                     missing.append(obj_hash)
-        if missing:
+        return blobs, missing
+
+    def _load_missing_fallback(self, missing, blobs):
+        for obj_hash in missing[:50]:
             try:
-                placeholders = ','.join('?' for _ in missing[:200])
-                rows = self.db.query(
-                    'SELECT hash, raw FROM objects WHERE hash IN (%s)' % placeholders,
-                    tuple(missing[:200]))
-                by_hash = {bytes(r['hash']): bytes(r['raw']) for r in rows}
-                for obj_hash in missing[:200]:
-                    raw = by_hash.get(bytes(obj_hash))
-                    if raw is not None:
-                        blobs.append(raw)
+                row = self.db.get_object(obj_hash)
+                raw = row['raw'] if row else None
+                if raw is not None:
+                    blobs.append(bytes(raw))
             except Exception:
-                for obj_hash in missing[:50]:
-                    try:
-                        row = self.db.get_object(obj_hash)
-                        raw = row['raw'] if row else None
-                        if raw is not None:
-                            blobs.append(bytes(raw))
-                    except Exception:
-                        pass
+                pass
+
+    def _load_missing_objects(self, missing):
+        blobs = []
+        try:
+            placeholders = ','.join('?' for _ in missing[:200])
+            rows = self.db.query(
+                'SELECT hash, raw FROM objects WHERE hash IN (%s)' % placeholders,
+                tuple(missing[:200]))
+            by_hash = {bytes(r['hash']): bytes(r['raw']) for r in rows}
+            for obj_hash in missing[:200]:
+                raw = by_hash.get(bytes(obj_hash))
+                if raw is not None:
+                    blobs.append(raw)
+        except Exception:
+            self._load_missing_fallback(missing, blobs)
+        return blobs
+
+    def on_getdata(self, connection, payload):
+        self.stats['getdatas'] += 1
+        hashes = packets.parse_inventory(payload)[:500]
+        blobs, missing = self._split_cached_objects(hashes)
+        if missing:
+            blobs.extend(self._load_missing_objects(missing))
         if blobs:
             try:
                 connection.send_packets(b'object', blobs[:200])

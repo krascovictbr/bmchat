@@ -7,6 +7,14 @@ MAX_ADDRESS_VERSION = 4
 CHECKSUM_LEN = 4
 
 
+class _AddressError(Exception):
+    """Internal status carrier for decode_address helpers."""
+
+    def __init__(self, status):
+        super().__init__(status)
+        self.status = status
+
+
 def encode_address(version, stream, ripe):
     if version < 2 or version > 4:
         raise ValueError('unsupported address version')
@@ -26,6 +34,43 @@ def encode_address(version, stream, ripe):
     return 'BM-' + encode_base58(data + checksum)
 
 
+def _checked_address_data(raw):
+    if len(raw) < CHECKSUM_LEN + 2:
+        raise _AddressError('tooshort')
+    data, checksum = raw[:-CHECKSUM_LEN], raw[-CHECKSUM_LEN:]
+    if double_sha512(data)[:CHECKSUM_LEN] != checksum:
+        raise _AddressError('checksumfailed')
+    return data
+
+
+def _decoded_address_header(data):
+    try:
+        version, version_len = decode_varint(data[:9])
+    except Exception:
+        raise _AddressError('varintmalformed')
+    if version == 0 or version == 1:
+        raise _AddressError('versiontoohigh')
+    if version > MAX_ADDRESS_VERSION:
+        raise _AddressError('versiontoohigh')
+    try:
+        stream, stream_len = decode_varint(data[version_len:])
+    except Exception:
+        raise _AddressError('varintmalformed')
+    if stream == 0:
+        raise _AddressError('versiontoohigh')
+    return version, stream, data[version_len + stream_len:]
+
+
+def _padded_address_ripe(version, embedded):
+    if len(embedded) > 20:
+        raise _AddressError('ripetoolong')
+    if len(embedded) < 1:
+        raise _AddressError('ripetooshort')
+    if version == 4 and embedded[0:1] == b'\x00':
+        raise _AddressError('encodingproblem')
+    return b'\x00' * (20 - len(embedded)) + embedded
+
+
 def decode_address(address):
     text = str(address).strip()
     if text[:3] == 'BM-':
@@ -34,36 +79,12 @@ def decode_address(address):
         raw = decode_base58(text)
     except ValueError:
         return 'invalidcharacters', 0, 0, None
-    if len(raw) < CHECKSUM_LEN + 2:
-        return 'tooshort', 0, 0, None
-    data, checksum = raw[:-CHECKSUM_LEN], raw[-CHECKSUM_LEN:]
-    if double_sha512(data)[:CHECKSUM_LEN] != checksum:
-        return 'checksumfailed', 0, 0, None
     try:
-        version, version_len = decode_varint(data[:9])
-    except Exception:
-        return 'varintmalformed', 0, 0, None
-    if version == 0 or version == 1:
-        return 'versiontoohigh', 0, 0, None
-    if version > MAX_ADDRESS_VERSION:
-        return 'versiontoohigh', 0, 0, None
-    try:
-        stream, stream_len = decode_varint(data[version_len:])
-    except Exception:
-        return 'varintmalformed', 0, 0, None
-    if stream == 0:
-        return 'versiontoohigh', 0, 0, None
-    embedded = data[version_len + stream_len:]
-    if len(embedded) > 20:
-        return 'ripetoolong', 0, 0, None
-    if len(embedded) < 1:
-        return 'ripetooshort', 0, 0, None
-    if version == 4:
-        if embedded[0:1] == b'\x00':
-            return 'encodingproblem', 0, 0, None
-        ripe = b'\x00' * (20 - len(embedded)) + embedded
-    else:
-        ripe = b'\x00' * (20 - len(embedded)) + embedded
+        data = _checked_address_data(raw)
+        version, stream, embedded = _decoded_address_header(data)
+        ripe = _padded_address_ripe(version, embedded)
+    except _AddressError as exc:
+        return exc.status, 0, 0, None
     return 'success', version, stream, ripe
 
 
