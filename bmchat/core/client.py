@@ -28,13 +28,14 @@ from .database import Database
 from .events import EventEmitter
 from .events.events import LEGACY_MAP
 from .models import Message as MessageModel
+from ..protocol.factory import ProtocolObjectFactory
 
 
 class Client:
 
     def __init__(self, data_dir, pow_strategy: PoWStrategy | None = None,
-                 network_manager=None, db=None):
-        """Client com Dependency Injection para PoW e NetworkManager.
+                 network_manager=None, db=None, protocol_factory=None):
+        """Client com Dependency Injection para PoW, NetworkManager e Factory.
 
         Args:
             data_dir: diretório de dados (SQLite, knownnodes).
@@ -44,10 +45,13 @@ class Client:
             network_manager: NetworkManager injetado; se None cria um
                 padrão (mantém compatibilidade).
             db: Database injetada (para testes sem I/O real).
+            protocol_factory: Factory de objetos de protocolo; se None usa
+                ProtocolObjectFactory padrão (Factory Pattern).
         """
         self.data_dir = data_dir
         self.db = db if db is not None else Database(data_dir)
         self.pow_strategy: PoWStrategy = pow_strategy or StandardPoWStrategy()
+        self.protocol_factory = protocol_factory or ProtocolObjectFactory()
         import queue as _queue
         self.ui_queue = _queue.Queue()
         # Observer Pattern: EventEmitter para desacoplar Client da GUI
@@ -1122,8 +1126,13 @@ class Client:
             keys = AddressKeys.from_address(address_text)
         except Exception:
             return 'invalid'
-        unsigned = objects.build_getpubkey_unsigned(
-            int(time.time()) + GETPUBKEY_TTL, stream, 4, keys.tag)
+        # Factory Pattern: cria via factory
+        try:
+            unsigned = self.protocol_factory.create_getpubkey(
+                int(time.time()) + GETPUBKEY_TTL, stream, keys.tag)
+        except Exception:
+            unsigned = objects.build_getpubkey_unsigned(
+                int(time.time()) + GETPUBKEY_TTL, stream, 4, keys.tag)
         target = calculate_target(1000, 1000, len(unsigned) + 8,
                                   GETPUBKEY_TTL)
         self._pow_and_publish(
@@ -1194,8 +1203,13 @@ class Client:
             self._pow_and_publish_message(message_id, identity_address,
                                           to_address, body, encoding, ttl=ttl)
             return 'success', None
-        unsigned = objects.build_getpubkey_unsigned(
-            int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
+        # Factory Pattern: cria getpubkey via factory
+        try:
+            unsigned = self.protocol_factory.create_getpubkey(
+                int(time.time()) + GETPUBKEY_TTL, stream, contact_keys.tag)
+        except Exception:
+            unsigned = objects.build_getpubkey_unsigned(
+                int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
         target = calculate_target(1000, 1000, len(unsigned) + 8,
                                   GETPUBKEY_TTL)
         # A1: antes o PoW era descartado (sem done_cb) — agora anuncia
@@ -1428,13 +1442,20 @@ class Client:
             expires = int(expires)
             ttl = max(300, expires - now)
         watch = os.urandom(32)
-        unsigned = objects.build_ack_unsigned(expires, watch, stream)
+        # Factory Pattern: cria objeto ACK via factory (com validação)
+        try:
+            unsigned = self.protocol_factory.create_ack(expires, watch, stream)
+        except Exception:
+            unsigned = objects.build_ack_unsigned(expires, watch, stream)
         target = calculate_target(1000, 1000, len(unsigned) + 8, ttl)
         try:
             nonce = self._quick_pow(unsigned, target)
         except Exception:
             return b'', None
-        ack_object = objects.complete_object(unsigned, nonce)
+        try:
+            ack_object = self.protocol_factory.complete(unsigned, nonce)
+        except Exception:
+            ack_object = objects.complete_object(unsigned, nonce)
         return packets.create_packet('object', ack_object), \
             objects.ack_watch_key(ack_object)
 
