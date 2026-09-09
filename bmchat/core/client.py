@@ -27,6 +27,7 @@ from ..net.manager import NetworkManager
 from .database import Database
 from .events import EventEmitter
 from .events.events import LEGACY_MAP
+from .models import Message as MessageModel
 
 
 class Client:
@@ -1095,6 +1096,18 @@ class Client:
                 pass
         return len(expired)
 
+    # ---------- State Pattern helpers ----------
+    def get_message_model(self, message_id: int):
+        """Retorna Message model com State Pattern para message_id."""
+        row = self.db.get_message(message_id)
+        if row is None:
+            return None
+        return MessageModel(row, client=self)
+
+    def messages_for_conversation_models(self, address: str, limit=None):
+        """Retorna mensagens de uma conversa como Message models."""
+        rows = self.db.messages_for_conversation(address, limit=limit)
+        return [MessageModel(r, client=self) for r in rows]
 
     # ---------- envio ----------  # noqa: E303
 
