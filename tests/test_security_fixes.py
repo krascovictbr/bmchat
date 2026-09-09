@@ -521,7 +521,7 @@ def test_a9_inv_caps_wanted_and_rate(tmp_path):
         for command, payload in conn.sent:
             assert command == b'getdata'
             total += len(packets.parse_inventory(payload))
-        assert total <= 200
+        assert total <= 1000
         conn.sent.clear()
         for _ in range(10):
             mgr.on_inv(conn, packets.assemble_inventory(hashes[:10]))

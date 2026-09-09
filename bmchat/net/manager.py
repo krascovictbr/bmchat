@@ -13,7 +13,7 @@ MAX_FUTURE_SKEW = 28 * 24 * 3600 + 10800
 MAX_PAST_SKEW = 3600
 
 # A9/A10: limites anti-DoS/anti-OOM.
-INV_WANTED_MAX = 200
+INV_WANTED_MAX = 1000
 GETDATA_HASHES_MAX = 100
 GETDATA_BLOBS_MAX = 20
 GETDATA_BYTES_MAX = 3 * 1024 * 1024
@@ -58,7 +58,7 @@ class NetworkManager:
         # na janela anti-interseção logo após o handshake) são pedidos
         # de novo até chegarem ou expirarem.
         self.pending_getdata = {}
-        self.GETDATA_RETRY_DELAY = 15
+        self.GETDATA_RETRY_DELAY = 3
         self.PENDING_TTL = 3600
         self.MAX_PENDING = 200000
         self.RESYNC_TIMEOUT = 1800
@@ -75,9 +75,9 @@ class NetworkManager:
         #   inventário e está quieto é saudável, não sofre evicção.
         # - BOOT_EXTRA_SLOTS: com inventário zerado, negociando NÃO ocupa
         #   slot de estabelecido (até +N half-open) para girar rápido.
-        self.HANDSHAKE_TIMEOUT = 25
-        self.SILENT_TIMEOUT = 90
-        self.BOOT_EXTRA_SLOTS = 4
+        self.HANDSHAKE_TIMEOUT = 20
+        self.SILENT_TIMEOUT = 60
+        self.BOOT_EXTRA_SLOTS = 6
         self.DNS_REFRESH_INTERVAL = 120
         # Refresh contínuo: re-resolve periódico (30min) independente de
         # o giro ter esgotado — descobre pares novos/rotativos que
@@ -428,7 +428,7 @@ class NetworkManager:
         try:
             limit = float(self.HANDSHAKE_TIMEOUT)
         except Exception:
-            limit = 25.0
+            limit = 20.0
         return now - started > limit
 
     def _established_mute(self, connection, now):
@@ -445,10 +445,29 @@ class NetworkManager:
         try:
             limit = float(self.SILENT_TIMEOUT)
         except Exception:
-            limit = 90.0
+            limit = 60.0
         return now - base > limit
 
-    def _evict_if_stalled(self, connection, now):
+    def _established_silent_try(self, connection, now):
+        """Progressivo: 30s já tenta outro (sem mute), 60s registra mute."""
+        if not connection.established:
+            return False
+        if getattr(connection, 'last_useful_at', None) is not None:
+            return False
+        try:
+            base = connection.connected_at or connection.started_at
+            base = float(base)
+        except Exception:
+            return False
+        try:
+            mute_limit = float(self.SILENT_TIMEOUT)
+        except Exception:
+            mute_limit = 60.0
+        try_limit = max(30.0, mute_limit / 2.0)
+        # já passou do try mas ainda não do mute -> evicção leve
+        return now - base > try_limit and now - base <= mute_limit
+
+    def _evict_if_stalled(self, connection, now):  # noqa: C901
         try:
             peer = connection.peer
             alive = connection.is_alive()
@@ -476,6 +495,12 @@ class NetworkManager:
                 connection,
                 'par %s silencioso há %ds (sem addr/inv/objeto); '
                 'desconectando para tentar outro…' % (peer, int(now - base)))
+        if self._established_silent_try(connection, now):
+            base = connection.connected_at or connection.started_at
+            return self._evict_connection(
+                connection,
+                'par %s silencioso há %ds (sem útil); '
+                'tentando outro par…' % (peer, int(now - base)))
         return False
 
     def _prune_stalled(self, now):
@@ -770,15 +795,31 @@ class NetworkManager:
 
     def send_inventory(self, connection):
         with self.lock:
-            hashes = list(self.inventory.keys())[:1200]
-        if hashes:
-            connection.send_packet(b'inv', packets.assemble_inventory(hashes))
+            hashes = list(self.inventory.keys())
+        if not hashes:
+            return
+        for idx in range(0, len(hashes), 49999):
+            chunk = hashes[idx:idx + 49999]
+            try:
+                connection.send_packet(
+                    b'inv', packets.assemble_inventory(chunk))
+            except Exception:
+                break
 
-    def _remember_pending(self, hashes, now):
+    def _remember_pending(self, hashes, now, source_key=None):
         with self.lock:
             for obj_hash in hashes:
                 if obj_hash not in self.pending_getdata:
-                    self.pending_getdata[obj_hash] = [now, now]
+                    self.pending_getdata[obj_hash] = [now, now, source_key]
+                else:
+                    try:
+                        entry = self.pending_getdata[obj_hash]
+                        if len(entry) < 3:
+                            entry.append(source_key)
+                        elif entry[2] is None and source_key is not None:
+                            entry[2] = source_key
+                    except Exception:
+                        pass
             while len(self.pending_getdata) > self.MAX_PENDING:
                 try:
                     oldest = min(self.pending_getdata.items(),
@@ -805,9 +846,49 @@ class NetworkManager:
                 break
         return wanted
 
+    def _should_delay_getdata(self, connection):
+        try:
+            if getattr(connection, 'sock', None) is None:
+                return False
+            base = getattr(connection, 'connected_at', None)
+            if base is None:
+                base = getattr(connection, 'started_at', None)
+            if base is None:
+                return False
+            return time.time() - float(base) < 1.5
+        except Exception:
+            return False
+
+    def _schedule_delayed_getdata(self, connection, hashes):  # noqa: C901
+        def _delayed():
+            time.sleep(1.0)
+            try:
+                with self.lock:
+                    if connection.peer_key not in self.connections:
+                        return
+                    cur = self.connections.get(connection.peer_key)
+                    if cur is not connection or not cur.established:
+                        return
+                    still = [h for h in hashes
+                             if h in self.pending_getdata
+                             and h not in self.inventory
+                             and h not in self.known_hashes]
+                if still:
+                    self._send_getdata_chunks(connection, still)
+            except Exception:
+                pass
+        try:
+            threading.Thread(target=_delayed, daemon=True,
+                             name='net-getdata-delay').start()
+        except Exception:
+            try:
+                self._send_getdata_chunks(connection, hashes)
+            except Exception:
+                pass
+
     def on_inv(self, connection, payload):
         self._bump_stats('invs')
-        # A9: rate por peer + cap de wanted (~200).
+        # A9: rate por peer + cap de wanted (~1000).
         peer_key = self._peer_key(connection)
         if peer_key is not None and self._rate_limited(
                 self._inv_hits, peer_key, INV_RATE_MAX, INV_RATE_WINDOW):
@@ -828,14 +909,22 @@ class NetworkManager:
             pass
         wanted = self._collect_wanted(hashes)
         if wanted:
-            self._remember_pending(wanted, time.time())
-            self._send_getdata_chunks(connection, wanted)
+            self._remember_pending(wanted, time.time(), peer_key)
+            if self._should_delay_getdata(connection):
+                self._schedule_delayed_getdata(connection, wanted)
+            else:
+                self._send_getdata_chunks(connection, wanted)
 
     def _stale_pending(self, now):
         stale = []
         with self.lock:
-            for obj_hash, (first, last) in list(
-                    self.pending_getdata.items()):
+            for obj_hash, entry in list(self.pending_getdata.items()):
+                try:
+                    first = entry[0]
+                    last = entry[1]
+                except Exception:
+                    self.pending_getdata.pop(obj_hash, None)
+                    continue
                 if obj_hash in self.inventory or obj_hash in self.known_hashes:
                     self.pending_getdata.pop(obj_hash, None)
                     continue
@@ -850,29 +939,79 @@ class NetworkManager:
     def _pending_last(self, obj_hash, now):
         with self.lock:
             entry = self.pending_getdata.get(obj_hash)
-        return entry[1] if entry else now
+        try:
+            return entry[1] if entry else now
+        except Exception:
+            return now
 
-    def _resend_pending(self, stale, now):
+    def _resend_pending(self, stale, now):  # noqa: C901
         with self.lock:
             targets = [c for c in self.connections.values()
                        if c.established]
         if not targets or not stale:
             return 0
-        sent = 0
-        for index in range(0, len(stale), 100):
-            chunk = stale[index:index + 100]
-            connection = targets[(index // 100) % len(targets)]
+        try:
+            tmap = {tuple(c.peer_key): c for c in targets
+                    if getattr(c, 'peer_key', None)}
+        except Exception:
+            tmap = {}
+        # Agrupa por source preferencial (P5) — fallback round-robin
+        grouped = {}
+        orphan = []
+        with self.lock:
+            pending_copy = dict(self.pending_getdata)
+        for obj_hash in stale:
             try:
-                connection.send_packet(
-                    b'getdata', packets.assemble_getdata(chunk))
+                entry = pending_copy.get(obj_hash)
+                src = entry[2] if entry and len(entry) >= 3 else None
+                if src is not None:
+                    src = (str(src[0]), int(src[1]))
             except Exception:
+                src = None
+            if src is not None and src in tmap:
+                grouped.setdefault(src, []).append(obj_hash)
+            else:
+                orphan.append(obj_hash)
+        sent = 0
+        for src, hashes in grouped.items():
+            conn = tmap.get(src)
+            if conn is None:
+                orphan.extend(hashes)
                 continue
-            sent += len(chunk)
-            with self.lock:
-                for obj_hash in chunk:
-                    entry = self.pending_getdata.get(obj_hash)
-                    if entry is not None:
-                        entry[1] = now
+            for idx in range(0, len(hashes), 100):
+                chunk = hashes[idx:idx + 100]
+                try:
+                    conn.send_packet(
+                        b'getdata', packets.assemble_getdata(chunk))
+                except Exception:
+                    continue
+                sent += len(chunk)
+                with self.lock:
+                    for obj_hash in chunk:
+                        entry = self.pending_getdata.get(obj_hash)
+                        if entry is not None:
+                            try:
+                                entry[1] = now
+                            except Exception:
+                                pass
+        if orphan:
+            for index in range(0, len(orphan), 100):
+                chunk = orphan[index:index + 100]
+                connection = targets[(index // 100) % len(targets)]
+                try:
+                    connection.send_packet(
+                        b'getdata', packets.assemble_getdata(chunk))
+                except Exception:
+                    continue
+                sent += len(chunk)
+                with self.lock:
+                    for obj_hash in chunk:
+                        entry = self.pending_getdata.get(obj_hash)
+                        if entry is not None:
+                            try:
+                                entry[1] = now
+                            except Exception:
+                                pass
         return sent
 
     def _retry_pending_getdata(self):

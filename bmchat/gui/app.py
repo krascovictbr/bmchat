@@ -209,7 +209,7 @@ def _report_states(client, lines):
 
 
 def _report_config(client, lines):
-    for key, default in (('connect_timeout', 30), ('recv_timeout', 60),
+    for key, default in (('connect_timeout', 30), ('recv_timeout', 30),
                          ('max_connections', 8),
                          ('maintenance_interval', 5), ('pow_workers', 0)):
         try:
@@ -273,8 +273,8 @@ def _snap_int(value, default=0):
 
 def _snap_timeouts(snapshot):
     timeouts = snapshot.get('timeouts') or {}
-    return (_snap_int(timeouts.get('handshake', 25), 25),
-            _snap_int(timeouts.get('silent', 90), 90))
+    return (_snap_int(timeouts.get('handshake', 20), 20),
+            _snap_int(timeouts.get('silent', 60), 60))
 
 
 def _state_line(snapshot, established, stats):
@@ -5258,7 +5258,7 @@ class App(tk.Tk):
             ['connect_timeout', 'recv_timeout', 'max_connections',
              'maintenance_interval', 'auto_update', 'update_interval_h'],
             {'connect_timeout': str(db.get_int('connect_timeout', 30)),
-             'recv_timeout': str(db.get_int('recv_timeout', 60)),
+             'recv_timeout': str(db.get_int('recv_timeout', 30)),  # noqa: E127
              'max_connections': str(db.get_int('max_connections', 8)),
              'maintenance_interval': str(
                  db.get_int('maintenance_interval', 5)),
@@ -5270,7 +5270,7 @@ class App(tk.Tk):
             connect_timeout = max(
                 5, min(300, int(result.get('connect_timeout') or 30)))
             recv_timeout = max(
-                10, min(600, int(result.get('recv_timeout') or 60)))
+                10, min(600, int(result.get('recv_timeout') or 30)))
             max_connections = max(
                 1, min(50, int(result.get('max_connections') or 8)))
             interval = max(

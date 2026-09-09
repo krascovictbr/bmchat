@@ -232,8 +232,8 @@ def test_record_inv_marca_produtivo():
 
 
 def test_cold_start_gira_rapido_e_quente_nao():
-    """6 negociando + boot vazio: 6 tentativas novas (era 1); em regime
-    continuo o burst half-open (+4) tambem vale (era 2 so no quente):
+    """6 negociando + boot vazio: 8 tentativas novas (era 1); em regime
+    continuo o burst half-open (+6) tambem vale (era 2 so no quente):
     com a lista cheia de mortos, girar devagar nunca acha o vivo."""
     directory, _logs, db, mgr = _fresh_manager('bmchat-burst-')
     try:
@@ -245,12 +245,12 @@ def test_cold_start_gira_rapido_e_quente_nao():
         spawned = []
         mgr.spawn = lambda peer: spawned.append((peer.host, peer.port))
         mgr._ensure_connections()
-        assert len(spawned) == 6
-        # Quente: mesmo cenario, burst continuo (+4): 8+4-6 = 6.
+        assert len(spawned) == 8
+        # Quente: mesmo cenario, burst continuo (+6): 8+6-6 = 8.
         mgr.inventory[b'Q' * 32] = b'raw'
         spawned.clear()
         mgr._ensure_connections()
-        assert len(spawned) == 6
+        assert len(spawned) == 8
     finally:
         _close(directory, db)
 

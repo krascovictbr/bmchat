@@ -121,9 +121,9 @@ class PeerConnection(threading.Thread):
         except (TypeError, ValueError):
             connect_timeout = 10
         try:
-            recv_timeout = int(self.manager.db.get_int('recv_timeout', 60))
+            recv_timeout = int(self.manager.db.get_int('recv_timeout', 30))
         except (TypeError, ValueError):
-            recv_timeout = 60
+            recv_timeout = 30
         sock = connect_socket(
             self.peer.host, self.peer.port, self.manager.proxy,
             timeout=max(5, min(connect_timeout, 300)))
@@ -134,9 +134,9 @@ class PeerConnection(threading.Thread):
     def _handshake_timeout(self):
         try:
             timeout = float(getattr(
-                self.manager, 'HANDSHAKE_TIMEOUT', 25))
+                self.manager, 'HANDSHAKE_TIMEOUT', 20))
         except Exception:
-            timeout = 25.0
+            timeout = 20.0
         return max(5.0, min(timeout, 120.0))
 
     def _log_handshake_timeout(self):
@@ -202,11 +202,22 @@ class PeerConnection(threading.Thread):
             pass
 
     def _read_loop(self):
+        timeouts = 0
         while not self._closing:
             try:
                 header = self._read_header()
             except socket.timeout:
+                timeouts += 1
+                if timeouts >= 3:
+                    try:
+                        self.manager.log(
+                            'peer %s timeout de leitura 3×; fechando' % self.peer)
+                    except Exception:
+                        pass
+                    self.close()
+                    break
                 continue
+            timeouts = 0
             command, payload = self._receive_payload(header)
             if command is None:
                 continue
@@ -254,7 +265,7 @@ class PeerConnection(threading.Thread):
         else:
             self.manager.log('comando desconhecido: %s' % command)
 
-    def _on_version(self, payload):
+    def _on_version(self, payload):  # noqa: C901
         self.their_version = payload
         if len(payload) < 80:
             return
@@ -265,6 +276,15 @@ class PeerConnection(threading.Thread):
             self.time_offset = self.their_timestamp - int(time.time())
         except Exception:
             self.time_offset = None
+        try:
+            if self.time_offset is not None and abs(self.time_offset) > 3600:
+                try:
+                    self.manager.peers.record_mute(
+                        self.peer.host, self.peer.port)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         nonce = payload[72:80]
         if nonce == self.manager.nonce:
             self.manager.log('auto-conexão, ignorando')
@@ -274,6 +294,23 @@ class PeerConnection(threading.Thread):
         try:
             streams = self._parse_streams(payload)
             self.their_streams = streams
+        except Exception:
+            streams = []
+            self.their_streams = []
+        try:
+            mine = set(getattr(self.manager, 'streams', [1]) or [1])
+            theirs = set(streams or [])
+            if theirs and not mine.intersection(theirs):
+                try:
+                    self.manager.peers.record_mute(
+                        self.peer.host, self.peer.port)
+                except Exception:
+                    pass
+                self.manager.log(
+                    'par %s sem stream em comum %s vs %s; ignorando'
+                    % (self.peer, theirs, mine))
+                self.close()
+                return
         except Exception:
             pass
         if not self.sent_verack:
@@ -329,9 +366,13 @@ class PeerConnection(threading.Thread):
             self.send_packet(b'addr', packets.assemble_addr(peers))
         self.manager.send_inventory(self)
 
-    def _on_addr(self, payload):
+    def _on_addr(self, payload):  # noqa: C901
         self.last_useful_at = time.time()
         entries = packets.parse_addr(payload)
+        try:
+            mine = set(getattr(self.manager, 'streams', [1]) or [1])
+        except Exception:
+            mine = {1}
         for timestamp, stream, services, ip_bytes, port in entries[:200]:
             try:
                 host = packets.decode_host(ip_bytes)
@@ -342,6 +383,11 @@ class PeerConnection(threading.Thread):
             now = time.time()
             if timestamp > now + 3600 or timestamp < now - 3 * 24 * 3600:
                 continue
+            try:
+                if stream not in mine:
+                    continue
+            except Exception:
+                pass
             self.manager.add_peer(host, port, stream=stream, services=services)
 
     def _fallback_host(self, ip_bytes):
