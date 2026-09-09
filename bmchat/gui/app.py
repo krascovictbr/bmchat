@@ -669,7 +669,14 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, client=None):
+        """App com Dependency Injection.
+
+        Args:
+            data_dir: diretório de dados (usado se client=None)
+            client: Client injetado; se None cria um com DI padrão
+                    (mantém compatibilidade com chamada antiga main(directory)).
+        """
         super().__init__()
         # Item 1 — startup percebido: começa escondida, mostra uma casca
         # mínima e monta o pesado em etapas (after), com a rede em thread.
@@ -680,7 +687,16 @@ class App(tk.Tk):
         except Exception:
             pass
         self.data_dir = data_dir
-        self.client = Client(data_dir)
+        # Dependency Injection: permite injetar Client mockado para testes
+        if client is not None:
+            self.client = client
+            # Garante que data_dir do app coincide com o do client
+            try:
+                self.data_dir = getattr(client, 'data_dir', data_dir)
+            except Exception:
+                pass
+        else:
+            self.client = Client(data_dir)
         self._client_started = False
         self._client_start_error = None
         self._bind_observer_events()
@@ -6061,6 +6077,12 @@ class App(tk.Tk):
             pass
 
 
-def main(data_dir):
-    app = App(data_dir)
+def main(data_dir, client=None):
+    """Entry point com Dependency Injection.
+
+    Args:
+        data_dir: diretório de dados
+        client: Client opcional injetado (para testes / DI manual)
+    """
+    app = App(data_dir, client=client)
     app.mainloop()
