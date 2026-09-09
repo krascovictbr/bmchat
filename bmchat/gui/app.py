@@ -87,6 +87,13 @@ RADIUS_MD = 8
 RADIUS_LG = 12
 RADIUS_FULL = 999
 
+# CVE-2026-25990/CVE-2026-40192/CVE-2026-42311/CVE-2026-59204: prévia de
+# anexo só decodifica formatos comuns de foto. PSD/FITS/JPEG2000/etc.
+# vindos de peer caem no ícone de arquivo (sem Image.open/load nesses
+# decoders). Pillow>=12.3.0 no requirements.txt corrige as CVEs; isto é
+# defesa em profundidade para quem rodar com Pillow antigo.
+ALLOWED_PREVIEW_FORMATS = frozenset({'PNG', 'JPEG', 'GIF', 'BMP', 'WEBP'})
+
 BACKUP_WARNING = (
     'ATENÇÃO — CHAVES PRIVADAS da identidade\n%s\n\n'
     '• Salve-as em um lugar SEGURO (papel, gerenciador de senhas ou '
@@ -120,6 +127,34 @@ def _fmt_uptime(seconds):
     if days:
         return '%dd %02d:%02d:%02d' % (days, hours, minutes, seconds)
     return '%02d:%02d:%02d' % (hours, minutes, seconds)
+
+
+def _get_update_flag(obj, name, default=False):
+    """M9: leitura de flag de update sob lock (tolera objeto sem lock)."""
+    try:
+        lock = getattr(obj, '_update_lock', None)
+        if lock is None:
+            return getattr(obj, name, default)
+        with lock:
+            return getattr(obj, name, default)
+    except Exception:
+        return getattr(obj, name, default)
+
+
+def _set_update_flag(obj, name, value):
+    """M9: escrita de flag de update sob lock (tolera objeto sem lock)."""
+    try:
+        lock = getattr(obj, '_update_lock', None)
+        if lock is None:
+            setattr(obj, name, value)
+            return
+        with lock:
+            setattr(obj, name, value)
+    except Exception:
+        try:
+            setattr(obj, name, value)
+        except Exception:
+            pass
 
 
 def _report_identities(client, lines):
@@ -694,6 +729,11 @@ class App(tk.Tk):
         self._tick_after = None
         # Item 1 — só True após a cadeia de init diferido terminar.
         self._startup_done = False
+        # M9: lock para flags de update (lidas/escritas em workers).
+        self._update_lock = threading.Lock()
+        self._update_checking = False
+        self._update_applying = False
+        self._update_auto = False
 
         self.conv_list = _ConvListAdapter(self)
         self.chat_text = _ChatTextAdapter()
@@ -1745,11 +1785,19 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def _set_update_flag(self, name, value):
+        """M9: escrita de flag de update sob lock."""
+        _set_update_flag(self, name, value)
+
+    def _get_update_flag(self, name, default=False):
+        """M9: leitura de flag de update sob lock."""
+        return _get_update_flag(self, name, default)
+
     def _on_update_result(self, event):
-        self._update_applying = False
+        _set_update_flag(self, '_update_applying', False)
         _, ok, message = event
-        auto = bool(getattr(self, '_update_auto', False))
-        self._update_auto = False
+        auto = bool(_get_update_flag(self, '_update_auto', False))
+        _set_update_flag(self, '_update_auto', False)
         if ok:
             self._flash_status('Atualizado! Reiniciando…')
             self.after(800, self._restart_after_update)
@@ -3392,6 +3440,9 @@ class App(tk.Tk):
             return '✓✓', READ_BLUE
         if status == 'sent':
             return '✓✓', TIME_GRAY
+        # M5: ack-failed com ícone próprio (antes caía no relógio).
+        if status == 'ack-failed':
+            return '⚠', '#c0392b'
         return 'clock', TIME_GRAY
 
     def _status_text(self, row):
@@ -3413,29 +3464,88 @@ class App(tk.Tk):
             return 'Entregue — confirmação (ACK) recebida do destinatário'
         if status == 'ack-failed':
             return ('Sem confirmação (ACK não recebido antes da expiração) — '
-                    'o destinatário pode não ter recebido')
+                    'o destinatário pode não ter recebido. '
+                    'Clique com o botão direito → Reenviar (até 3 tentativas).')
+        if status == 'sending':
+            return 'Enviando — calculando prova de trabalho (PoW)…'
         return str(status)
+
+    @staticmethod
+    def _decode_layout_bytes(data):
+        """ADV helper: b64->bytes com tetos (300k b64, 8MB raw). None se mal."""
+        import base64
+        if isinstance(data, str) and len(data) > 300_000:
+            return None
+        try:
+            raw = base64.b64decode(data)
+        except Exception:
+            return None
+        if len(raw) > 8 * 1024 * 1024:
+            return None
+        return raw
+
+    @staticmethod
+    def _scaled_height_for_width(img, max_width):
+        """ADV helper: altura com teto 300px (igual ao render)."""
+        max_img_w = min(300, max_width - 2 * PAD_X)
+        if img.width > max_img_w or img.height > 300:
+            ratio = min(max_img_w / max(1, img.width),
+                        300 / max(1, img.height))
+            return int(img.height * ratio) + 8
+        return img.height + 8
+
+    @staticmethod
+    def _open_image_for_layout(img_data):
+        """ADV helper: open+pixel-check+load. Retorna Image ou None."""
+        from io import BytesIO
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = 89430912
+        try:
+            img = Image.open(BytesIO(img_data))
+        except Exception:
+            return None
+        try:
+            if img.format not in ALLOWED_PREVIEW_FORMATS:
+                return None
+            if img.width * img.height > Image.MAX_IMAGE_PIXELS:
+                return None
+        except Exception:
+            return None
+        try:
+            img.load()
+        except Exception:
+            return None
+        return img
 
     def _calc_attachment_height(self, attachment, max_width, out):
         """Calculate height needed for an attachment."""
-        mime = attachment['mime']
-        is_image = mime.startswith('image/')
-        if is_image:
-            # Try to get image dimensions
-            try:
-                import base64
-                from io import BytesIO
-                from PIL import Image
-                img_data = base64.b64decode(attachment['data'])
-                img = Image.open(BytesIO(img_data))
-                max_img_w = min(300, max_width - 2 * PAD_X)
-                if img.width > max_img_w:
-                    ratio = max_img_w / img.width
-                    return int(img.height * ratio) + 8
-                return img.height + 8
-            except Exception:
-                return 48  # fallback
-        return 48  # file icon box height
+        if not attachment.get('mime', '').startswith('image/'):
+            return 48  # file icon box height
+        try:
+            from PIL import Image
+            Image.MAX_IMAGE_PIXELS = 89430912
+            raw = self._decode_layout_bytes(attachment.get('data', ''))
+            if raw is None:
+                return 48
+            img = self._open_image_for_layout(raw)
+            if img is None:
+                return 48
+            return self._scaled_height_for_width(img, max_width)
+        except Exception:
+            return 48  # fallback
+
+    @staticmethod
+    def _sanitize_attachment_filename(name):
+        """ADV: `:` e `]` quebram o marcador `[attachment:nome:mime:dados]`
+        (`[^:]+`/`[^\\]]+` no parse). `:` é comum em nomes, então o parse
+        aceita `:` no nome (greedy) e aqui só neutralizamos `]`/`[`/quebras,
+        preservando o nome visível."""
+        try:
+            text = str(name or 'anexo')
+        except Exception:
+            text = 'anexo'
+        return text.replace('[', '_').replace(']', '_').replace(
+            '\n', '_').replace('\r', '_') or 'anexo'
 
     def _parse_attachments(self, body: str):
         """Parse attachment markers from message body.
@@ -3445,8 +3555,9 @@ class App(tk.Tk):
         """
         import re
         attachments = []
-        # Pattern: [attachment:filename:mime:base64data]
-        pattern = r'\[attachment:([^:]+):([^:]+):([^\]]+)\]'
+        # ADV: nome pode conter `:` (ex. "meu:arquivo.txt") — primeiro grupo
+        # greedy captura até os últimos `:mime:dados`. Mime nunca tem `:`.
+        pattern = r'\[attachment:(.+):([^:\]]+):([^\]]+)\]'
 
         def replace(match):
             filename = match.group(1)
@@ -3472,20 +3583,57 @@ class App(tk.Tk):
             return '📕'
         return '📄'
 
+    @staticmethod
+    def _open_image_for_render(img_data):
+        """ADV helper: open+pixel-check+load para render. None se mal."""
+        from io import BytesIO
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = 89430912
+        if len(img_data) > 8 * 1024 * 1024:
+            return None
+        try:
+            img = Image.open(BytesIO(img_data))
+        except Exception:
+            return None
+        try:
+            if img.format not in ALLOWED_PREVIEW_FORMATS:
+                return None
+            if img.width * img.height > Image.MAX_IMAGE_PIXELS:
+                return None
+        except Exception:
+            return None
+        try:
+            img.load()
+        except Exception:
+            return None
+        return img
+
+    @staticmethod
+    def _fit_image_to_bubble(img, max_width):
+        """ADV helper: thumbnail in-place para caber na bolha."""
+        from PIL import Image
+        max_img_w = min(300, max_width - 2 * PAD_X)
+        if img.width > max_img_w or img.height > 300:
+            ratio = min(max_img_w / max(1, img.width),
+                        300 / max(1, img.height))
+            new_size = (max(1, int(img.width * ratio)),
+                        max(1, int(img.height * ratio)))
+            try:
+                img.thumbnail(new_size, Image.LANCZOS)
+            except Exception:
+                img = img.resize(new_size, Image.LANCZOS)
+        return img
+
     def _render_image_attachment(self, canvas, x, y, img_data, max_width):
         """Draw inline image; return height, or None to use file icon."""
         try:
-            from io import BytesIO
-            from PIL import Image, ImageTk
-            img = Image.open(BytesIO(img_data))
-            # Resize to fit in bubble (max 300px width)
-            max_img_w = min(300, max_width - 2 * PAD_X)
-            if img.width > max_img_w:
-                ratio = max_img_w / img.width
-                new_h = int(img.height * ratio)
-                img = img.resize((max_img_w, new_h), Image.LANCZOS)
+            from PIL import ImageTk
+            img = self._open_image_for_render(img_data)
+            if img is None:
+                return None
+            img = self._fit_image_to_bubble(img, max_width)
             photo = ImageTk.PhotoImage(img)
-            # Store reference to prevent GC
+            # Store reference to prevent GC (reconstruída a cada redraw).
             if not hasattr(self, '_chat_images'):
                 self._chat_images = []
             self._chat_images.append(photo)
@@ -3502,11 +3650,15 @@ class App(tk.Tk):
         data = attachment['data']
 
         import base64
-        try:
-            # Decode base64 data
-            img_data = base64.b64decode(data)
-        except Exception:
+        # A13: marcador gigante não deve alocar sem limite no redraw.
+        if isinstance(data, str) and len(data) > 300_000:
             img_data = None
+        else:
+            try:
+                # Decode base64 data
+                img_data = base64.b64decode(data)
+            except Exception:
+                img_data = None
 
         height = None
         if mime.startswith('image/') and img_data is not None:
@@ -3744,6 +3896,11 @@ class App(tk.Tk):
             return
         canvas = self.chat_canvas
         canvas.delete('all')
+        # A13: reconstrói a lista a cada redraw (só visíveis retêm refs).
+        try:
+            self._chat_images = []
+        except Exception:
+            pass
         width = canvas.winfo_width() or 600
         height = canvas.winfo_height() or 400
         # Item 4: base do skip de <Configure> (ver _schedule_chat_redraw).
@@ -3815,6 +3972,15 @@ class App(tk.Tk):
                 menu.add_command(
                     label='Excluir mensagem',
                     command=lambda: self._delete_message(row))
+                # M5: reenvio manual de ack-failed (retry limitado no core).
+                try:
+                    if row.get('direction') == 'out' and row.get('status') in (
+                            'ack-failed', 'sending', 'awaiting-pubkey'):
+                        menu.add_command(
+                            label='Reenviar',
+                            command=lambda: self._resend_message(row))
+                except Exception:
+                    pass
                 menu.add_separator()
                 menu.add_command(
                     label='Detalhes',
@@ -3822,6 +3988,25 @@ class App(tk.Tk):
                 menu.tk_popup(event.x_root, event.y_root)
                 self._track_menu(menu)
                 return
+
+    def _resend_message(self, row):
+        """M5: reenvia mensagem com falha via Client.resend_message."""
+        try:
+            message_id = row.get('id')
+        except Exception:
+            message_id = None
+        if message_id is None:
+            return
+        try:
+            status, error = self.client.resend_message(message_id)
+        except Exception as exc:
+            dialogs.warn(self, 'Reenviar', 'Falha ao reenviar: %s' % exc)
+            return
+        if status != 'success':
+            dialogs.warn(self, 'Reenviar', error or status)
+        else:
+            self._flash_status('Reenviando mensagem…')
+            self._schedule_refresh()
 
     def _reply_to_message(self, row):
         """Quote the message and focus input for reply."""
@@ -4110,8 +4295,56 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    @staticmethod
+    def _attach_max_raw():
+        try:
+            from ..protocol.const import MAX_WIRE_BODY_BYTES
+        except Exception:
+            MAX_WIRE_BODY_BYTES = 200_000
+        return MAX_WIRE_BODY_BYTES * 3 // 4 - 4096
+
+    def _attach_current_text(self):
+        try:
+            text = '' if self._placeholder_on else \
+                self.input_var.get().strip()
+            return '' if text.startswith('[Anexo:') else text
+        except Exception:
+            return ''
+
+    def _attach_wire_ok(self, current_text, marker):
+        try:
+            from ..protocol.const import MAX_WIRE_BODY_BYTES as _wmax
+        except Exception:
+            _wmax = 200_000
+        try:
+            wire = (current_text + marker) if current_text else marker
+            return len(wire.encode('utf-8')) <= _wmax
+        except Exception:
+            return False
+
+    def _store_pending_attachment(self, file_path, mime, b64, size):
+        import os
+        # ADV: sanitiza `]`/`[` (quebram o `]` final do marcador).
+        safe_name = self._sanitize_attachment_filename(
+            os.path.basename(file_path))
+        self._pending_attachment = {
+            'filename': safe_name,
+            'mime': mime,
+            'data': b64,
+            'size': size,
+        }
+        self._clear_placeholder()
+        preview = '[Anexo: %s (%dKB)]' % (safe_name, size // 1024)
+        self.input_var.set(preview)
+        self.input_entry.config(fg=_c('input_fg'))
+        self._placeholder_on = False
+        self._flash_status('Anexo pronto. Digite uma mensagem opcional e envie.')
+
     def _attach_file(self):
         """Open file dialog and prepare attachment."""
+        import base64
+        import mimetypes
+        import os
         try:
             file_path = filedialog.askopenfilename(
                 parent=self,
@@ -4122,38 +4355,40 @@ class App(tk.Tk):
                 ])
             if not file_path:
                 return
-            # Read file and encode as base64
-            import base64
-            import os
-            with open(file_path, 'rb') as f:
-                data = f.read()
-            # Limit attachment size (Bitmessage max object size ~2MB)
-            max_size = 1024 * 1024  # 1MB
-            if len(data) > max_size:
+            max_raw = self._attach_max_raw()
+            # C3: getsize ANTES de ler (evita OOM com arquivo gigante).
+            try:
+                size_on_disk = os.path.getsize(file_path)
+            except Exception as exc:
+                dialogs.warn(self, 'Erro no anexo', repr(exc))
+                return
+            if size_on_disk > max_raw:
                 dialogs.warn(self, 'Arquivo grande',
-                             f'O arquivo excede {max_size//1024}KB. '
-                             'O Bitmessage tem limite de ~2MB por mensagem.')
+                             'Arquivo excede o limite do wire (~%d KB de '
+                             'arquivo para 200 KB no wire). Escolha um '
+                             'arquivo menor.' % (max_raw // 1024))
+                return
+            with open(file_path, 'rb') as handle:
+                data = handle.read()
+            if len(data) > max_raw:
+                dialogs.warn(self, 'Arquivo grande',
+                             'Arquivo excede o limite do wire (~%d KB).'
+                             % (max_raw // 1024))
                 return
             b64 = base64.b64encode(data).decode('ascii')
-            # Determine MIME type
-            import mimetypes
             mime, _ = mimetypes.guess_type(file_path)
-            if not mime:
-                mime = 'application/octet-stream'
-            # Store attachment info for sending
-            self._pending_attachment = {
-                'filename': os.path.basename(file_path),
-                'mime': mime,
-                'data': b64,
-                'size': len(data),
-            }
-            # Show attachment preview in input
-            self._clear_placeholder()
-            preview = f'[Anexo: {os.path.basename(file_path)} ({len(data)//1024}KB)]'
-            self.input_var.set(preview)
-            self.input_entry.config(fg=_c('input_fg'))
-            self._placeholder_on = False
-            self._flash_status('Anexo pronto. Digite uma mensagem opcional e envie.')
+            mime = mime or 'application/octet-stream'
+            # ADV: nome sanitizado (ver _sanitize_attachment_filename).
+            safe_name = self._sanitize_attachment_filename(
+                os.path.basename(file_path))
+            marker = '\n\n[attachment:%s:%s:%s]' % (
+                safe_name, mime, b64)
+            if not self._attach_wire_ok(self._attach_current_text(), marker):
+                dialogs.warn(self, 'Arquivo grande',
+                             'Texto + anexo excede 200 KB no wire. '
+                             'Encurte o texto ou use arquivo menor.')
+                return
+            self._store_pending_attachment(file_path, mime, b64, len(data))
         except Exception as exc:
             dialogs.warn(self, 'Erro no anexo', repr(exc))
 
@@ -4166,6 +4401,17 @@ class App(tk.Tk):
             # Clear pending attachment
             self._pending_attachment = None
         return body
+
+    def _wire_body_too_large(self, body):
+        """C3: teto único no wire (b64+overhead ≤ 200k). True se exceder."""
+        try:
+            from ..protocol.const import MAX_WIRE_BODY_BYTES
+        except Exception:
+            MAX_WIRE_BODY_BYTES = 200_000
+        try:
+            return len((body or '').encode('utf-8')) > MAX_WIRE_BODY_BYTES
+        except Exception:
+            return True
 
     def _take_send_body(self):
         """Read input + pending attachment; None when nothing to send."""
@@ -4180,9 +4426,15 @@ class App(tk.Tk):
         if not body:
             self._flash_status('Digite uma mensagem antes de enviar.')
             return None
-        if len(body.encode('utf-8')) > 5000:
-            dialogs.warn(self, 'Mensagem longa',
-                         'Mensagem acima de 5000 caracteres; encurte antes de enviar.')
+        # C3: teto único no wire checado ANTES do PoW (DM e canal).
+        if self._wire_body_too_large(body):
+            try:
+                self._pending_attachment = None
+            except Exception:
+                pass
+            dialogs.warn(self, 'Mensagem grande demais',
+                         'Texto + anexo excede o limite de 200 KB no wire '
+                         '(~150 KB de arquivo). Encurte ou use arquivo menor.')
             return None
         return body
 
@@ -4298,6 +4550,15 @@ class App(tk.Tk):
         if scheduled is None:
             return
         body = self._merge_pending_attachment(self.input_var.get().strip())
+        # C3: agendada também respeita o teto único (antes do PoW futuro).
+        if self._wire_body_too_large(body):
+            try:
+                self._pending_attachment = None
+            except Exception:
+                pass
+            dialogs.warn(self, 'Mensagem grande demais',
+                         'Texto + anexo excede o limite de 200 KB no wire.')
+            return
         identity = self._ensure_schedule_identity()
         if identity is None:
             return
@@ -4379,12 +4640,54 @@ class App(tk.Tk):
         self._show_backup_window(data)
 
     @staticmethod
-    def _lock_backup_file(path):
+    def _secret_write_text(path, text):
+        """A7: cria segredo já com 0600 (os.open), sem janela 0644."""
+        import os as _osbk
+        data = text.encode('utf-8')
+        directory = _osbk.path.dirname(_osbk.path.abspath(path)) or '.'
+        fd = None
+        tmp_path = ''
         try:
-            import os as _osbk
-            _osbk.chmod(path, 0o600)
-        except Exception:
-            pass
+            import tempfile as _tf
+            fd, tmp_path = _tf.mkstemp(dir=directory, prefix='.tmp-secret-')
+            try:
+                _osbk.fchmod(fd, 0o600)
+            except Exception:
+                pass
+            with _osbk.fdopen(fd, 'wb') as handle:
+                fd = None
+                handle.write(data)
+                try:
+                    handle.flush()
+                    _osbk.fsync(handle.fileno())
+                except Exception:
+                    pass
+            try:
+                _osbk.chmod(tmp_path, 0o600)
+            except Exception:
+                pass
+            _osbk.replace(tmp_path, path)
+            tmp_path = ''
+            try:
+                _osbk.chmod(path, 0o600)
+            except Exception:
+                pass
+        finally:
+            if fd is not None:
+                try:
+                    _osbk.close(fd)
+                except Exception:
+                    pass
+            if tmp_path:
+                try:
+                    _osbk.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _password_long_enough(password):
+        """M10: senha mínima de 8 chars para backup .enc."""
+        return bool(password) and len(password) >= 8
 
     def _save_backup_file(self, window, body):
         path = filedialog.asksaveasfilename(
@@ -4395,12 +4698,11 @@ class App(tk.Tk):
         if not path:
             return
         try:
-            with open(path, 'w', encoding='utf-8') as handle:
-                handle.write(
-                    'BACKUP DE IDENTIDADE BMCHAT\n'
-                    'Guarde em lugar seguro. Se perder, é impossível '
-                    'recuperar.\n\n' + body + '\n')
-            self._lock_backup_file(path)
+            self._secret_write_text(
+                path,
+                'BACKUP DE IDENTIDADE BMCHAT\n'
+                'Guarde em lugar seguro. Se perder, é impossível '
+                'recuperar.\n\n' + body + '\n')
         except Exception as exc:
             dialogs.warn(window, 'Backup', 'Falha ao salvar: %s' % exc)
             return
@@ -4475,8 +4777,8 @@ class App(tk.Tk):
         if not path:
             return
         try:
-            with open(path, 'w') as handle:
-                handle.write(data)
+            # A7: 0600 desde a criação (antes: open() 0644 + chmod depois).
+            self._secret_write_text(path, data)
         except Exception as exc:
             dialogs.warn(self, 'keys.dat', 'Falha ao salvar: %s' % exc)
             return
@@ -4554,6 +4856,11 @@ class App(tk.Tk):
         if password_result['password'] != password_result['confirm']:
             dialogs.warn(self, 'Senha', 'As senhas não conferem.')
             return
+        # M10: senha mínima de 8 chars no backup .enc.
+        if not self._password_long_enough(password_result.get('password')):
+            dialogs.warn(self, 'Senha',
+                         'Use ao menos 8 caracteres para o backup.')
+            return
         try:
             export_encrypted_backup(self.client.db.path, path, password_result['password'])
             dialogs.info(self, 'Backup criptografado',
@@ -4562,13 +4869,7 @@ class App(tk.Tk):
         except Exception as exc:
             dialogs.warn(self, 'Erro no backup', repr(exc))
 
-    def _restore_encrypted_backup(self):
-        """Import encrypted database backup."""
-        path = filedialog.askopenfilename(
-            parent=self, title='Restaurar backup criptografado',
-            filetypes=[('Backup criptografado', '*.enc'), ('Todos', '*.*')])
-        if not path:
-            return
+    def _ask_restore_password(self):
         password_result = dialogs.ask_simple(
             self, 'Senha do backup',
             ['password'],
@@ -4576,34 +4877,103 @@ class App(tk.Tk):
             labels={'password': 'Senha'},
             password=True)
         if not password_result or not password_result.get('password'):
+            return None
+        return password_result['password']
+
+    def _swap_restored_db(self, temp_path):
+        import shutil
+        try:
+            shutil.copy2(self.client.db.path,
+                         self.client.db.path + '.bak')
+            try:
+                os.chmod(self.client.db.path + '.bak', 0o600)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        os.replace(temp_path, self.client.db.path)
+        try:
+            os.chmod(self.client.db.path, 0o600)
+        except Exception:
+            pass
+
+    def _cleanup_temp(self, temp_path):
+        # ADV: limpa também o .bak órfão do temp (import cria .bak do
+        # arquivo vazio do mkstemp no caminho de sucesso).
+        for candidate in (temp_path, (temp_path + '.bak') if temp_path else ''):
+            try:
+                if candidate and os.path.exists(candidate):
+                    os.unlink(candidate)
+            except Exception:
+                pass
+
+    def _do_restore_swap(self, path, password, temp_path):
+        import_encrypted_backup(path, temp_path, password)
+        try:
+            os.chmod(temp_path, 0o600)
+        except Exception:
+            pass
+        self.client.stop()
+        self._swap_restored_db(temp_path)
+        self.client.start()
+        self._refresh_identity_menu()
+        self._refresh_conversations()
+
+    def _restore_encrypted_backup(self):
+        """Import encrypted database backup (atômico, sem vazar tmp)."""
+        path = filedialog.askopenfilename(
+            parent=self, title='Restaurar backup criptografado',
+            filetypes=[('Backup criptografado', '*.enc'), ('Todos', '*.*')])
+        if not path:
             return
-        # Confirm overwrite
+        password = self._ask_restore_password()
+        if not password:
+            return
         if not dialogs.confirm(self, 'Restaurar backup',
                                'Isso substituirá TODOS os dados atuais '
                                '(identidades, contatos, mensagens). Continuar?'):
             return
+        # A6: tmp+fsync+os.replace, finally: unlink, .bak do original.
+        import tempfile
+        temp_path = ''
         try:
-            # Import to temp file first
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp:
-                temp_path = tmp.name
-            import_encrypted_backup(path, temp_path, password_result['password'])
-            # Replace current DB
-            self.client.stop()
-            import shutil
-            shutil.copy2(temp_path, self.client.db.path)
-            os.unlink(temp_path)
-            # Restart client
-            self.client.start()
-            self._refresh_identity_menu()
-            self._refresh_conversations()
+            directory = os.path.dirname(
+                os.path.abspath(self.client.db.path)) or '.'
+            fd, temp_path = tempfile.mkstemp(dir=directory, suffix='.db')
+            os.close(fd)
+            # ADV: o mkstemp deixa um arquivo vazio que faria o import criar
+            # um `.bak` órfão dele (vazio) no sucesso. Remove antes para o
+            # import não ver arquivo existente.
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+            self._do_restore_swap(path, password, temp_path)
+            temp_path = ''
             dialogs.info(self, 'Backup restaurado',
                          'Dados restaurados com sucesso.')
         except Exception as exc:
             dialogs.warn(self, 'Erro ao restaurar', repr(exc))
+            self._cleanup_temp(temp_path)
+            temp_path = ''
+            self._ensure_client_running()
+        finally:
+            self._cleanup_temp(temp_path)
+
+    def _ensure_client_running(self):
+        try:
+            if not getattr(self.client, 'started', False):
+                self.client.start()
+        except Exception:
+            pass
 
     def _encrypt_database(self):
-        """Enable encryption on current database."""
+        """C5: o DB segue EM CLARO (0700/0600); sem criptografia integral.
+
+        Não há VFS/página cifrada: a proteção real é o "Backup
+        criptografado" (.enc). Este diálogo declara isso em vez de
+        sugerir integração futura falsa.
+        """
         if is_encrypted(self.client.db.path):
             dialogs.info(self, 'Criptografia', 'O banco de dados já está criptografado.')
             return
@@ -4618,16 +4988,25 @@ class App(tk.Tk):
         if password_result['password'] != password_result['confirm']:
             dialogs.warn(self, 'Senha', 'As senhas não conferem.')
             return
+        # M10: mínima também aqui (quando a cifragem integral existir).
+        if not self._password_long_enough(password_result.get('password')):
+            dialogs.warn(self, 'Senha',
+                         'Use ao menos 8 caracteres.')
+            return
         if not dialogs.confirm(self, 'Criptografar banco',
-                               'O banco de dados será criptografado. '
-                               'Você precisará da senha a cada inicialização. '
-                               'Guarde a senha! Sem ela, os dados são perdidos permanentemente.'):
+                               'O banco de dados segue EM CLARO neste '
+                               'dispositivo (protegido só por permissões '
+                               '0700/0600). Para levar os dados com '
+                               'segurança, use "Backup criptografado" (.enc). '
+                               'Continuar vendo como proteger?'):
             return
         try:
-            # This is a simplified implementation
             dialogs.info(self, 'Criptografia',
-                         'Recurso em desenvolvimento. '
-                         'Use "Backup criptografado" para proteger seus dados por enquanto.')
+                         'Este dispositivo guarda o banco EM CLARO com '
+                         'permissões 0700/0600. Não há criptografia integral '
+                         'do banco em uso. Use "Backup criptografado" (.enc, '
+                         'senha com 8+ caracteres) para proteger cópias e '
+                         'transporte.')
         except Exception as exc:
             dialogs.warn(self, 'Erro', repr(exc))
 
@@ -4646,6 +5025,11 @@ class App(tk.Tk):
             return
         if password_result['new_password'] != password_result['confirm']:
             dialogs.warn(self, 'Senha', 'As novas senhas não conferem.')
+            return
+        # M10: nova senha também com mínimo de 8 chars.
+        if not self._password_long_enough(password_result.get('new_password')):
+            dialogs.warn(self, 'Senha',
+                         'A nova senha precisa de ao menos 8 caracteres.')
             return
         try:
             change_password(self.client.db.path,
@@ -4936,8 +5320,9 @@ class App(tk.Tk):
         else:
             profile = DARKNET_PRESETS[index - 1]
         self.client.net.set_proxy(profile)
+        # M3: stop() dá join com timeout e incrementa a geração; o start()
+        # seguinte invalida threads de manutenção órfãs do perfil antigo.
         self.client.net.stop()
-        self.client.net.running = False
         self.client.net.start(self.client._participating_streams())
         dialogs.info(self, 'Proxy atualizado',
                      'Usando %s. Reconectando...' % profile.describe())
@@ -5265,36 +5650,36 @@ class App(tk.Tk):
         if not self._safe_tree_clean():
             self._notify_dirty_hold_once(behind)
             return
-        if getattr(self, '_closed', False) or getattr(self, '_update_applying', False):
+        if getattr(self, '_closed', False) or _get_update_flag(self, '_update_applying', False):
             return
-        self._update_applying = True
-        self._update_auto = True
+        _set_update_flag(self, '_update_applying', True)
+        _set_update_flag(self, '_update_auto', True)
         try:
             self._do_update()
         except Exception:
-            self._update_applying = False
-            self._update_auto = False
+            _set_update_flag(self, '_update_applying', False)
+            _set_update_flag(self, '_update_auto', False)
 
     def _auto_update_check(self):
-        if getattr(self, '_closed', False) or getattr(self, '_update_checking', False):
+        if getattr(self, '_closed', False) or _get_update_flag(self, '_update_checking', False):
             return
-        if getattr(self, '_update_applying', False):
+        if _get_update_flag(self, '_update_applying', False):
             return
-        self._update_checking = True
+        _set_update_flag(self, '_update_checking', True)
         try:
             from .. import update as updater
             result = updater.check_for_updates()
         except Exception as exc:
             result = {'status': 'error', 'error': repr(exc)}
         finally:
-            self._update_checking = False
+            _set_update_flag(self, '_update_checking', False)
             self._update_last_check = time.time()
         if result is None or getattr(self, '_closed', False):
             return
         self._handle_auto_check_result(result)
 
     def _check_updates_manual(self):
-        if getattr(self, '_update_checking', False) or getattr(self, '_update_applying', False):
+        if _get_update_flag(self, '_update_checking', False) or _get_update_flag(self, '_update_applying', False):
             self._flash_status('Verificação em andamento…')
             return
         now = time.time()
@@ -5302,7 +5687,7 @@ class App(tk.Tk):
         if now - last < 10.0:
             self._flash_status('Verificação feita há pouco; aguarde…')
             return
-        self._update_checking = True
+        _set_update_flag(self, '_update_checking', True)
         self._flash_status('Verificando atualizações…')
 
         def worker():
@@ -5312,7 +5697,7 @@ class App(tk.Tk):
             except Exception as exc:
                 result = {'status': 'error', 'error': repr(exc)}
             finally:
-                self._update_checking = False
+                _set_update_flag(self, '_update_checking', False)
                 self._update_last_check = time.time()
                 self._update_last_manual = time.time()
             try:
@@ -5342,6 +5727,7 @@ class App(tk.Tk):
             dialogs.warn(self, 'Atualização', updater.describe_update_result(result))
 
     def _update_offer_text(self, count, result):
+        # M8: declara sem verify-commit e sem pin (mantém o aviso).
         lines = ['Há atualização disponível (%d commit(s) novo(s)).' % count]
         if isinstance(result, dict):
             upstream = result.get('upstream')
@@ -5356,14 +5742,16 @@ class App(tk.Tk):
                 lines.append('')
                 lines.extend('• %s' % line for line in commits[:10])
         lines.append('')
-        lines.append('O código remoto será executado ao reiniciar; '
-                     'atualize só a partir de fontes confiáveis. '
+        lines.append('SEM verificação de assinatura de commit '
+                     '(verify-commit) e SEM pin de commit: o código remoto '
+                     'será executado ao reiniciar; atualize só a partir de '
+                     'fontes confiáveis. '
                      'Alterações locais cancelam a atualização (proteção).')
         lines.append('Atualizar e reiniciar agora?')
         return '\n'.join(lines)
 
     def _offer_update(self, behind, result=None):
-        if getattr(self, '_update_applying', False):
+        if _get_update_flag(self, '_update_applying', False):
             self._flash_status('Atualização em andamento…')
             return
         try:
@@ -5381,7 +5769,7 @@ class App(tk.Tk):
             self, 'Atualização disponível',
             self._update_offer_text(count, result))
         if ok:
-            self._update_applying = True
+            _set_update_flag(self, '_update_applying', True)
             self._flash_status('Baixando atualização…')
             threading.Thread(target=self._do_update, daemon=True,
                              name='update-apply').start()

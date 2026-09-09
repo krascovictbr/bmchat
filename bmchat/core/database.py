@@ -24,9 +24,17 @@ class Database:
             pass
         self.path = os.path.join(data_dir, 'bmchat.db')
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        try:
+            os.chmod(self.path, 0o600)
+        except Exception:
+            pass
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.Lock()
         self._create_schema()
+        try:
+            os.chmod(self.path, 0o600)
+        except Exception:
+            pass
 
     def _create_schema(self):
         with self.lock:
