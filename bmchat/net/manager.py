@@ -894,7 +894,7 @@ class NetworkManager:
                 self._inv_hits, peer_key, INV_RATE_MAX, INV_RATE_WINDOW):
             return
         try:
-            hashes = packets.parse_inventory(payload)[:INV_WANTED_MAX * 2]
+            hashes = packets.parse_inventory(payload)
         except Exception:
             return
         # Marca como útil antes de qualquer descarte (evita evicção de par falante)

@@ -227,13 +227,13 @@ class PeerConnection(threading.Thread):
                 self._log_command_error(command, exc)
 
     def _read_header(self):
-        from ..protocol.const import MAX_OBJECT_LENGTH
+        from ..protocol.const import MAX_MESSAGE_SIZE
         from ..protocol.packets import HEADER_SIZE
         blob = self._recv_exact(self.sock, HEADER_SIZE)
         magic, command, length, checksum = packets.parse_header(blob)
         if magic != packets.MAGIC:
             raise ValueError('magic inválido')
-        if length > MAX_OBJECT_LENGTH + 64 + HEADER_SIZE:
+        if length > MAX_MESSAGE_SIZE:
             raise ValueError('comprimento excessivo')
         return magic, command, length, checksum
 
