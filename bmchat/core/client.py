@@ -29,13 +29,15 @@ from .events import EventEmitter
 from .events.events import LEGACY_MAP
 from .models import Message as MessageModel
 from ..protocol.factory import ProtocolObjectFactory
+from .repositories import MessageRepository, ContactRepository, PubkeyRepository
 
 
 class Client:
 
     def __init__(self, data_dir, pow_strategy: PoWStrategy | None = None,
-                 network_manager=None, db=None, protocol_factory=None):
-        """Client com Dependency Injection para PoW, NetworkManager e Factory.
+                 network_manager=None, db=None, protocol_factory=None,
+                 message_repo=None, contact_repo=None, pubkey_repo=None):
+        """Client com Dependency Injection para PoW, NetworkManager, Factory e Repositories.
 
         Args:
             data_dir: diretório de dados (SQLite, knownnodes).
@@ -47,11 +49,18 @@ class Client:
             db: Database injetada (para testes sem I/O real).
             protocol_factory: Factory de objetos de protocolo; se None usa
                 ProtocolObjectFactory padrão (Factory Pattern).
+            message_repo: MessageRepository injetado (Repository Pattern).
+            contact_repo: ContactRepository injetado.
+            pubkey_repo: PubkeyRepository injetado.
         """
         self.data_dir = data_dir
         self.db = db if db is not None else Database(data_dir)
         self.pow_strategy: PoWStrategy = pow_strategy or StandardPoWStrategy()
         self.protocol_factory = protocol_factory or ProtocolObjectFactory()
+        # Repository Pattern: abstrai acesso a dados
+        self.message_repo = message_repo or MessageRepository(self.db)
+        self.contact_repo = contact_repo or ContactRepository(self.db)
+        self.pubkey_repo = pubkey_repo or PubkeyRepository(self.db)
         import queue as _queue
         self.ui_queue = _queue.Queue()
         # Observer Pattern: EventEmitter para desacoplar Client da GUI
@@ -745,7 +754,8 @@ class Client:
         return result
 
     def _load_pubkeys(self):
-        for row in self.db.all_pubkeys():
+        # Repository Pattern: usa pubkey_repo em vez de SQL direto
+        for row in self.pubkey_repo.all():
             self.pubkeys[row['address']] = {
                 'signing_public': row['signing_public'],
                 'encryption_public': row['encryption_public'],
@@ -754,7 +764,10 @@ class Client:
             }
 
     def has_pubkey(self, address):
-        return address in self.pubkeys
+        # Cache + repositório para validação
+        if address in self.pubkeys:
+            return True
+        return self.pubkey_repo.exists(address)
 
     # ---------- contatos / canais ----------
 
@@ -765,15 +778,17 @@ class Client:
             return status, version
         if version < 3:
             return 'unsupported', version
-        self.db.add_contact(address_text, label or address_text,
+        # Repository Pattern: delega ao ContactRepository
+        self.contact_repo.add(address_text, label or address_text,
                             stream=stream)
         self._refresh_streams()
         self.ui_queue.put(('contact-added', address_text, label))
         return 'success', version
 
     def remove_contact(self, address_text):
-        self.db.remove_contact(address_text)
-        self.db.delete_conversation(address_text)
+        # Repository Pattern: remove via repositórios
+        self.contact_repo.remove(address_text)
+        self.message_repo.delete_conversation(address_text)
         self._refresh_streams()
         self.ui_queue.put(('contact-removed', address_text, ''))
 
@@ -840,7 +855,8 @@ class Client:
         if message_id:
             try:
                 # A2: DB pode estar fechado no stop(); nunca levantar aqui.
-                self.db.set_message_status(message_id, 'ackreceived')
+                # Repository Pattern: usa MessageRepository
+                self.message_repo.set_status(message_id, 'ackreceived')
             except Exception:
                 return
             try:
@@ -875,7 +891,8 @@ class Client:
 
     def _on_pubkey(self, parsed, raw):
         tag = parsed.data[:32]
-        for contact in self.db.all_contacts():
+        # Repository Pattern: busca contatos via ContactRepository
+        for contact in self.contact_repo.all():
             try:
                 contact_keys = AddressKeys.from_address(contact['address'])
             except Exception:
@@ -885,7 +902,8 @@ class Client:
             incoming = objects.process_pubkey(raw, contact_keys)
             if incoming is None:
                 continue
-            self.db.store_pubkey(
+            # Repository Pattern: persiste via PubkeyRepository
+            self.pubkey_repo.store(
                 contact['address'], incoming.signing_public,
                 incoming.encryption_public,
                 incoming.nonce_trials_per_byte,
