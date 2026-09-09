@@ -118,3 +118,30 @@ def test_send_message_with_id_sem_race():
         c.stop()
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_self_send_loopback_sem_rede():
+    """Self-chat (contato == identidade) entrega local, sem PoW/rede."""
+    d = tempfile.mkdtemp(prefix='bmchat-isol-self-')
+    try:
+        c = Client(d)
+        alice = c.create_identity('Alice', 1)
+        assert c.has_pubkey(alice)
+        st, mid = c.send_message_with_id(alice, alice, '', 'teste self')
+        assert st == 'success'
+        out = c.db.get_message(mid)
+        assert out['status'] == 'ackreceived'
+        rows = c.db.messages_for_dm(alice, alice)
+        # outbound + inbound
+        assert len(rows) == 2
+        assert not any('DIAG' in (r['body'] or '') for r in rows)
+        # Reenvio de travada antiga converte sem PoW
+        stuck = c.db.add_message(
+            None, alice, alice, '', 'travada', 1, int(time.time()),
+            'out', 'awaiting-pubkey')
+        st2, _ = c.resend_message(stuck)
+        assert st2 == 'success'
+        assert c.db.get_message(stuck)['status'] == 'ackreceived'
+        c.stop()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)

@@ -515,6 +515,11 @@ class Client:
             keys.nonce_trials_per_byte = row['noncetrials']
             keys.payload_length_extra_bytes = row['extrabytes']
             self.identities[row['address']] = keys
+        # Mantém self-pubkeys sincronizados após recarregar identidades
+        try:
+            self._ensure_self_pubkeys()
+        except Exception:
+            pass
 
     def _reparse_orphans(self, limit=100):
         """M7: retenta objetos guardados que não tinham identidade na chegada."""
@@ -548,6 +553,10 @@ class Client:
         keys.payload_length_extra_bytes = 1000
         with self._lock:
             self.identities[keys.address] = keys
+        try:
+            self._ensure_self_pubkeys()
+        except Exception:
+            pass
         self._refresh_streams()
         self.ui_queue.put(('identity-created', keys.address, label))
         self._reparse_orphans()
@@ -762,12 +771,58 @@ class Client:
                 'nonce_trials_per_byte': row['noncetrials'],
                 'payload_length_extra_bytes': row['extrabytes'],
             }
+        # Self-pubkeys: chaves próprias sempre conhecidas (sem rede).
+        # Evita que self-chat (contato == identidade) trave em awaiting-pubkey.
+        self._ensure_self_pubkeys()
+
+    def _ensure_self_pubkeys(self):
+        """Popula pubkeys com as chaves das próprias identidades."""
+        try:
+            for addr, keys in list((self.identities or {}).items()):
+                try:
+                    if getattr(keys, 'signing_public', None) is None:
+                        continue
+                    self.pubkeys[addr] = {
+                        'signing_public': keys.signing_public,
+                        'encryption_public': keys.encryption_public,
+                        'nonce_trials_per_byte': getattr(keys, 'nonce_trials_per_byte', 1000) or 1000,
+                        'payload_length_extra_bytes': getattr(keys, 'payload_length_extra_bytes', 1000) or 1000,
+                    }
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _pub_entry_for(self, address):
+        """Retorna entrada pubkey (cache, self-keys ou repo)."""
+        pub = (self.pubkeys or {}).get(address)
+        if pub is not None:
+            return pub
+        try:
+            keys = (self.identities or {}).get(address)
+            if keys is not None and getattr(keys, 'signing_public', None) is not None:
+                entry = {
+                    'signing_public': keys.signing_public,
+                    'encryption_public': keys.encryption_public,
+                    'nonce_trials_per_byte': getattr(keys, 'nonce_trials_per_byte', 1000) or 1000,
+                    'payload_length_extra_bytes': getattr(keys, 'payload_length_extra_bytes', 1000) or 1000,
+                }
+                self.pubkeys[address] = entry
+                return entry
+        except Exception:
+            pass
+        return None
 
     def has_pubkey(self, address):
-        # Cache + repositório para validação
-        if address in self.pubkeys:
+        # Cache + self-keys (sem rede) + repositório
+        if address in (self.pubkeys or {}):
             return True
-        return self.pubkey_repo.exists(address)
+        if address in (self.identities or {}):
+            return True
+        try:
+            return self.pubkey_repo.exists(address)
+        except Exception:
+            return False
 
     # ---------- contatos / canais ----------
 
@@ -1086,6 +1141,46 @@ class Client:
             self._log('rede', hint % format_ttl_pt(effective))
         return effective, clamped
 
+    def _send_self_loopback(self, identity_address, subject, body, encoding):
+        """Entrega local para self-chat (sem PoW/rede).
+
+        Cria outbound (ackreceived) + inbound (received) e emite eventos,
+        para envio para si mesmo funcionar mesmo offline/sem pubkey de rede.
+        Retorna (status, outbound_id).
+        """
+        now = int(time.time())
+        ttl = self.get_msg_ttl()
+        expires = now + ttl
+        try:
+            out_id = self.message_repo.add(
+                None, identity_address, identity_address, subject, body,
+                encoding, now, 'out', 'ackreceived', ttl=ttl, expires=expires)
+        except TypeError:
+            out_id = self.db.add_message(
+                None, identity_address, identity_address, subject, body,
+                encoding, now, 'out', 'ackreceived', ttl=ttl)
+            try:
+                self.db.set_message_expiry(out_id, expires)
+            except Exception:
+                pass
+        try:
+            self.message_repo.add(
+                None, identity_address, identity_address, subject, body,
+                encoding, now, 'in', 'received', ttl=ttl, expires=expires)
+        except TypeError:
+            try:
+                self.db.add_message(
+                    None, identity_address, identity_address, subject, body,
+                    encoding, now, 'in', 'received', ttl=ttl)
+            except Exception:
+                pass
+        try:
+            self.ui_queue.put(('status', out_id, 'ackreceived'))
+            self.ui_queue.put(('message', identity_address, identity_address, body, expires))
+        except Exception:
+            pass
+        return 'success', out_id
+
     def _resolve_message_ttl(self, message_id, ttl=None):
         # Retry usa o TTL guardado na linha; linhas legadas usam o vigente.
         if ttl is not None:
@@ -1238,12 +1333,21 @@ class Client:
                 return 'too-large', 'mensagem grande demais para um objeto'
         except Exception:
             return 'invalid', 'corpo de mensagem inválido'
+        # Self-send (contato == identidade): entrega local instantânea,
+        # sem PoW/rede. Corrige "envio não funciona" no self-chat (teste).
+        if to_address == identity_address and identity_address in (self.identities or {}):
+            try:
+                return self._send_self_loopback(
+                    identity_address, subject or '', body, encoding)
+            except Exception as exc:
+                return 'error', str(exc)
         ttl = self.get_msg_ttl()
         message_id = self.message_repo.add(
             None, identity_address, to_address, subject or '', body,
             encoding, int(time.time()), 'out', 'awaiting-pubkey', ttl=ttl)
         self.ui_queue.put(('status', message_id, 'sending'))
-        if to_address in self.pubkeys:
+        # Pubkey própria ou conhecida envia direto; senão pede chave via rede
+        if self._pub_entry_for(to_address) is not None:
             self._pow_and_publish_message(message_id, identity_address,
                                           to_address, body, encoding, ttl=ttl)
             return 'success', message_id
@@ -1427,7 +1531,14 @@ class Client:
         if row['status'] not in ('ack-failed', 'sending', 'awaiting-pubkey'):
             return 'error', 'estado não permite reenvio (%s)' % row['status']
         to_address = row['to_address']
-        if to_address not in self.pubkeys:
+        # Self-send travado: entrega local imediata (sem gastar slot de retry)
+        try:
+            if (to_address == row.get('from_address')
+                    and to_address in (self.identities or {})):
+                return self._resend_self_loopback(message_id, row)
+        except Exception:
+            pass
+        if self._pub_entry_for(to_address) is None:
             if not self._claim_resend_slot(message_id):
                 return 'error', 'limite de reenvios atingido'
             return self._resend_without_pubkey(message_id, to_address)
@@ -1441,9 +1552,56 @@ class Client:
                                       to_address, row['body'], row['encoding'])
         return 'success', None
 
+    def _resend_self_loopback(self, message_id, row):
+        """Converte mensagem self travada em entregue local."""
+        try:
+            self.message_repo.set_status(message_id, 'ackreceived')
+        except Exception:
+            try:
+                self.db.set_message_status(message_id, 'ackreceived')
+            except Exception:
+                pass
+        try:
+            self.ui_queue.put(('status', message_id, 'ackreceived'))
+        except Exception:
+            pass
+        # Garante inbound correspondente para o chat mostrar
+        try:
+            body = row.get('body') or ''
+            exists = self.db.query(
+                'SELECT id FROM messages WHERE direction=? AND from_address=? '
+                'AND to_address=? AND body=? ORDER BY id DESC LIMIT 1',
+                ('in', row.get('from_address'), row.get('to_address'), body))
+            if not exists:
+                now = int(time.time())
+                ttl = self._clamp_ttl(row.get('ttl') or self.get_msg_ttl())
+                self.message_repo.add(
+                    None, row.get('from_address'), row.get('to_address'),
+                    row.get('subject') or '', body, row.get('encoding') or 1,
+                    now, 'in', 'received', ttl=ttl, expires=now + ttl)
+                self.ui_queue.put(('message', row.get('from_address'),
+                                   row.get('to_address'), body, now + ttl))
+        except Exception:
+            pass
+        return 'success', None
+
     def _pow_and_publish_message(self, message_id, identity_address,
                                  to_address, body, encoding, ttl=None):
-        pub = self.pubkeys.get(to_address)
+        # Self-send antigo travado: resolve via loopback, sem PoW
+        try:
+            if (to_address == identity_address
+                    and to_address in (self.identities or {})):
+                row = None
+                try:
+                    row = self.db.get_message(message_id)
+                except Exception:
+                    row = None
+                if row is not None:
+                    return self._resend_self_loopback(message_id, row)
+                return None
+        except Exception:
+            pass
+        pub = self._pub_entry_for(to_address)
         if pub is None:
             return
         keys = self.identities.get(identity_address)
