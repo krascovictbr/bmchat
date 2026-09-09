@@ -2638,9 +2638,31 @@ class App(tk.Tk):
         self._collect_contact_convs()
         self._collect_sub_convs()
         self._collect_chan_convs()
-        if self._conv_selected is not None and \
-                self._conv_selected >= len(self._conv_meta):
-            self._conv_selected = None
+        # Sincroniza seleção com a conversa atual (evita header/lista
+        # dessincronizados — ex.: abrir SUPORTE mas lista destacar teste).
+        try:
+            cur = getattr(self, 'current_address', None)
+            if cur:
+                found = None
+                for idx, (_k, _a) in enumerate(self._conv_meta):
+                    if _a == cur:
+                        found = idx
+                        break
+                if found is not None:
+                    self._conv_selected = found
+                elif self._conv_selected is not None and \
+                        self._conv_selected >= len(self._conv_meta):
+                    self._conv_selected = None
+            elif self._conv_selected is not None and \
+                    self._conv_selected >= len(self._conv_meta):
+                self._conv_selected = None
+        except Exception:
+            try:
+                if self._conv_selected is not None and \
+                        self._conv_selected >= len(self._conv_meta):
+                    self._conv_selected = None
+            except Exception:
+                pass
         self._draw_conversations()
 
     def _unread_for(self, address):
@@ -2679,47 +2701,75 @@ class App(tk.Tk):
 
         - channel: mantém OR (broadcast: to==canal OR from==canal).
         - contact: usa messages_for_dm(contact, identity) para não vazar
-          diagnósticos ao SUPORTE para dentro de self-chat (contato == identidade).
+          diagnósticos ao SUPORTE para dentro de self-chat.
+        - Fallback: se DM vazio mas OR tem mensagens (ex.: identidade trocada,
+          mensagem de identidade antiga), mostra OR para nunca exibir conversa
+          vazia quando há mensagens (evita "SUPORTE vazio nem reiniciando").
         """
-        try:
-            if kind == 'channel':
-                return self.client.db.messages_for_conversation(address, limit=limit)
-            ident = self._conversation_identity()
-            if ident:
-                try:
-                    return self.client.db.messages_for_dm(address, ident, limit=limit)
-                except AttributeError:
-                    return self.client.db.messages_for_contact(address, ident)
-                except TypeError:
-                    rows = self.client.db.messages_for_contact(address, ident)
-                    return rows[-limit:] if limit else rows
-            return self.client.db.messages_for_conversation(address, limit=limit)
-        except TypeError:
+        def _or_rows():
             try:
+                return self.client.db.messages_for_conversation(address, limit=limit)
+            except TypeError:
                 rows = self.client.db.messages_for_conversation(address)
                 return rows[-limit:] if limit else rows
             except Exception:
                 return []
-        except Exception:
-            return []
-
-    def _count_for(self, kind, address):
         try:
             if kind == 'channel':
+                return _or_rows()
+            ident = self._conversation_identity()
+            if ident:
+                try:
+                    rows = self.client.db.messages_for_dm(address, ident, limit=limit)
+                except AttributeError:
+                    rows = self.client.db.messages_for_contact(address, ident)
+                    if limit:
+                        rows = rows[-limit:]
+                except TypeError:
+                    rows = self.client.db.messages_for_contact(address, ident)
+                    rows = rows[-limit:] if limit else rows
+                # Nunca vazio quando há mensagens: fallback para OR
+                if not rows:
+                    try:
+                        fallback = _or_rows()
+                        if fallback:
+                            return fallback
+                    except Exception:
+                        pass
+                return rows
+            return _or_rows()
+        except TypeError:
+            return _or_rows()
+        except Exception:
+            try:
+                return _or_rows()
+            except Exception:
+                return []
+
+    def _count_for(self, kind, address):
+        def _or_count():
+            try:
                 cnt = self.client.db.query(
                     'SELECT COUNT(*) AS n FROM messages WHERE '
                     'to_address=? OR from_address=?', (address, address))
                 return cnt[0]['n'] if cnt else 0
+            except Exception:
+                return 0
+        try:
+            if kind == 'channel':
+                return _or_count()
             ident = self._conversation_identity()
             if ident:
                 try:
-                    return self.client.db.count_for_dm(address, ident)
+                    n = self.client.db.count_for_dm(address, ident)
+                    # Fallback: se DM 0 mas OR tem, usa OR (nunca 0 com mensagens)
+                    if not n:
+                        alt = _or_count()
+                        return alt if alt else 0
+                    return n
                 except AttributeError:
                     pass
-            cnt = self.client.db.query(
-                'SELECT COUNT(*) AS n FROM messages WHERE '
-                'to_address=? OR from_address=?', (address, address))
-            return cnt[0]['n'] if cnt else 0
+            return _or_count()
         except Exception:
             return 0
 
@@ -2733,22 +2783,34 @@ class App(tk.Tk):
                         break
             except Exception:
                 kind = None
+        def _or_last():
+            try:
+                rows = self.client.db.query(
+                    'SELECT body, timestamp FROM messages WHERE '
+                    'to_address=? OR from_address=? '
+                    'ORDER BY timestamp DESC, id DESC LIMIT 1',
+                    (address, address))
+            except Exception:
+                return None
+            return rows[0] if rows else None
         try:
             if kind == 'contact' or (kind is None and getattr(self, '_conversation_identity', None)):
                 ident = self._conversation_identity()
                 if ident:
                     try:
-                        return self.client.db.last_message_for_dm(address, ident)
+                        last = self.client.db.last_message_for_dm(address, ident)
+                        # Fallback: se DM vazio mas OR tem, usa OR
+                        if last:
+                            return last
+                        return _or_last()
                     except AttributeError:
                         pass
-            rows = self.client.db.query(
-                'SELECT body, timestamp FROM messages WHERE '
-                'to_address=? OR from_address=? '
-                'ORDER BY timestamp DESC, id DESC LIMIT 1',
-                (address, address))
+            return _or_last()
         except Exception:
-            return None
-        return rows[0] if rows else None
+            try:
+                return _or_last()
+            except Exception:
+                return None
 
     def _last_message_for(self, address):
         last = self._last_message_row(address)
