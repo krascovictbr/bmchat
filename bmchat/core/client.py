@@ -1248,10 +1248,12 @@ class Client:
             keys = AddressKeys.from_address(address_text)
         except Exception:
             return 'invalid'
-        # Factory Pattern: cria via factory
+        # Factory Pattern: cria via factory (validação não é silenciada)
         try:
             unsigned = self.protocol_factory.create_getpubkey(
                 int(time.time()) + GETPUBKEY_TTL, stream, keys.tag)
+        except ValueError:
+            raise
         except Exception:
             unsigned = objects.build_getpubkey_unsigned(
                 int(time.time()) + GETPUBKEY_TTL, stream, 4, keys.tag)
@@ -1351,10 +1353,12 @@ class Client:
             self._pow_and_publish_message(message_id, identity_address,
                                           to_address, body, encoding, ttl=ttl)
             return 'success', message_id
-        # Factory Pattern: cria getpubkey via factory
+        # Factory Pattern: cria getpubkey via factory (validação não silenciada)
         try:
             unsigned = self.protocol_factory.create_getpubkey(
                 int(time.time()) + GETPUBKEY_TTL, stream, contact_keys.tag)
+        except ValueError:
+            raise
         except Exception:
             unsigned = objects.build_getpubkey_unsigned(
                 int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
@@ -1645,8 +1649,11 @@ class Client:
             ttl = max(300, expires - now)
         watch = os.urandom(32)
         # Factory Pattern: cria objeto ACK via factory (com validação)
+        # Não mascara ValueError de validação (ex.: stream inválido)
         try:
             unsigned = self.protocol_factory.create_ack(expires, watch, stream)
+        except ValueError:
+            raise
         except Exception:
             unsigned = objects.build_ack_unsigned(expires, watch, stream)
         target = calculate_target(1000, 1000, len(unsigned) + 8, ttl)
@@ -1656,18 +1663,23 @@ class Client:
             return b'', None
         try:
             ack_object = self.protocol_factory.complete(unsigned, nonce)
+        except ValueError:
+            raise
         except Exception:
             ack_object = objects.complete_object(unsigned, nonce)
         return packets.create_packet('object', ack_object), \
             objects.ack_watch_key(ack_object)
 
     def _quick_pow(self, unsigned, target):
-        # Strategy Pattern: delega ao PoWStrategy injetado quando disponível
+        # Strategy Pattern: delega a PoWStrategy injetada (qualquer implementação)
         initial = initial_hash_of(unsigned)
-        # Se mock injetado, usa-o para testes rápidos
-        from ..crypto.pow.mock import MockPoWStrategy
-        if isinstance(self.pow_strategy, MockPoWStrategy):
-            return self.pow_strategy.solve(initial, target, stop_event=threading.Event())
+        strat = getattr(self, 'pow_strategy', None)
+        if strat is not None and hasattr(strat, 'solve'):
+            # Usa estratégia injetada (Mock ou custom Standard)
+            try:
+                return strat.solve(initial, target, stop_event=threading.Event())
+            except NotImplementedError:
+                pass
         return PowExecutor(
             workers=1, progress_cb=None,
             stop_event=threading.Event()
@@ -1734,24 +1746,42 @@ class Client:
             if stop_event is None:
                 stop_event = threading.Event()
         self._ensure_pow_entry(token, stop_event, message_id)
-        # Strategy Pattern: usa PoWStrategy injetado quando for Mock,
-        # caso contrário usa Standard via PowExecutor (mantém workers dinâmico)
-        from ..crypto.pow.mock import MockPoWStrategy
-        use_mock = isinstance(self.pow_strategy, MockPoWStrategy)
-        if use_mock:
+        # Strategy Pattern: usa PoWStrategy injetada se disponível
+        strat = getattr(self, 'pow_strategy', None)
+        if strat is not None and hasattr(strat, 'solve') and not isinstance(strat, type):
+            # Tenta usar estratégia injetada; se for Standard, respeita workers do DB
+            # via criação de instância temporária com workers dinâmicos
             try:
-                nonce = self.pow_strategy.solve(
-                    initial_hash_of(unsigned), target,
-                    progress_cb=self._pow_progress(token),
-                    stop_event=stop_event,
-                )
+                # Se strat é StandardPoWStrategy, recria com workers atuais para refletir config
+                from ..crypto.pow.standard import StandardPoWStrategy
+                if isinstance(strat, StandardPoWStrategy):
+                    workers = max(1, self.db.get_int('pow_workers', 0) or 0) or max(1, __import__('os').cpu_count() or 2)
+                    tmp = StandardPoWStrategy(workers=workers)
+                    nonce = tmp.solve(
+                        initial_hash_of(unsigned), target,
+                        progress_cb=self._pow_progress(token),
+                        stop_event=stop_event)
+                else:
+                    nonce = strat.solve(
+                        initial_hash_of(unsigned), target,
+                        progress_cb=self._pow_progress(token),
+                        stop_event=stop_event)
+                # Sucesso via strategy
+                complete = objects.complete_object(unsigned, nonce)
+                self._untrack_pow(token)
+                if done_cb is not None:
+                    done_cb(complete, nonce)
+                return
+            except NotImplementedError:
+                pass
             except Exception:
                 self._fail_pow(token, message_id)
                 return
-        else:
+        # Fallback legado: PowExecutor
+        try:
             executor = PowExecutor(
                 workers=max(1, self.db.get_int('pow_workers', 0) or 0) or
-                max(1, os.cpu_count() or 2),
+                max(1, __import__('os').cpu_count() or 2),
                 progress_cb=self._pow_progress(token),
                 stop_event=stop_event)
             try:
@@ -1759,10 +1789,14 @@ class Client:
             except Exception:
                 self._fail_pow(token, message_id)
                 return
-        complete = objects.complete_object(unsigned, nonce)
-        self._untrack_pow(token)
-        if done_cb is not None:
-            done_cb(complete, nonce)
+            complete = objects.complete_object(unsigned, nonce)
+            self._untrack_pow(token)
+            if done_cb is not None:
+                done_cb(complete, nonce)
+            return
+        except Exception:
+            self._fail_pow(token, message_id)
+            return
 
     def _pow_progress(self, token):
         def progress(tried, rate):

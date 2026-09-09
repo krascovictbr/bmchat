@@ -2700,11 +2700,11 @@ class App(tk.Tk):
         """Busca mensagens isoladas por par (contato, identidade).
 
         - channel: mantém OR (broadcast: to==canal OR from==canal).
-        - contact: usa messages_for_dm(contact, identity) para não vazar
-          diagnósticos ao SUPORTE para dentro de self-chat.
-        - Fallback: se DM vazio mas OR tem mensagens (ex.: identidade trocada,
-          mensagem de identidade antiga), mostra OR para nunca exibir conversa
-          vazia quando há mensagens (evita "SUPORTE vazio nem reiniciando").
+        - contact self (address é identidade): usa self-loop (address, address)
+          para nunca vazar outbound para outros (ex.: diagnóstico).
+        - contact normal: usa messages_for_dm(contact, identity) para não vazar.
+        - Fallback: se DM vazio mas OR tem mensagens (ex.: mensagem de identidade
+          antiga), mostra OR para nunca exibir conversa vazia (evita SUPORTE vazio).
         """
         def _or_rows():
             try:
@@ -2714,6 +2714,28 @@ class App(tk.Tk):
                 return rows[-limit:] if limit else rows
             except Exception:
                 return []
+        # Self-chat: contato é uma das identidades → loopback estrito
+        try:
+            if kind == 'contact' and address in getattr(self.client, 'identities', {}):
+                try:
+                    rows = self.client.db.messages_for_dm(address, address, limit=limit)
+                except AttributeError:
+                    rows = self.client.db.messages_for_contact(address, address)
+                    if limit:
+                        rows = rows[-limit:]
+                if not rows:
+                    try:
+                        fallback = _or_rows()
+                        if fallback:
+                            # Filtra fallback para self-loop apenas
+                            fallback = [r for r in fallback if r.get('from_address')==address and r.get('to_address')==address]
+                            if fallback:
+                                return fallback[-limit:] if limit else fallback
+                    except Exception:
+                        pass
+                return rows
+        except Exception:
+            pass
         try:
             if kind == 'channel':
                 return _or_rows()
@@ -2755,6 +2777,17 @@ class App(tk.Tk):
                 return cnt[0]['n'] if cnt else 0
             except Exception:
                 return 0
+        # Self-chat: conta só self-loop
+        try:
+            if kind == 'contact' and address in getattr(self.client, 'identities', {}):
+                try:
+                    return self.client.db.count_for_dm(address, address)
+                except AttributeError:
+                    pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
         try:
             if kind == 'channel':
                 return _or_count()
@@ -2793,6 +2826,17 @@ class App(tk.Tk):
             except Exception:
                 return None
             return rows[0] if rows else None
+        # Self-chat: preview só self-loop
+        try:
+            if kind == 'contact' and address in getattr(self.client, 'identities', {}):
+                try:
+                    last = self.client.db.last_message_for_dm(address, address)
+                    if last:
+                        return last
+                except Exception:
+                    pass
+        except Exception:
+            pass
         try:
             if kind == 'contact' or (kind is None and getattr(self, '_conversation_identity', None)):
                 ident = self._conversation_identity()

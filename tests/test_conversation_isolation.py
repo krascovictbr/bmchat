@@ -41,8 +41,11 @@ def test_dm_isolado_nao_vaza_diagnostico():
         # OR antigo vazava (4); DM isolado não
         assert len(db.messages_for_conversation(SELF)) == 4
         dm_self = db.messages_for_dm(SELF, SELF)
-        assert all(r['to_address'] == SELF for r in dm_self), dm_self
+        # Self-chat estrito: só self->self (não inbound de OTHER, não outbound para SUP)
+        assert len(dm_self) == 1, dm_self
+        assert all(r['from_address'] == SELF and r['to_address'] == SELF for r in dm_self), dm_self
         assert not any('DIAG' in (r['body'] or '') for r in dm_self)
+        assert not any(r['from_address'] == OTHER for r in dm_self)
 
         dm_other = db.messages_for_dm(OTHER, SELF)
         assert len(dm_other) == 2  # OTHER<->SELF nas duas direções
@@ -52,14 +55,15 @@ def test_dm_isolado_nao_vaza_diagnostico():
         assert 'DIAG' in (dm_sup[0]['body'] or '')
 
         # last/count/mark/delete isolados
-        assert 'DIAG' not in (db.last_message_for_dm(SELF, SELF)['body'] or '')
-        assert db.count_for_dm(SELF, SELF) == 2
+        assert dm_self[0]['body'] == 'ok self'
+        assert db.last_message_for_dm(SELF, SELF)['body'] == 'ok self'
+        assert db.count_for_dm(SELF, SELF) == 1
         db.mark_dm_read(SELF, SELF)
-        # Não deve marcar nada como read aqui além do inbound? Verifica sem erro
+        # Não deve marcar nada como read aqui além do self-loop
         db.delete_dm_conversation(SUP, SELF)
         assert db.count_for_dm(SUP, SELF) == 0
-        # Self-chat ainda intacto (só self-to-self deletado em delete_dm self?)
-        # delete_dm self apaga só self-to-self por segurança
+        # Self-chat ainda intacto
+        assert db.count_for_dm(SELF, SELF) == 1
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

@@ -130,6 +130,9 @@ def generate_keys(stream=1, nullprefix=1, max_tries=1000000):
 def wif_encode(private):
     if len(private) != 32:
         raise ValueError('chave privada deve ter 32 bytes')
+    scalar = int.from_bytes(private, 'big')
+    if not 1 <= scalar < ecc.ORDER:
+        raise ValueError('chave privada fora do intervalo')
     data = b'\x80' + private
     return encode_base58(data + double_sha256(data)[:4])
 
@@ -141,4 +144,8 @@ def wif_decode(wif):
     payload, checksum = raw[:-4], raw[-4:]
     if double_sha256(payload)[:4] != checksum:
         raise ValueError('WIF checksum inválido')
-    return raw[1:-4]
+    private = raw[1:-4]
+    scalar = int.from_bytes(private, 'big')
+    if not 1 <= scalar < ecc.ORDER:
+        raise ValueError('WIF: chave privada fora do intervalo')
+    return private

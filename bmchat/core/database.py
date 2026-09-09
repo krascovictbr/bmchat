@@ -368,8 +368,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
         if not contact_address or not identity_address:
             return []
         if contact_address == identity_address:
-            base = 'SELECT * FROM messages WHERE to_address=? '
-            params: tuple = (contact_address,)
+            base = 'SELECT * FROM messages WHERE from_address=? AND to_address=? '
+            params: tuple = (contact_address, contact_address)
             if limit is None:
                 return self.query(base + 'ORDER BY timestamp, id', params)
             try:
@@ -403,8 +403,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
     def count_for_dm(self, contact_address, identity_address):
         if contact_address == identity_address:
             rows = self.query(
-                'SELECT COUNT(*) AS n FROM messages WHERE to_address=?',
-                (contact_address,))
+                'SELECT COUNT(*) AS n FROM messages WHERE from_address=? AND to_address=?',
+                (contact_address, contact_address))
             return rows[0]['n'] if rows else 0
         rows = self.query(
             'SELECT COUNT(*) AS n FROM messages WHERE '
@@ -417,9 +417,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
     def last_message_for_dm(self, contact_address, identity_address):
         if contact_address == identity_address:
             rows = self.query(
-                'SELECT body, timestamp FROM messages WHERE to_address=? '
+                'SELECT body, timestamp FROM messages WHERE from_address=? AND to_address=? '
                 'ORDER BY timestamp DESC, id DESC LIMIT 1',
-                (contact_address,))
+                (contact_address, contact_address))
             return rows[0] if rows else None
         rows = self.query(
             'SELECT body, timestamp FROM messages WHERE '
@@ -433,10 +433,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
     def mark_dm_read(self, contact_address, identity_address):
         """Marca como lidas só as recebidas do par (não tudo com OR)."""
         if contact_address == identity_address:
-            # Self-chat: marca tudo PARA si (inbound + self), não outbound p/ outros
             self.execute(
-                "UPDATE messages SET status=? WHERE to_address=? AND status=?",
-                ('read', contact_address, 'received'))
+                "UPDATE messages SET status=? WHERE from_address=? AND to_address=? AND status=?",
+                ('read', contact_address, contact_address, 'received'))
             return
         self.execute(
             'UPDATE messages SET status=? WHERE '

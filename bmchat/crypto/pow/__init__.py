@@ -35,7 +35,7 @@ def calculate_target(nonce_trials_per_byte, payload_length_extra_bytes, object_l
     denominator = (
         nonce_trials_per_byte
         * (object_len + payload_length_extra_bytes
-           + ((ttl * (object_len + payload_length_extra_bytes)) / (2 ** 16)))
+           + ((ttl * (object_len + payload_length_extra_bytes)) // (2 ** 16)))
     )
     return (2 ** 64) // int(denominator)
 

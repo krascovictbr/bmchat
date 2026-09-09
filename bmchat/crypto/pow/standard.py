@@ -57,10 +57,11 @@ class StandardPoWStrategy(PoWStrategy):
         started = start_nonce
         futures: dict = {}
         self.tried = 0
+        self._started = started  # próximo nonce livre (evita duplicação)
         begin = time.time()
         pool = ProcessPoolExecutor(max_workers=self.workers)
         try:
-            started = self._seed_futures(pool, futures, initial_hash, target, started, step)
+            self._started = self._seed_futures(pool, futures, initial_hash, target, started, step)
             while futures:
                 if stop_event is not None and stop_event.is_set():
                     break
@@ -99,7 +100,12 @@ class StandardPoWStrategy(PoWStrategy):
                 if progress_cb is not None:
                     progress_cb(self.tried, self._rate(begin))
                 return nonce
-            next_start = start + step
+            # Aloca próximo range sequencial (não start+step duplicado)
+            try:
+                next_start = self._started
+                self._started += step
+            except AttributeError:
+                next_start = start + step
             new_future = pool.submit(_search_range, (initial_hash, target, next_start, step))
             futures[new_future] = next_start
         if progress_cb is not None and self.tried > 0:
