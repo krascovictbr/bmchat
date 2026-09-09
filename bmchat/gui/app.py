@@ -13,6 +13,7 @@ from .tooltip import ToolTip
 from .notification import notify
 from .. import SUPPORT_ADDRESS, SUPPORT_LABEL
 from ..core.client import Client
+from .commands import CommandHistory, SendMessageCommand, DeleteContactCommand, BackupKeysCommand
 from ..protocol.const import (
     MSG_TTL_DEFAULT, MSG_TTL_MAX, MSG_TTL_MIN, MSG_TTL_PRESETS,
     format_ttl_pt,
@@ -735,6 +736,8 @@ class App(tk.Tk):
         self._update_checking = False
         self._update_applying = False
         self._update_auto = False
+        # Command Pattern: histórico para Undo/Redo futuro
+        self._command_history = CommandHistory()
 
         self.conv_list = _ConvListAdapter(self)
         self.chat_text = _ChatTextAdapter()
@@ -3020,7 +3023,12 @@ class App(tk.Tk):
                 'Remover %s dos contatos e apagar a conversa?' % label)
             if not ok:
                 return
-            self.client.remove_contact(address)
+            # Command Pattern: encapsula remoção
+            cmd = DeleteContactCommand(self.client, address)
+            status, error = self._command_history.execute(cmd)
+            if status not in ('success',):
+                dialogs.warn(self, 'Remover contato', error or status)
+                return
         if getattr(self, 'current_address', None) == address:
             self._show_welcome()
         else:
@@ -4516,8 +4524,9 @@ class App(tk.Tk):
             return
         self.input_var.set('')
         self._set_placeholder()
-        status, error = self.client.send_message(
-            identity, self.current_address, '', body)
+        # Command Pattern: encapsula envio em objeto Command
+        cmd = SendMessageCommand(self.client, identity, self.current_address, body)
+        status, error = self._command_history.execute(cmd)
         if status != 'success':
             dialogs.warn(self, 'Erro', error or status)
 
@@ -4669,8 +4678,10 @@ class App(tk.Tk):
             self._import_keys_dat_file()
             return
         address = addresses[index]
-        data = self.client.export_identity(address)
-        if data is None:
+        # Command Pattern: backup via objeto Command
+        cmd = BackupKeysCommand(self.client, address, format='wif')
+        status, data = self._command_history.execute(cmd)
+        if status != 'success' or data is None:
             dialogs.warn(self, 'Backup',
                          'Chaves indisponíveis para esta identidade.')
             return
