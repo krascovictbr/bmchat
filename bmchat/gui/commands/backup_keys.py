@@ -5,11 +5,16 @@ from .base import Command
 class BackupKeysCommand(Command):
     """Encapsula exportação de chaves (WIF / keys.dat).
 
+    **Segurança:** comando marcado como sensível; histórico não mantém
+    payload em claro para evitar vazamento de chaves privadas em memória.
+
     Args:
         client: Client
         address: endereço específico ou None para todas as identidades
         format: 'wif' ou 'keys_dat'
     """
+
+    sensitive = True
 
     def __init__(self, client, address: str | None = None, format: str = 'keys_dat'):
         super().__init__(client)

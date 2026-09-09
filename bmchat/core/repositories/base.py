@@ -1,5 +1,4 @@
 """Repository base — abstração da camada de dados."""
-from typing import Any
 
 
 class BaseRepository:

@@ -7,10 +7,10 @@ import hashlib
 import time
 
 from .strategy import PoWStrategy
-from ...util.hashing import sha512
 
 
 def _pow_value_for_nonce(nonce: int, initial_hash: bytes) -> int:
+    """Calcula pow_value para um nonce candidato (double SHA512)."""
     buf = nonce.to_bytes(8, 'big') + initial_hash
     inner = hashlib.sha512(buf)
     h = hashlib.sha512(inner.digest())
@@ -20,15 +20,16 @@ def _pow_value_for_nonce(nonce: int, initial_hash: bytes) -> int:
 class MockPoWStrategy(PoWStrategy):
     """Strategy mockada: resolve PoW de forma determinística e rápida.
 
-    Estratégias:
-    - Se ``fast=True`` (padrão em testes) tenta até ``max_tries``
-      iterações single-threaded e, se não achar, retorna 0
-      (útil quando o alvo é forçado grande via ``TARGET=2**52``).
-    - Mantém assinatura compatível com StandardPoWStrategy para
-      injeção transparente.
+    - Tenta encontrar nonce válido até ``max_tries`` (padrão 500k) de forma
+      single-threaded; com target de teste (2**52) encontra em <5k tentativas.
+    - Se não encontrar, levanta RuntimeError por padrão (seguro: nunca retorna
+      nonce inválido em produção). Para compatibilidade com testes legados
+      que forçavam target real, ``fast_return_zero=True`` pode ser opt-in para
+      retornar start_nonce (inválido) mas deve ser usado só em stubs.
+    - Mantém assinatura compatível com StandardPoWStrategy.
     """
 
-    def __init__(self, max_tries: int = 500_000, fast_return_zero: bool = True):
+    def __init__(self, max_tries: int = 500_000, fast_return_zero: bool = False):
         self.max_tries = max_tries
         self.fast_return_zero = fast_return_zero
         self.tried = 0
@@ -46,27 +47,27 @@ class MockPoWStrategy(PoWStrategy):
             raise ValueError('initial_hash deve ter 64 bytes')
         nonce = start_nonce
         tries = 0
-        # Tenta achar nonce real dentro do limite para manter validade
+        begin = time.time()
         while tries < self.max_tries:
             if stop_event is not None and stop_event.is_set():
                 raise RuntimeError('proof of work interrompido')
             if _pow_value_for_nonce(nonce, initial_hash) <= target:
+                self.tried = tries + 1
                 if progress_cb:
-                    progress_cb(tries + 1, 0.0)
+                    progress_cb(tries + 1, (tries + 1) / max(time.time() - begin, 1e-6))
                 return nonce
             nonce += 1
             tries += 1
-            # Notifica progresso a cada 8192 tentativas
             if progress_cb and tries % 8192 == 0:
-                progress_cb(tries, tries / max(time.time() - (time.time() - 0.01), 1e-6))
-        # Fallback: para testes com target gigante, retorna start_nonce
-        # (com target 2**52 encontra em poucas tentativas; fallback raramente usado)
+                elapsed = max(time.time() - begin, 1e-6)
+                progress_cb(tries, tries / elapsed)
+        self.tried = tries
         if self.fast_return_zero:
-            # Garante que não quebra fluxo de teste; chama callback final
+            # Opt-in legado: retorna nonce inválido para não quebrar stub antigo
             if progress_cb:
                 progress_cb(tries, 0.0)
             return start_nonce
-        raise RuntimeError('mock: não encontrou nonce em %d tentativas' % self.max_tries)
+        raise RuntimeError('mock: não encontrou nonce em %d tentativas (target=%r)' % (self.max_tries, target))
 
     def get_difficulty(self) -> int:
         return 0

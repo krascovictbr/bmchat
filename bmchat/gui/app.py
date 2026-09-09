@@ -795,9 +795,12 @@ class App(tk.Tk):
         Cada evento emitido pelo Client via EventEmitter agenda o handling
         no main thread (after 0). Mantém compatibilidade com polling legado
         (queue) — observer é caminho preferencial, polling é fallback.
+        Thread-safety: after() só é seguro na main thread; fora dela
+        tenta after e, se falhar, recai no queue (polling).
         """
         try:
-            # Mapeia eventos legados (ui_queue) para handlers da GUI
+            import threading as _threading
+
             def _make_handler(kind):
                 def _handler(data):
                     # data é o payload sem o kind; reconstrói tupla completa
@@ -808,8 +811,16 @@ class App(tk.Tk):
                     else:
                         full = (kind, data)
                     try:
-                        # Agenda no main thread para segurança Tk
-                        self.after(0, lambda f=full: self._dispatch_event(f))
+                        # Thread-safety: Tkinter só é seguro na main thread.
+                        # Se estamos na main, despacha direto; se não, deixa
+                        # o polling via ui_queue cuidar (bridge já colocou na
+                        # queue). Não chama after() de thread worker (evita
+                        # TclError / deadlock).
+                        if _threading.current_thread() is _threading.main_thread():
+                            self._dispatch_event(full)
+                        else:
+                            # Worker thread: não toca Tk; polling cuidará
+                            pass
                     except Exception:
                         pass
                 return _handler
@@ -6059,6 +6070,11 @@ class App(tk.Tk):
     def _shutdown_client(self):
         try:
             self.client.stop()
+        except Exception:
+            pass
+        # Observer Pattern: limpa listeners para evitar memory leak
+        try:
+            self.client.events.clear()
         except Exception:
             pass
 

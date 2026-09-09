@@ -40,35 +40,34 @@ class Message:
     def state_name(self) -> str:
         return self._state.name
 
-    def transition_to(self, new_status: str) -> bool:
-        """Transita para novo estado se permitido.
+    def transition_to(self, new_status: str, persist: bool = False) -> bool:
+        """Transita para novo estado se permitido (State Pattern).
+
+        Valida transição via ``can_transition_to``; se inválida, não
+        altera estado e retorna False (evita corrupção). Estados de
+        extensão ``cancelled``/``expired`` podem ser forçados mesmo
+        fora do fluxo normal.
+
+        Args:
+            new_status: nome do novo estado
+            persist: se True, persiste no DB via client.message_repo
 
         Retorna True se transitou, False se bloqueado.
-        Mesmo que bloqueado, força transição para estados novos
-        (ex.: cancelled/expired) se explicitamente pedidos.
         """
-        # Permite força para estados de extensão
-        cls = get_state_class(new_status)
-        new_state = cls(self)
-        # Verifica transição permitida ou força para novos estados
-        if self._state.can_transition_to(new_status) or new_status in ('cancelled', 'expired'):
-            try:
-                self._state.on_exit()
-            except Exception:
-                pass
-            self._state = new_state
-            self.status = new_status
-            self._row['status'] = new_status
-            try:
-                new_state.on_enter()
-            except Exception:
-                pass
+        # Normaliza: permite transição para si mesmo (idempotente)
+        if new_status == self.status:
             return True
-        # Mesmo que não permitido, atualiza para refletir DB (tolerante)
+        cls = get_state_class(new_status)
+        # Verifica permissão; novos estados podem ser forçados
+        allowed = self._state.can_transition_to(new_status) or new_status in ('cancelled', 'expired')
+        if not allowed:
+            # Transição inválida: não altera (previne corrupção)
+            return False
         try:
             self._state.on_exit()
         except Exception:
             pass
+        new_state = cls(self)
         self._state = new_state
         self.status = new_status
         self._row['status'] = new_status
@@ -76,7 +75,17 @@ class Message:
             new_state.on_enter()
         except Exception:
             pass
-        return False
+        if persist and self.client is not None and self.id is not None:
+            try:
+                # Persiste via repositório se disponível, senão via db direto
+                repo = getattr(self.client, 'message_repo', None)
+                if repo is not None:
+                    repo.set_status(self.id, new_status)
+                else:
+                    self.client.db.set_message_status(self.id, new_status)
+            except Exception:
+                pass
+        return True
 
     # -- delegação ao State --
 

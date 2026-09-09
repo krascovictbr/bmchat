@@ -6,11 +6,10 @@ manual via `objects.*`. Facilita testes e garante invariantes.
 """
 import time
 
-from ..crypto.keys import AddressKeys
 from . import objects
 from .const import (
-    OBJECT_GETPUBKEY, OBJECT_PUBKEY, OBJECT_MSG, OBJECT_BROADCAST,
     GETPUBKEY_TTL, PUBKEY_TTL, MSG_TTL_MIN, MSG_TTL_MAX,
+    MAX_WIRE_BODY_BYTES,
 )
 
 
@@ -83,8 +82,12 @@ class ProtocolObjectFactory:
         recipient_ripe = self._validate_ripe(recipient_ripe)
         if not isinstance(message, (bytes, bytearray)):
             raise ValueError('message deve ser bytes')
+        if len(message) > MAX_WIRE_BODY_BYTES:
+            raise ValueError('message excede MAX_WIRE_BODY_BYTES (%d)' % MAX_WIRE_BODY_BYTES)
         if not isinstance(recipient_encryption_public, (bytes, bytearray)):
             raise ValueError('recipient_encryption_public inválida')
+        if len(recipient_encryption_public) not in (65, 64):
+            raise ValueError('recipient_encryption_public deve ter 64 ou 65 bytes')
         if encoding not in (0, 1, 2, 3):
             raise ValueError('encoding inválido')
         if identity is None:
@@ -100,6 +103,8 @@ class ProtocolObjectFactory:
         stream = self._validate_stream(stream)
         if not isinstance(message, (bytes, bytearray)):
             raise ValueError('message deve ser bytes')
+        if len(message) > MAX_WIRE_BODY_BYTES:
+            raise ValueError('message excede MAX_WIRE_BODY_BYTES (%d)' % MAX_WIRE_BODY_BYTES)
         if identity is None:
             raise ValueError('identity ausente')
         if encoding not in (0, 1, 2, 3):
@@ -127,11 +132,17 @@ class ProtocolObjectFactory:
     def create_msg_with_ttl(self, stream: int, identity, recipient_encryption_public,
                             recipient_ripe: bytes, message: bytes, encoding=1,
                             ack_packet: bytes = b'', ttl: int | None = None) -> bytes:
-        from ..core.client import Client as _Client
-        # Usa TTL padrão se não informado; clamp igual ao Client
+        # Usa TTL padrão se não informado; clamp igual ao Client.get_msg_ttl
         if ttl is None:
             ttl = 86400
-        ttl = max(MSG_TTL_MIN, min(MSG_TTL_MAX, int(ttl)))
+        try:
+            ttl = int(ttl)
+        except Exception:
+            ttl = 86400
+        ttl = max(MSG_TTL_MIN, min(MSG_TTL_MAX, ttl))
+        # Valida tamanho no wire antes de PoW (evita queimar CPU)
+        if isinstance(message, (bytes, bytearray)) and len(message) > MAX_WIRE_BODY_BYTES:
+            raise ValueError('message excede MAX_WIRE_BODY_BYTES (%d)' % MAX_WIRE_BODY_BYTES)
         expires = int(time.time()) + ttl
         return self.create_msg(expires, stream, identity, recipient_encryption_public,
                                recipient_ripe, message, encoding, ack_packet)

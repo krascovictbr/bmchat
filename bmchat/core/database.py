@@ -370,6 +370,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
     _VALID_STATUSES = frozenset([
         'awaiting-pubkey', 'sending', 'sent', 'ackreceived', 'received',
         'read', 'ack-failed',
+        # State Pattern extensões (mantém compat, mas permite novos estados)
+        'pending', 'published', 'delivered', 'failed', 'cancelled', 'expired',
     ])
 
     def set_message_status(self, message_id, status):

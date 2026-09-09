@@ -27,7 +27,8 @@ class EventEmitter:
 
     def __init__(self, queue=None, legacy_bridge: bool = False):
         self._listeners: Dict[str, List[Callable]] = defaultdict(list)
-        self._once_wrappers: Dict[str, List[Callable]] = {}
+        # _once_wrappers guarda (original_callback, wrapper)
+        self._once_wrappers: Dict[str, List[tuple]] = {}
         self._lock = threading.RLock()
         self._queue = queue
         self._legacy_bridge = legacy_bridge
@@ -48,10 +49,15 @@ class EventEmitter:
                 self._listeners[event].remove(callback)
             except ValueError:
                 pass
-            # Limpa wrappers once se necessário
+            # Limpa wrappers once se necessário (suporta tanto original quanto wrapper)
             wrappers = self._once_wrappers.get(event)
             if wrappers:
-                self._once_wrappers[event] = [w for w in wrappers if w[0] is not callback]
+                # wrappers são (original, wrapper)
+                self._once_wrappers[event] = [
+                    w for w in wrappers if w[0] is not callback and w[1] is not callback
+                ]
+                if not self._once_wrappers[event]:
+                    self._once_wrappers.pop(event, None)
 
     def once(self, event: str, callback: Callable) -> Callable:
         """Registra callback que dispara uma única vez."""

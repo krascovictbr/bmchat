@@ -10,6 +10,10 @@ from typing import Any
 class Command(ABC):
     """Interface base para todos os comandos da GUI."""
 
+    # Marque True para comandos que contêm dados sensíveis (ex.: chaves privadas)
+    # e não devem ser mantidos em histórico em claro.
+    sensitive: bool = False
+
     def __init__(self, client):
         self.client = client
         self._executed = False
@@ -58,6 +62,17 @@ class CommandHistory:
         if not ok:
             return 'invalid', reason
         status, payload = cmd.execute()
+        # Segurança: comandos sensíveis não permanecem em histórico com payload em claro
+        if getattr(cmd, 'sensitive', False):
+            # Não armazena resultado sensível; limpa imediatamente
+            try:
+                cmd._result = None  # type: ignore[attr-defined]
+                cmd._error = None  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            # Não registra no histórico para evitar leak de chaves privadas
+            self._redo.clear()
+            return status, payload
         # Só registra se executou (mesmo que erro de negócio, registra para trilha)
         self._history.append(cmd)
         if len(self._history) > self.limit:
