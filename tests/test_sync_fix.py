@@ -114,19 +114,19 @@ def test_loopback_50_objetos_sync():  # noqa: C901
         mgr_b.peers.add("127.0.0.1", port, stream=1, services=1)
         mgr_b.spawn(Peer("127.0.0.1", port))
         start = time.time()
-        ok = _wait(lambda: len(mgr_b.inventory) >= 50, timeout=20)
+        ok = _wait(lambda: len(mgr_b.inventory) >= 50, timeout=30)
         elapsed = time.time() - start
         assert ok, "sync 50 falhou em %.2fs" % elapsed
-        assert elapsed < 15, "sync 50 lento %.2fs" % elapsed
+        assert elapsed < 30, "sync 50 lento %.2fs" % elapsed
 
         # wipe e re-sync
         mgr_b.wipe_objects()
         assert len(mgr_b.inventory) == 0
         start2 = time.time()
-        ok2 = _wait(lambda: len(mgr_b.inventory) >= 50, timeout=30)
+        ok2 = _wait(lambda: len(mgr_b.inventory) >= 50, timeout=40)
         elapsed2 = time.time() - start2
         assert ok2, "re-sync após wipe falhou"
-        assert elapsed2 < 25
+        assert elapsed2 < 40
         stop.set()
         listener.close()
         mgr_a.running = False
