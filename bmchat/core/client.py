@@ -11,6 +11,8 @@ from ..crypto.pow import (
     PowExecutor, calculate_target, initial_hash_of,
     is_proof_of_work_sufficient,
 )
+from ..crypto.pow.strategy import PoWStrategy
+from ..crypto.pow.standard import StandardPoWStrategy
 from ..protocol import address as addr_module
 from ..protocol import objects
 from ..protocol import packets
@@ -27,9 +29,22 @@ from .database import Database
 
 class Client:
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, pow_strategy: PoWStrategy | None = None,
+                 network_manager=None, db=None):
+        """Client com Dependency Injection para PoW e NetworkManager.
+
+        Args:
+            data_dir: diretório de dados (SQLite, knownnodes).
+            pow_strategy: Strategy de PoW injetada; se None usa
+                StandardPoWStrategy (produção). Testes podem injetar
+                MockPoWStrategy para execução instantânea.
+            network_manager: NetworkManager injetado; se None cria um
+                padrão (mantém compatibilidade).
+            db: Database injetada (para testes sem I/O real).
+        """
         self.data_dir = data_dir
-        self.db = Database(data_dir)
+        self.db = db if db is not None else Database(data_dir)
+        self.pow_strategy: PoWStrategy = pow_strategy or StandardPoWStrategy()
         self.ui_queue = __import__('queue').Queue()
         self.identities = {}
         self.pubkeys = {}
@@ -51,8 +66,15 @@ class Client:
         self._lock_owned = False
         self._log_lines = collections.deque(maxlen=200)
         self._lock = threading.RLock()
-        self.net = NetworkManager(
-            data_dir, self.db, on_object=self._on_object, on_log=self._log)
+        if network_manager is not None:
+            self.net = network_manager
+            # Garante callbacks corretos mesmo quando injetado
+            self.net.on_object = self._on_object
+            self.net.on_log = self._log
+            self.net.db = self.db
+        else:
+            self.net = NetworkManager(
+                data_dir, self.db, on_object=self._on_object, on_log=self._log)
         self.started = False
 
     # ------------------------------------------------------------------
@@ -1372,10 +1394,16 @@ class Client:
             objects.ack_watch_key(ack_object)
 
     def _quick_pow(self, unsigned, target):
+        # Strategy Pattern: delega ao PoWStrategy injetado quando disponível
+        initial = initial_hash_of(unsigned)
+        # Se mock injetado, usa-o para testes rápidos
+        from ..crypto.pow.mock import MockPoWStrategy
+        if isinstance(self.pow_strategy, MockPoWStrategy):
+            return self.pow_strategy.solve(initial, target, stop_event=threading.Event())
         return PowExecutor(
             workers=1, progress_cb=None,
             stop_event=threading.Event()
-        ).run(initial_hash_of(unsigned), target)
+        ).run(initial, target)
 
     def _pow_and_publish(self, unsigned, target, message_id=None,
                          done_cb=None, dest=None, preview=None, kind=None):
@@ -1438,16 +1466,31 @@ class Client:
             if stop_event is None:
                 stop_event = threading.Event()
         self._ensure_pow_entry(token, stop_event, message_id)
-        executor = PowExecutor(
-            workers=max(1, self.db.get_int('pow_workers', 0) or 0) or
-            max(1, os.cpu_count() or 2),
-            progress_cb=self._pow_progress(token),
-            stop_event=stop_event)
-        try:
-            nonce = executor.run(initial_hash_of(unsigned), target)
-        except Exception:
-            self._fail_pow(token, message_id)
-            return
+        # Strategy Pattern: usa PoWStrategy injetado quando for Mock,
+        # caso contrário usa Standard via PowExecutor (mantém workers dinâmico)
+        from ..crypto.pow.mock import MockPoWStrategy
+        use_mock = isinstance(self.pow_strategy, MockPoWStrategy)
+        if use_mock:
+            try:
+                nonce = self.pow_strategy.solve(
+                    initial_hash_of(unsigned), target,
+                    progress_cb=self._pow_progress(token),
+                    stop_event=stop_event,
+                )
+            except Exception:
+                self._fail_pow(token, message_id)
+                return
+        else:
+            executor = PowExecutor(
+                workers=max(1, self.db.get_int('pow_workers', 0) or 0) or
+                max(1, os.cpu_count() or 2),
+                progress_cb=self._pow_progress(token),
+                stop_event=stop_event)
+            try:
+                nonce = executor.run(initial_hash_of(unsigned), target)
+            except Exception:
+                self._fail_pow(token, message_id)
+                return
         complete = objects.complete_object(unsigned, nonce)
         self._untrack_pow(token)
         if done_cb is not None:
