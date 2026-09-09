@@ -1,10 +1,22 @@
-"""Encrypted database support using PBKDF2 + AES-GCM."""
+"""Backup criptografado com PBKDF2 + AES-GCM (export/import/change).
+
+Nota de arquitetura (C5): o banco de dados em uso (``bmchat.db``)
+permanece EM CLARO em repouso, protegido apenas por permissões do
+sistema de arquivos (diretório ``0700``/arquivo ``0600`` criados em
+``core/database.py`` e ``run.py``). Não há criptografia transparente
+em nível de página/VFS. A classe ``EncryptedDB`` anterior era um
+placeholder quebrado (``connect()`` devolvia sqlite em claro,
+``header[32:64]`` sobre header de 60B, ``enable_encryption`` com
+``NotImplementedError`` e nenhum importador) e foi REMOVIDA. O que
+existe de funcional é backup ``.enc`` autocontido
+(salt+nonce+tag+ciphertext) via as funções abaixo.
+"""
 
 import os
-import sqlite3
-import hashlib
-import hmac
+import tempfile
+
 from Crypto.Cipher import AES
+from Crypto.Hash import SHA256
 from Crypto.Random import get_random_bytes
 from Crypto.Protocol.KDF import PBKDF2
 
@@ -18,10 +30,19 @@ HEADER_SIZE = SALT_SIZE + NONCE_SIZE + 16  # salt + nonce + tag
 
 
 def derive_key(password: str, salt: bytes) -> bytes:
-    """Derive encryption key from password using PBKDF2."""
-    import hashlib
-    return PBKDF2(password, salt, dkLen=KEY_SIZE, count=PBKDF2_ITERATIONS,
-                  hmac_hash_module=hashlib.sha256)  # type: ignore[arg-type]
+    """Derive encryption key from password using PBKDF2-HMAC-SHA256."""
+    if not isinstance(salt, (bytes, bytearray)) or len(salt) != SALT_SIZE:
+        raise ValueError("salt inválido")
+    if isinstance(password, str):
+        # ADV: Crypto PBKDF2 faz encode latin-1 interno e quebra com
+        # emoji/acentos (UnicodeEncodeError). Normaliza para UTF-8 aqui
+        # para senhas unicode funcionarem (ASCII inalterado).
+        password_bytes = password.encode('utf-8')
+    else:
+        password_bytes = bytes(password)
+    return PBKDF2(password_bytes, bytes(salt), dkLen=KEY_SIZE,  # type: ignore[arg-type]
+                  count=PBKDF2_ITERATIONS,
+                  hmac_hash_module=SHA256)
 
 
 def encrypt_page(key: bytes, page_data: bytes, page_number: int) -> bytes:
@@ -43,8 +64,8 @@ def decrypt_page(key: bytes, encrypted_data: bytes, page_number: int) -> bytes:
         raise ValueError("Encrypted data too short")
 
     nonce = encrypted_data[:NONCE_SIZE]
-    tag = encrypted_data[NONCE_SIZE:NONCE_SIZE+16]
-    ciphertext = encrypted_data[NONCE_SIZE+16:]
+    tag = encrypted_data[NONCE_SIZE:NONCE_SIZE + 16]
+    ciphertext = encrypted_data[NONCE_SIZE + 16:]
     aad = page_number.to_bytes(8, 'little')
 
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
@@ -52,152 +73,108 @@ def decrypt_page(key: bytes, encrypted_data: bytes, page_number: int) -> bytes:
     return cipher.decrypt_and_verify(ciphertext, tag)
 
 
-class EncryptedDB:
-    """SQLite database with transparent page-level encryption."""
-
-    def __init__(self, path: str, password: str | None = None, page_size: int = 4096):
-        self.path = path
-        self.password: str | None = password
-        self.page_size = page_size
-        self.key: bytes | None = None
-        self.salt: bytes | None = None
-        self.conn = None
-        self._initialized = False
-
-    def _init_encryption(self):
-        """Initialize or verify encryption."""
-        if not os.path.exists(self.path):
-            # New database - create salt and key
-            self.salt = get_random_bytes(SALT_SIZE)
-            self.key = derive_key(self.password, self.salt)
-            return
-
-        # Existing database - read salt and verify password
-        with open(self.path, 'rb') as f:
-            header = f.read(HEADER_SIZE)
-            if len(header) < HEADER_SIZE:
-                raise ValueError("Database file too short to be encrypted")
-            self.salt = header[:SALT_SIZE]
-            stored_key_check = header[SALT_SIZE:SALT_SIZE+32]  # First 32 bytes of key hash
-            self.key = derive_key(self.password, self.salt)
-            # Verify key by checking hash
-            key_hash = hashlib.sha256(self.key).digest()[:32]
-            if not hmac.compare_digest(key_hash, stored_key_check):
-                raise ValueError("Senha incorreta para o banco de dados criptografado")
-
-    def connect(self) -> sqlite3.Connection:
-        """Create encrypted SQLite connection."""
-        if not self._initialized:
-            self._init_encryption()
-            self._initialized = True
-
-        # Custom VFS for page-level encryption would go here
-        # For now, we'll use a simpler approach: encrypt entire DB file
-        # This is a placeholder for the full implementation
-        return sqlite3.connect(self.path, check_same_thread=False)
-
-    def create_encrypted(self):
-        """Create a new encrypted database file."""
-        if os.path.exists(self.path):
-            raise FileExistsError("Database already exists")
-
-        # Create temp unencrypted DB
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp:
-            tmp_path = tmp.name
-
+def _secret_write_bytes(path: str, data: bytes) -> None:
+    """Write bytes atomically with mode 0600 (tmp+fsync+os.replace)."""
+    directory = os.path.dirname(os.path.abspath(path)) or '.'
+    fd = None
+    tmp_path = ''
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=directory, prefix='.tmp-enc-')
         try:
-            conn = sqlite3.connect(tmp_path)
-            conn.execute("PRAGMA page_size=4096")
-            conn.close()
-
-            # Read the file and encrypt it
-            with open(tmp_path, 'rb') as f:
-                plaintext = f.read()
-
-            # Encrypt entire file (simplified - real implementation would be page-level)
-            key = self.key
-            nonce = get_random_bytes(NONCE_SIZE)
-            cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-            cipher.update(self.salt)
-            ciphertext, tag = cipher.encrypt_and_digest(plaintext)
-
-            # Write encrypted file with header
-            with open(self.path, 'wb') as f:
-                f.write(self.salt)
-                f.write(nonce)
-                f.write(tag)
-                f.write(ciphertext)
-
-        finally:
-            if os.path.exists(tmp_path):
+            os.fchmod(fd, 0o600)
+        except Exception:
+            pass
+        with os.fdopen(fd, 'wb') as handle:
+            fd = None
+            handle.write(data)
+            try:
+                handle.flush()
+                os.fsync(handle.fileno())
+            except Exception:
+                pass
+        try:
+            os.chmod(tmp_path, 0o600)
+        except Exception:
+            pass
+        os.replace(tmp_path, path)
+        tmp_path = ''
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        if tmp_path:
+            try:
                 os.unlink(tmp_path)
+            except Exception:
+                pass
 
-    def export_encrypted(self, output_path: str, new_password: str):
-        """Export database with new password."""
-        # Read current encrypted DB
-        with open(self.path, 'rb') as f:
-            header = f.read(HEADER_SIZE)
-            self.salt = header[:SALT_SIZE]
-            nonce = header[SALT_SIZE:SALT_SIZE+NONCE_SIZE]
-            tag = header[SALT_SIZE+NONCE_SIZE:SALT_SIZE+NONCE_SIZE+16]
-            ciphertext = f.read()
 
-        # Decrypt with current key
-        assert self.key is not None
-        cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
-        cipher.update(self.salt)
-        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+def _read_backup_blob(path: str) -> tuple:
+    """Read (salt, nonce, tag, ciphertext) or raise ValueError."""
+    with open(path, 'rb') as handle:
+        header = handle.read(HEADER_SIZE)
+        if len(header) < HEADER_SIZE:
+            raise ValueError("Backup file too short")
+        salt = header[:SALT_SIZE]
+        nonce = header[SALT_SIZE:SALT_SIZE + NONCE_SIZE]
+        tag = header[SALT_SIZE + NONCE_SIZE:SALT_SIZE + NONCE_SIZE + 16]
+        ciphertext = handle.read()
+    return salt, nonce, tag, ciphertext
 
-        # Re-encrypt with new password
-        new_salt = get_random_bytes(SALT_SIZE)
-        new_key = derive_key(new_password, new_salt)
-        new_nonce = get_random_bytes(NONCE_SIZE)
-        new_cipher = AES.new(new_key, AES.MODE_GCM, nonce=new_nonce)
-        new_cipher.update(new_salt)
-        new_ciphertext, new_tag = new_cipher.encrypt_and_digest(plaintext)
 
-        with open(output_path, 'wb') as f:
-            f.write(new_salt)
-            f.write(new_nonce)
-            f.write(new_tag)
-            f.write(new_ciphertext)
+def _seal(plaintext: bytes, password: str) -> bytes:
+    """Encrypt plaintext bytes into salt+nonce+tag+ciphertext blob."""
+    if not password or len(password) < 8:
+        raise ValueError("senha deve ter ao menos 8 caracteres")
+    salt = get_random_bytes(SALT_SIZE)
+    key = derive_key(password, salt)
+    nonce = get_random_bytes(NONCE_SIZE)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    cipher.update(salt)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+    return salt + nonce + tag + ciphertext
+
+
+def _open(blob: bytes, password: str) -> bytes:
+    """Decrypt a salt+nonce+tag+ciphertext blob."""
+    if len(blob) < HEADER_SIZE:
+        raise ValueError("Backup file too short")
+    salt = blob[:SALT_SIZE]
+    nonce = blob[SALT_SIZE:SALT_SIZE + NONCE_SIZE]
+    tag = blob[SALT_SIZE + NONCE_SIZE:SALT_SIZE + NONCE_SIZE + 16]
+    ciphertext = blob[HEADER_SIZE:]
+    key = derive_key(password, salt)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    cipher.update(salt)
+    return cipher.decrypt_and_verify(ciphertext, tag)
+
+
+def _backup_original(db_path: str) -> None:
+    try:
+        with open(db_path, 'rb') as src:
+            original = src.read()
+        _secret_write_bytes(db_path + '.bak', original)
+    except Exception:
+        pass
 
 
 def change_password(db_path: str, old_password: str, new_password: str):
-    """Change database password."""
+    """Change database password (atômico: tmp+fsync+replace, .bak)."""
     if not os.path.exists(db_path):
         raise FileNotFoundError("Database not found")
-
-    # Read and decrypt with old password
-    with open(db_path, 'rb') as f:
-        header = f.read(HEADER_SIZE)
-        if len(header) < HEADER_SIZE:
-            raise ValueError("Database file too short")
-        salt = header[:SALT_SIZE]
-        nonce = header[SALT_SIZE:SALT_SIZE+NONCE_SIZE]
-        tag = header[SALT_SIZE+NONCE_SIZE:SALT_SIZE+NONCE_SIZE+16]
-        ciphertext = f.read()
-
+    if not new_password or len(new_password) < 8:
+        raise ValueError("nova senha deve ter ao menos 8 caracteres")
+    salt, nonce, tag, ciphertext = _read_backup_blob(db_path)
     old_key = derive_key(old_password, salt)
     cipher = AES.new(old_key, AES.MODE_GCM, nonce=nonce)
     cipher.update(salt)
     plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-
-    # Encrypt with new password
-    new_salt = get_random_bytes(SALT_SIZE)
-    new_key = derive_key(new_password, new_salt)
-    new_nonce = get_random_bytes(NONCE_SIZE)
-    new_cipher = AES.new(new_key, AES.MODE_GCM, nonce=new_nonce)
-    new_cipher.update(new_salt)
-    new_ciphertext, new_tag = new_cipher.encrypt_and_digest(plaintext)
-
-    # Write new encrypted file
-    with open(db_path, 'wb') as f:
-        f.write(new_salt)
-        f.write(new_nonce)
-        f.write(new_tag)
-        f.write(new_ciphertext)
+    blob = _seal(bytes(plaintext), new_password)
+    _backup_original(db_path)
+    _secret_write_bytes(db_path, blob)
 
 
 def is_encrypted(db_path: str) -> bool:
@@ -207,63 +184,36 @@ def is_encrypted(db_path: str) -> bool:
     if os.path.getsize(db_path) < HEADER_SIZE:
         return False
     # Check if file has valid SQLite header (unencrypted)
-    with open(db_path, 'rb') as f:
-        header = f.read(16)
+    with open(db_path, 'rb') as handle:
+        header = handle.read(16)
     return header[:16] != b'SQLite format 3\x00'
 
 
-def enable_encryption(db_path: str, password: str):
-    """Enable encryption on an existing unencrypted database."""
-    if is_encrypted(db_path):
-        raise ValueError("Database already encrypted")
-
-    # Create EncryptedDB instance
-    enc_db = EncryptedDB(db_path + '.enc', password)
-    # Use a proper salt
-    enc_db.salt = get_random_bytes(SALT_SIZE)
-    enc_db.key = derive_key(password, enc_db.salt)
-
-    # Actually, we need a different approach
-    # For now, just document the API
-    raise NotImplementedError("Full encryption implementation requires custom VFS")
-
-
 def export_encrypted_backup(db_path: str, output_path: str, password: str):
-    """Export database as encrypted backup."""
-    # Read plaintext DB
-    with open(db_path, 'rb') as f:
-        plaintext = f.read()
-
-    # Encrypt
-    salt = get_random_bytes(SALT_SIZE)
-    key = derive_key(password, salt)
-    nonce = get_random_bytes(NONCE_SIZE)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    cipher.update(salt)
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
-
-    with open(output_path, 'wb') as f:
-        f.write(salt)
-        f.write(nonce)
-        f.write(tag)
-        f.write(ciphertext)
+    """Export database as encrypted backup (atômico, 0600)."""
+    with open(db_path, 'rb') as handle:
+        plaintext = handle.read()
+    blob = _seal(plaintext, password)
+    _secret_write_bytes(output_path, blob)
 
 
-def import_encrypted_backup(backup_path: str, output_path: str, password: str):
-    """Import database from encrypted backup."""
-    with open(backup_path, 'rb') as f:
-        header = f.read(HEADER_SIZE)
-        if len(header) < HEADER_SIZE:
-            raise ValueError("Backup file too short")
-        salt = header[:SALT_SIZE]
-        nonce = header[SALT_SIZE:SALT_SIZE+NONCE_SIZE]
-        tag = header[SALT_SIZE+NONCE_SIZE:SALT_SIZE+NONCE_SIZE+16]
-        ciphertext = f.read()
+def import_encrypted_backup(backup_path: str, output_path: str,
+                            password: str):
+    """Import database from encrypted backup (atômico, 0600).
 
-    key = derive_key(password, salt)
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    cipher.update(salt)
-    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-
-    with open(output_path, 'wb') as f:
-        f.write(plaintext)
+    Grava em arquivo temporário no mesmo diretório e troca com
+    ``os.replace``; o temporário é removido em ``finally`` mesmo se
+    a descriptografia falhar, sem deixar plaintext em claro para trás.
+    Se ``output_path`` já existir, um ``.bak`` é preservado antes.
+    """
+    with open(backup_path, 'rb') as handle:
+        blob = handle.read()
+    plaintext = _open(blob, password)
+    if os.path.exists(output_path):
+        try:
+            with open(output_path, 'rb') as src:
+                original = src.read()
+            _secret_write_bytes(output_path + '.bak', original)
+        except Exception:
+            pass
+    _secret_write_bytes(output_path, bytes(plaintext))

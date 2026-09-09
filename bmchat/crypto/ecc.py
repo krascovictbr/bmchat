@@ -41,15 +41,16 @@ def encode_point_public(point):
 def decode_point_public(pub):
     if len(pub) != 65 or pub[0] != 4:
         raise ValueError('invalid uncompressed public key')
-    point = Point(
-        CURVE,
-        int.from_bytes(pub[1:33], 'big'),
-        int.from_bytes(pub[33:65], 'big'))
-    try:
-        if not CURVE.contains_point(point.x(), point.y()):
-            raise ValueError('ponto fora da curva')
-    except Exception as exc:
-        raise ValueError('ponto inválido: %s' % exc)
+    x_value = int.from_bytes(pub[1:33], 'big')
+    y_value = int.from_bytes(pub[33:65], 'big')
+    # M2: checagem explícita de intervalo (não depende de assert
+    # interno da lib) antes do teste de pertinência à curva.
+    prime = CURVE.p()
+    if not 0 < x_value < prime or not 0 < y_value < prime:
+        raise ValueError('ponto fora do intervalo do campo')
+    point = Point(CURVE, x_value, y_value)
+    if not CURVE.contains_point(x_value, y_value):
+        raise ValueError('ponto fora da curva')
     return point
 
 

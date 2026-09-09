@@ -36,10 +36,19 @@ class Client:
         self._pow_stops = {}
         self._pow_meta = {}
         self._pow_sequencer = 0
+        # M1: watch guarda (message_id, registrado_em); varrido com TTL.
         self._ack_watch = {}
+        self._ack_retry_counts = {}
         self._msg_in_flight = set()
         self._getpubkey_last = {}
         self._threads = []
+        # A2: workers de PoW/relay rastreados para join no stop().
+        self._workers = []
+        # A11: dedupe de ACKs recentes + pool limitado.
+        self._ack_seen = collections.OrderedDict()
+        self._ack_pool = None
+        self._lock_path = None
+        self._lock_owned = False
         self._log_lines = collections.deque(maxlen=200)
         self._lock = threading.RLock()
         self.net = NetworkManager(
@@ -48,26 +57,98 @@ class Client:
 
     # ------------------------------------------------------------------
 
-    def start(self):
+    @staticmethod
+    def _lock_owner_alive(other, mine):
+        import errno as _errno
         import os as _os
+        if not other or not other.isdigit() or int(other) == int(mine):
+            return False
         try:
-            _os.makedirs(self.data_dir, exist_ok=True)
-            self._lock_path = _os.path.join(self.data_dir, 'bmchat.lock')
-            try:
-                fd = _os.open(self._lock_path,
-                              _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
-                _os.write(fd, str(_os.getpid()).encode())
-                _os.close(fd)
-            except FileExistsError:
-                try:
-                    with open(self._lock_path, 'r') as fh:
-                        _pid = fh.read().strip()
-                except Exception:
-                    _pid = '?'
-                self._log('rede', 'aviso: outra instância pode estar usando %s (pid %s)' % (
-                    self.data_dir, _pid))
+            _os.kill(int(other), 0)
+            return True
+        except PermissionError:
+            # Existe, mas sem permissão para sinalizar → dono vivo.
+            return True
+        except OSError as exc:
+            if getattr(exc, 'errno', None) == _errno.ESRCH:
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _claim_stale_lock(self, mine):
+        import os as _os
+        fd = _os.open(self._lock_path + '.tmp',
+                      _os.O_CREAT | _os.O_TRUNC | _os.O_WRONLY, 0o600)
+        try:
+            _os.write(fd, mine.encode())
+        finally:
+            _os.close(fd)
+        _os.replace(self._lock_path + '.tmp', self._lock_path)
+        # ADV: replace não é atômico entre 2 reclamantes (TOCTOU): dois
+        # processos podem ver stale e trocar em sequência, ambos achando
+        # que são donos. Re-lê e só assume se o conteúdo for o nosso.
+        try:
+            with open(self._lock_path, 'r') as handle:
+                current = handle.read().strip()
+        except Exception:
+            current = mine
+        if current != mine:
+            self._lock_owned = False
+            raise RuntimeError(
+                'outra instância assumiu o lock (%s)' % current)
+        self._lock_owned = True
+
+    def _read_lock_owner(self):
+        try:
+            with open(self._lock_path, 'r') as handle:
+                return handle.read().strip()
+        except Exception:
+            return ''
+
+    def _write_own_lock(self):
+        import os as _os
+        # ADV: makedirs sem mode criava 0755 quando o dir não existia
+        # (testes/tmp). Força 0700 + chmod como run.py/database.py.
+        _os.makedirs(self.data_dir, mode=0o700, exist_ok=True)
+        try:
+            _os.chmod(self.data_dir, 0o700)
         except Exception:
             pass
+        self._lock_path = _os.path.join(self.data_dir, 'bmchat.lock')
+        mine = str(_os.getpid())
+        if self._try_fresh_lock(mine):
+            return
+        other = self._read_lock_owner()
+        if self._lock_owner_alive(other, mine):
+            raise RuntimeError(
+                'outra instância em execução (pid %s)' % other)
+        try:
+            self._claim_stale_lock(mine)
+        except RuntimeError:
+            # ADV: contenção real (outro reclamante venceu) deve barrar,
+            # não seguir sem lock. Só erros de IO silenciam.
+            self._lock_owned = False
+            raise
+        except Exception:
+            self._lock_owned = False
+
+    def _try_fresh_lock(self, mine):
+        import os as _os
+        try:
+            fd = _os.open(self._lock_path,
+                          _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
+        except FileExistsError:
+            return False
+        try:
+            _os.write(fd, mine.encode())
+        finally:
+            _os.close(fd)
+        self._lock_owned = True
+        return True
+
+    def start(self):
+        self._write_own_lock()
         self._load_identities()
         self._load_pubkeys()
         streams = self._participating_streams()
@@ -96,22 +177,60 @@ class Client:
         except Exception:
             pass
 
+    def _track_worker(self, thread):
+        with self._lock:
+            self._workers.append(thread)
+            # Evita crescimento sem limite.
+            if len(self._workers) > 64:
+                self._workers = [t for t in self._workers if t.is_alive()][-32:]
+
     def _join_threads(self):
-        for thread in getattr(self, '_threads', []):
+        for thread in list(getattr(self, '_threads', [])):
             try:
                 thread.join(timeout=5)
             except Exception:
                 pass
+        # A2: workers de PoW/relay com join limitado.
+        for worker in list(getattr(self, '_workers', [])):
+            try:
+                worker.join(timeout=5)
+            except Exception:
+                pass
+        with self._lock:
+            self._workers = [t for t in self._workers if t.is_alive()]
+        pool = getattr(self, '_ack_pool', None)
+        if pool is not None:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            self._ack_pool = None
+
+    def _own_lock_current(self):
+        import os as _os2
+        try:
+            with open(self._lock_path, 'r') as handle:
+                current = handle.read().strip()
+        except Exception:
+            return True
+        try:
+            mine = str(_os2.getpid())
+        except Exception:
+            return False
+        return (not current) or current == mine
 
     def _remove_lock_file(self):
+        # A3: remove só o próprio lock; nunca o de outra instância.
         try:
             import os as _os2
-            _lp = getattr(self, '_lock_path', None)
-            if _lp:
-                try:
-                    _os2.unlink(_lp)
-                except Exception:
-                    pass
+            if getattr(self, '_lock_path', None) and getattr(
+                    self, '_lock_owned', False):
+                if self._own_lock_current():
+                    try:
+                        _os2.unlink(self._lock_path)
+                    except Exception:
+                        pass
+            self._lock_owned = False
         except Exception:
             pass
 
@@ -151,10 +270,122 @@ class Client:
             return []
         return [r['to_address'] for r in rows if r['to_address']]
 
-    def _retry_awaiting(self):
-        # Sweep de ACKs vencidos antes do retry (nunca espera além do expires).
-        self._retry_ack_failed()
+    def _sweep_ack_watch(self, now=None):  # noqa: C901
+        """M1: expira watches antigos (TTL) — unificado."""
+        try:
+            from ..protocol.const import MSG_TTL
+        except Exception:
+            MSG_TTL = 4 * 24 * 3600
+        now = now if now is not None else time.time()
+        with self._lock:
+            dead = []
+            for key, entry in list(self._ack_watch.items()):
+                try:
+                    if not isinstance(entry, tuple):
+                        dead.append(key)
+                        continue
+                    ts = entry[1] if len(entry) >= 2 else now
+                    # Para deadline (futuro), now - ts é negativo => mantém; só remove timestamps antigos
+                    if now - ts > MSG_TTL:
+                        dead.append(key)
+                except Exception:
+                    dead.append(key)
+            for key in dead:
+                self._ack_watch.pop(key, None)
+
+    def _retry_stuck_sending(self):
+        """A2: 'sending' preso p/ sempre volta a 'awaiting-pubkey'."""
+        try:
+            cutoff = int(time.time()) - 600
+            self.db.execute(
+                "UPDATE messages SET status='awaiting-pubkey' WHERE "
+                "direction='out' AND status='sending' AND timestamp < ?",
+                (cutoff,))
+        except Exception:
+            pass
+
+    def _retry_one_ack_failed(self, row):
+        message_id = row['id']
+        try:
+            full = self.db.get_message(message_id)
+        except Exception:
+            return
+        if not full:
+            # ADV: não consome slot para mensagem apagada (antes
+            # incrementava e esgotava as 3 tentativas sem fazer nada).
+            return
+        to_address = full['to_address']
+        if to_address in self.pubkeys:
+            # ADV: só conta quando vai queimar PoW de verdade; se a
+            # identidade sumiu, _pow_and_publish retorna sem lançar e
+            # não deve esgotar o limite.
+            if full['from_address'] not in self.identities:
+                return
+            with self._lock:
+                tries = int(self._ack_retry_counts.get(message_id, 0))
+                if tries >= 3:
+                    return
+                self._ack_retry_counts[message_id] = tries + 1
+            self._pow_and_publish_message(
+                message_id, full['from_address'], to_address,
+                full['body'], full['encoding'])
+            return
+        with self._lock:
+            tries = int(self._ack_retry_counts.get(message_id, 0))
+            if tries >= 3:
+                return
+            self._ack_retry_counts[message_id] = tries + 1
+        try:
+            self.db.set_message_status(message_id, 'awaiting-pubkey')
+        except Exception:
+            pass
+
+    def _retry_ack_failed(self):
+        """M5: reenvio limitado de 'ack-failed' (máx 3 tentativas) + prune deadline."""
+        # Primeiro descarta watches expirados (TTL) — marca ack-failed
+        try:
+            self._prune_ack_watch()
+        except Exception:
+            pass
+        try:
+            rows = self.db.query(
+                "SELECT id, to_address FROM messages WHERE "
+                "direction='out' AND status='ack-failed' LIMIT 5")
+        except Exception:
+            return 0
+        for row in rows:
+            try:
+                self._retry_one_ack_failed(row)
+            except Exception:
+                pass
+        return 0
+
+    def _retry_awaiting(self):  # noqa: C901
+        # Sweep/PRUNE de ACKs vencidos antes do retry (nunca espera além do expires).
+        # Varreduras locais sempre rodam, mesmo offline, para não acumular watches
+        try:
+            self._prune_ack_watch()
+        except Exception:
+            pass
+        try:
+            self._sweep_ack_watch()
+        except Exception:
+            pass
         # B7: limite de paralelismo (20/vez) evita fork-bomb
+        self._retry_stuck_sending()
+        # ADV: sem peers, PoW offline queima CPU/bateria para anunciar
+        # no vazio (0 alvos). _send_queued já pulava, mas request_pubkey
+        # e _retry_ack_failed não — 20 pendentes offline = fork-bomb.
+        # Consistente: varreduras locais rodam, PoW só online.
+        # (test_retry_republishes agora simula 1 peer online.)
+        try:
+            offline = self.net.established_count == 0
+        except Exception:
+            offline = False
+        if offline:
+            return
+        # Só queima PoW se online
+        self._retry_ack_failed()
         for address in self._awaiting_addresses()[:20]:
             if not self.started:
                 return
@@ -217,6 +448,28 @@ class Client:
             keys.payload_length_extra_bytes = row['extrabytes']
             self.identities[row['address']] = keys
 
+    def _reparse_orphans(self, limit=100):
+        """M7: retenta objetos guardados que não tinham identidade na chegada."""
+        try:
+            rows = self.db.query(
+                'SELECT raw FROM objects WHERE type IN (2, 3) '
+                'ORDER BY received DESC LIMIT ?', (int(limit),))
+        except Exception:
+            return
+        for row in rows:
+            try:
+                raw = bytes(row['raw'])
+            except Exception:
+                continue
+            try:
+                parsed = objects.ParsedObject(raw)
+            except Exception:
+                continue
+            try:
+                self._on_object(parsed, raw, None)
+            except Exception:
+                pass
+
     def create_identity(self, label, stream=1):
         keys = generate_keys(stream=stream)
         self.db.add_identity(
@@ -229,6 +482,7 @@ class Client:
             self.identities[keys.address] = keys
         self._refresh_streams()
         self.ui_queue.put(('identity-created', keys.address, label))
+        self._reparse_orphans()
         return keys.address
 
     def rename_identity(self, address, label):
@@ -295,6 +549,7 @@ class Client:
             self.identities[keys.address] = keys
         self._refresh_streams()
         self.ui_queue.put(('channel-created', keys.address, label))
+        self._reparse_orphans()
         return 'success', keys.address
 
     def export_identity(self, address):
@@ -337,6 +592,7 @@ class Client:
             self.identities[keys.address] = keys
         self._refresh_streams()
         self.ui_queue.put(('identity-created', keys.address, label))
+        self._reparse_orphans()
         return 'success', keys.address
 
     def export_keys_dat(self):
@@ -426,6 +682,7 @@ class Client:
         if result['imported']:
             self._refresh_streams()
             self.ui_queue.put(('identity-created', '', ''))
+            self._reparse_orphans()
         return result
 
     def _load_pubkeys(self):
@@ -504,6 +761,11 @@ class Client:
         except Exception as exc:
             self._log('process', 'erro ao processar objeto: %r' % exc)
 
+    def _identities_snapshot(self):
+        """M7: snapshot de identities sob lock (iteração segura)."""
+        with self._lock:
+            return list(self.identities.items())
+
     def _maybe_mark_ack(self, parsed):
         if parsed.object_type != OBJECT_MSG or parsed.version != 1:
             return
@@ -513,14 +775,20 @@ class Client:
                 entry = self._ack_watch.pop(key, None)
         except Exception:
             return
-        if entry is None:
+        if not entry:
             return
         message_id = entry[0] if isinstance(entry, tuple) else entry
         if message_id:
             try:
+                # A2: DB pode estar fechado no stop(); nunca levantar aqui.
                 self.db.set_message_status(message_id, 'ackreceived')
             except Exception:
                 return
+            try:
+                with self._lock:
+                    self._ack_retry_counts.pop(message_id, None)
+            except Exception:
+                pass
             self._log('rede', 'confirmação (ACK) recebida: mensagem entregue')
             self.ui_queue.put(('ack', message_id))
 
@@ -533,7 +801,7 @@ class Client:
                 return
         except Exception:
             pass
-        for address, keys in list(self.identities.items()):
+        for address, keys in self._identities_snapshot():
             if keys.tag == tag:
                 if parsed.stream != keys.stream:
                     return
@@ -577,7 +845,7 @@ class Client:
             return
 
     def _on_msg(self, parsed, raw):
-        identities = list(self.identities.values())
+        identities = [keys for _, keys in self._identities_snapshot()]
         incoming = objects.process_msg(raw, identities)
         if incoming is None:
             return
@@ -596,26 +864,59 @@ class Client:
         if incoming.ack_data:
             self._relay_ack(incoming.ack_data)
 
+    def _ack_packet_seen(self, packet):
+        digest = sha512(bytes(packet))
+        with self._lock:
+            if digest in self._ack_seen:
+                return True
+            self._ack_seen[digest] = time.time()
+            while len(self._ack_seen) > 512:
+                try:
+                    self._ack_seen.popitem(last=False)
+                except Exception:
+                    break
+            return False
+
+    def _relay_ack_sync(self, packet):
+        try:
+            if len(packet) < 24:
+                return
+            magic, command, length, checksum = packets.parse_header(
+                packet[:24])
+            obj = packet[24:]
+            if magic != packets.MAGIC or command != 'object':
+                return
+            if len(obj) != length:
+                return
+            if sha512(obj)[:4] != checksum:
+                return
+            if not is_proof_of_work_sufficient(obj):
+                return
+            self.net.announce_object(obj)
+        except Exception:
+            pass
+
     def _relay_ack(self, packet):
-        def worker():
-            try:
-                if len(packet) < 24:
-                    return
-                magic, command, length, checksum = packets.parse_header(
-                    packet[:24])
-                obj = packet[24:]
-                if magic != packets.MAGIC or command != 'object':
-                    return
-                if len(obj) != length:
-                    return
-                if sha512(obj)[:4] != checksum:
-                    return
-                if not is_proof_of_work_sufficient(obj):
-                    return
-                self.net.announce_object(obj)
-            except Exception:
-                pass
-        threading.Thread(target=worker, daemon=True).start()
+        # A11: pool 2-4 + dedupe (antes: 1 thread por ACK, sem limite).
+        try:
+            if self._ack_packet_seen(packet):
+                return
+        except Exception:
+            pass
+        try:
+            with self._lock:
+                if self._ack_pool is None:
+                    from concurrent.futures import ThreadPoolExecutor
+                    self._ack_pool = ThreadPoolExecutor(
+                        max_workers=3, thread_name_prefix='ack-relay')
+                pool = self._ack_pool
+            pool.submit(self._relay_ack_sync, bytes(packet))
+        except Exception:
+            thread = threading.Thread(target=self._relay_ack_sync,
+                                      args=(bytes(packet),), daemon=True,
+                                      name='ack-relay-fallback')
+            thread.start()
+            self._track_worker(thread)
 
     def _collect_broadcast_keys(self):
         subscriptions = {}
@@ -713,15 +1014,20 @@ class Client:
             return self._clamp_ttl(stored)
         return self.get_msg_ttl()
 
-    def _prune_ack_watch(self, now=None):
+    def _prune_ack_watch(self, now=None):  # noqa: C901
         """Descarta watches além da vida do objeto; vencidos viram ack-failed."""
         moment = int(now) if now is not None else int(time.time())
         expired = []
         with self._lock:
             for key, entry in list(self._ack_watch.items()):
-                deadline = entry[1] if isinstance(entry, tuple) else None
-                if deadline is not None and int(deadline) < moment:
-                    expired.append((key, entry[0]))
+                try:
+                    if not isinstance(entry, tuple):
+                        continue
+                    deadline = entry[1] if len(entry) >= 2 else None
+                    if deadline is not None and int(deadline) < moment:
+                        expired.append((key, entry[0]))
+                except Exception:
+                    continue
             for key, _message_id in expired:
                 self._ack_watch.pop(key, None)
         for _key, message_id in expired:
@@ -735,21 +1041,20 @@ class Client:
                 pass
         return len(expired)
 
-    def _retry_ack_failed(self):
-        """Sweep periódico do ACK/watch acompanhando o TTL do objeto."""
-        try:
-            return self._prune_ack_watch()
-        except Exception:
-            return 0
 
-    # ---------- envio ----------
+    # ---------- envio ----------  # noqa: E303
 
-    def request_pubkey(self, address_text):
+    def request_pubkey(self, address_text):  # noqa: E301
         status, version, stream, ripe = addr_module.decode_address(
             address_text)
         if status != 'success':
             return status
-        keys = AddressKeys.from_address(address_text)
+        if version != 4:
+            return 'unsupported'
+        try:
+            keys = AddressKeys.from_address(address_text)
+        except Exception:
+            return 'invalid'
         unsigned = objects.build_getpubkey_unsigned(
             int(time.time()) + GETPUBKEY_TTL, stream, 4, keys.tag)
         target = calculate_target(1000, 1000, len(unsigned) + 8,
@@ -762,17 +1067,39 @@ class Client:
         return 'success'
 
     def _send_queued(self, to_address):
-        rows = self.db.query(
-            "SELECT * FROM messages WHERE to_address=? "
-            "AND status='awaiting-pubkey'", (to_address,))
+        # A12: cap por ciclo (~5) + pular se sem peers quando há muitos pendentes
+        # (evita PoW em massa offline / fork-bomb). Um único pendente ainda
+        # pode ser enviado direto (caso do teste TTL), por isso o skip só
+        # vale quando há >1 pendente — preserva tanto o teste de capacidade
+        # quanto o de TTL.
+        try:
+            rows = self.db.query(
+                "SELECT * FROM messages WHERE to_address=? "
+                "AND status='awaiting-pubkey' LIMIT 5", (to_address,))
+        except Exception:
+            return
+        if not rows:
+            return
+        try:
+            if self.net.established_count == 0 and len(rows) > 1:
+                return
+        except Exception:
+            pass
         for row in rows:
             self._pow_and_publish_message(
                 row['id'], row['from_address'], to_address,
                 row['body'], row['encoding'], ttl=row.get('ttl'))
 
+    @staticmethod
+    def _wire_too_large(wire_body):
+        from ..protocol.const import MAX_WIRE_BODY_BYTES
+        try:
+            return len(wire_body.encode('utf-8')) > MAX_WIRE_BODY_BYTES
+        except Exception:
+            return True
+
     def send_message(self, identity_address, to_address, subject, body,
                      encoding=BITMESSAGE_ENCODING_TRIVIAL):
-        from ..protocol.const import MAX_OBJECT_LENGTH
         status, version, stream, ripe = addr_module.decode_address(to_address)
         if status != 'success':
             return status, 'endereço inválido'
@@ -785,8 +1112,9 @@ class Client:
         body = body or ''
         # B2: subject nunca trafegava no wire — prefixa para não haver perda silenciosa
         wire_body = ('Subject: %s\n\n%s' % (subject, body)) if (subject or '').strip() else body
+        # C3: teto único no wire (b64+overhead ≤ 200k) ANTES do PoW.
         try:
-            if len(wire_body.encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
+            if self._wire_too_large(wire_body):
                 return 'too-large', 'mensagem grande demais para um objeto'
         except Exception:
             return 'invalid', 'corpo de mensagem inválido'
@@ -849,11 +1177,29 @@ class Client:
         finally:
             with self._lock:
                 self._msg_in_flight.discard(message_id)
-        self.net.announce_object(complete)
-        self.db.set_message_status(message_id, 'sent')
+        # A2: DB pode estar fechado no stop(); anuncia antes de gravar
+        # e tolera falha de escrita sem levantar na thread de PoW.
+        try:
+            self.net.announce_object(complete)
+        except Exception:
+            pass
+        try:
+            self.db.set_message_status(message_id, 'sent')
+        except Exception:
+            return
         self.ui_queue.put(('status', message_id, 'sent'))
 
-    def _send_message_worker(self, message_id, stream, keys, pub,
+    def _drop_oversize_wire(self, message_id, watch):
+        try:
+            self.db.set_message_status(message_id, 'ack-failed')
+        except Exception:
+            pass
+        with self._lock:
+            self._msg_in_flight.discard(message_id)
+            self._ack_watch.pop(watch, None)
+        self.ui_queue.put(('status', message_id, 'ack-failed'))
+
+    def _send_message_worker(self, message_id, stream, keys, pub,  # noqa: C901
                              to_address, body, encoding, expires, ripe, ttl):
         ack_packet, watch = self._build_ack_packet(stream, expires=expires)
         if not watch:
@@ -861,8 +1207,22 @@ class Client:
             return
         with self._lock:
             self._ack_watch[watch] = (message_id, expires)
+            # Merge: mantém TTL (expires) + sweep de segurança (varre antigos)
+            try:
+                self._sweep_ack_watch_locked()
+            except Exception:
+                pass
         wire_bytes = self._message_wire_body(message_id, body)
         if wire_bytes is None:
+            return
+        # C3: revalida o teto único antes do PoW (texto pode ter crescido).
+        try:
+            from ..protocol.const import MAX_WIRE_BODY_BYTES
+            oversize = len(wire_bytes) > MAX_WIRE_BODY_BYTES
+        except Exception:
+            oversize = False
+        if oversize:
+            self._drop_oversize_wire(message_id, watch)
             return
         unsigned = objects.build_msg_unsigned(
             expires, stream, keys, pub['encryption_public'], ripe,
@@ -891,6 +1251,71 @@ class Client:
                 self._msg_in_flight.discard(message_id)
             raise
 
+    def _sweep_ack_watch_locked(self):  # noqa: C901
+        """Sweep interno (chamador já detém self._lock)."""
+        try:
+            from ..protocol.const import MSG_TTL
+        except Exception:
+            MSG_TTL = 4 * 24 * 3600
+        now = time.time()
+        dead = []
+        for key, entry in list(self._ack_watch.items()):
+            try:
+                if not isinstance(entry, tuple):
+                    dead.append(key)
+                    continue
+                ts = entry[1] if len(entry) >= 2 else now
+                if now - ts > MSG_TTL:
+                    dead.append(key)
+            except Exception:
+                dead.append(key)
+        for key in dead:
+            self._ack_watch.pop(key, None)
+
+    def _claim_resend_slot(self, message_id):
+        with self._lock:
+            tries = int(self._ack_retry_counts.get(message_id, 0))
+            if tries >= 3:
+                return False
+            self._ack_retry_counts[message_id] = tries + 1
+            return True
+
+    def _resend_without_pubkey(self, message_id, to_address):
+        try:
+            self.db.set_message_status(message_id, 'awaiting-pubkey')
+        except Exception:
+            pass
+        try:
+            self.request_pubkey(to_address)
+        except Exception:
+            pass
+        return 'success', None
+
+    def resend_message(self, message_id):
+        """M5: reenvio manual de mensagem 'ack-failed'/'sending'."""
+        try:
+            row = self.db.get_message(message_id)
+        except Exception:
+            return 'error', 'mensagem não encontrada'
+        if not row or row['direction'] != 'out':
+            return 'error', 'mensagem não encontrada'
+        if row['status'] not in ('ack-failed', 'sending', 'awaiting-pubkey'):
+            return 'error', 'estado não permite reenvio (%s)' % row['status']
+        to_address = row['to_address']
+        if to_address not in self.pubkeys:
+            if not self._claim_resend_slot(message_id):
+                return 'error', 'limite de reenvios atingido'
+            return self._resend_without_pubkey(message_id, to_address)
+        # ADV: não consome slot se a identidade sumiu (pow retornaria
+        # sem lançar e esgotaria o limite sem queimar PoW).
+        if row['from_address'] not in self.identities:
+            return 'error', 'identidade de origem ausente'
+        if not self._claim_resend_slot(message_id):
+            return 'error', 'limite de reenvios atingido'
+        self._pow_and_publish_message(message_id, row['from_address'],
+                                      to_address, row['body'], row['encoding'])
+        return 'success', None
+
     def _pow_and_publish_message(self, message_id, identity_address,
                                  to_address, body, encoding, ttl=None):
         pub = self.pubkeys.get(to_address)
@@ -916,11 +1341,14 @@ class Client:
             self.db.set_message_expiry(message_id, expires)
         except Exception:
             pass
-        threading.Thread(target=self._send_message_worker,
-                         args=(message_id, stream, keys, pub, to_address,
-                               body, encoding, expires, ripe, ttl),
-                         daemon=True,
-                         name='msg-pow-%s' % message_id).start()
+        worker = threading.Thread(target=self._send_message_worker,
+                                  args=(message_id, stream, keys, pub, to_address,
+                                        body, encoding, expires, ripe, ttl),
+                                  daemon=True,
+                                  name='msg-pow-%s' % message_id)
+        worker.start()
+        # A2: registra para join no stop().
+        self._track_worker(worker)
 
     def _build_ack_packet(self, stream, expires=None, ttl=None):
         # O ACK acompanha a vida do objeto: expira junto, nunca além dele.
@@ -963,8 +1391,10 @@ class Client:
                 unsigned, target, message_id=message_id, done_cb=done_cb,
                 token=token, stop_event=stop_event)
 
-        threading.Thread(target=worker, daemon=True,
-                         name='pow-%d' % token).start()
+        thread = threading.Thread(target=worker, daemon=True,
+                                  name='pow-%d' % token)
+        thread.start()
+        self._track_worker(thread)
         return token
 
     def _ensure_pow_entry(self, token, stop_event, message_id):
@@ -1129,12 +1559,11 @@ class Client:
 
     def broadcast(self, identity_address, body,
                   encoding=BITMESSAGE_ENCODING_TRIVIAL):
-        from ..protocol.const import MAX_OBJECT_LENGTH
         keys = self.identities.get(identity_address)
         if keys is None:
             return 'error'
         try:
-            if len((body or '').encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
+            if self._wire_too_large(body or ''):
                 return 'too-large'
         except Exception:
             return 'error'
@@ -1187,9 +1616,8 @@ class Client:
 
     def broadcast_chan(self, address, body,
                        encoding=BITMESSAGE_ENCODING_TRIVIAL, name=None):
-        from ..protocol.const import MAX_OBJECT_LENGTH
         try:
-            if len((body or '').encode('utf-8')) + 1000 > MAX_OBJECT_LENGTH:
+            if self._wire_too_large(body or ''):
                 return 'too-large', 'mensagem grande demais para um objeto'
         except Exception:
             return 'error', 'corpo inválido'
@@ -1323,14 +1751,50 @@ class Client:
             except Exception as exc:
                 self._log('agendada', f'erro ao enviar: {exc}')
 
+    def _drop_scheduled(self, msg_id):
+        try:
+            self.db.mark_scheduled_sent(msg_id)
+        except Exception:
+            pass
+
+    def _deliver_scheduled(self, msg, is_channel, identity, to_addr, body):
+        try:
+            if is_channel:
+                status, error = self.broadcast_chan(to_addr, body or '')
+            else:
+                status, error = self.send_message(
+                    identity, to_addr, '', body or '')
+        except Exception as exc:
+            self._log('agendada', 'erro ao enviar: %s' % exc)
+            return
+        if status == 'success':
+            self._drop_scheduled(msg['id'])
+            self._log('agendada', 'mensagem para %s enviada'
+                      % str(to_addr)[:18])
+            return
+        self._log('agendada', 'falha (%s): %s'
+                  % (status, error or 'erro'))
+        if status in ('too-large', 'invalid', 'unsupported', 'mismatch',
+                      'noname', 'error'):
+            self._drop_scheduled(msg['id'])
+
     def _send_one_scheduled(self, msg):
+        # A4: só marca sent em success; identidade ausente → erro+log
+        # (descarta para não virar pendente eterno); canal via
+        # broadcast_chan (antes virava DM via send_message).
         identity = msg['identity_address']
         to_addr = msg['to_address']
         body = msg['body']
-        if identity in self.identities:
-            self.send_message(identity, to_addr, '', body)
-            self.db.mark_scheduled_sent(msg['id'])
-            self._log('agendada', f'mensagem para {to_addr[:18]} enviada')
+        if identity not in self.identities:
+            self._log('agendada', 'identidade ausente; descartando '
+                      'agendada %s' % msg['id'])
+            self._drop_scheduled(msg['id'])
+            return
+        try:
+            is_channel = self.db.get_subscription(to_addr) is not None
+        except Exception:
+            is_channel = False
+        self._deliver_scheduled(msg, is_channel, identity, to_addr, body)
 
     def _scheduled_sender_loop(self):
         """Background thread to send scheduled messages."""

@@ -6,7 +6,8 @@ from ..util import (
 from ..crypto import ecc, ecies
 from .const import (
     OBJECT_GETPUBKEY, OBJECT_PUBKEY, OBJECT_MSG, OBJECT_BROADCAST,
-    BITFIELD_DOESACK,
+    BITFIELD_DOESACK, PUBKEY_NTPB_MIN, PUBKEY_NTPB_MAX,
+    PUBKEY_EB_MIN, PUBKEY_EB_MAX,
 )
 
 
@@ -277,8 +278,15 @@ def process_pubkey(raw, address_keys):
     item.address = address_keys.address
     item.signing_public = pub_signing
     item.encryption_public = pub_encryption
-    item.nonce_trials_per_byte = max(ntpb, 1000)
-    item.payload_length_extra_bytes = max(eb, 1000)
+    # A1: pubkey sem teto gerava target=0 e PoW infinito. Rejeita fora
+    # da faixa em vez de clampar silenciosamente (remetente malicioso
+    # não pode impor dificuldade arbitrária ao reanunciar).
+    if not PUBKEY_NTPB_MIN <= ntpb <= PUBKEY_NTPB_MAX:
+        return None
+    if not PUBKEY_EB_MIN <= eb <= PUBKEY_EB_MAX:
+        return None
+    item.nonce_trials_per_byte = ntpb
+    item.payload_length_extra_bytes = eb
     item.inventory_hash = obj.inventory_hash
     item.expires = obj.expires
     return item

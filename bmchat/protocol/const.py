@@ -23,6 +23,18 @@ MAX_OBJECT_COUNT = 50000
 MAX_TIME_OFFSET = 3600
 MAX_OBJECT_LENGTH = 2 ** 18
 
+# Teto único do corpo no wire (texto + marcador base64 de anexos).
+# Mantém o objeto final (após ECIES/assinatura) abaixo de
+# MAX_OBJECT_LENGTH com folga. Checado ANTES do PoW nos caminhos
+# DM (send_message) e canal (broadcast/broadcast_chan) e na GUI.
+MAX_WIRE_BODY_BYTES = 200_000
+
+# Faixa válida de dificuldade anunciada em pubkey (evita PoW infinito).
+PUBKEY_NTPB_MIN = 1000
+PUBKEY_NTPB_MAX = 1000000
+PUBKEY_EB_MIN = 1000
+PUBKEY_EB_MAX = 1000000
+
 DEFAULT_PORT = 8444
 PROTOCOL_VERSION = 3
 

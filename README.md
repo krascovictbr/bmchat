@@ -1,6 +1,6 @@
 # Bem-vindo ao bmchat
 
-![bmchat](https://img.shields.io/badge/status-experimental-orange)
+![bmchat](https://img.shields.io/badge/Rolling%20Release-bmchat-1793D1?style=flat-square&logo=bmchat&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-0BSD-green)
 
