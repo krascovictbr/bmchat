@@ -36,6 +36,39 @@ class MessageRepository(BaseRepository):
     def for_contact(self, contact_address: str, identity_address: str):
         return self.db.messages_for_contact(contact_address, identity_address)
 
+    def for_dm(self, contact_address: str, identity_address: str, limit=None):
+        """Conversa DM isolada (corrige vazamento self-chat/SUPORTE)."""
+        try:
+            return self.db.messages_for_dm(contact_address, identity_address, limit=limit)
+        except AttributeError:
+            # Fallback para DB antigo sem o método
+            return self.db.messages_for_contact(contact_address, identity_address)
+
+    def count_for_dm(self, contact_address: str, identity_address: str):
+        try:
+            return self.db.count_for_dm(contact_address, identity_address)
+        except AttributeError:
+            return len(self.for_dm(contact_address, identity_address))
+
+    def last_for_dm(self, contact_address: str, identity_address: str):
+        try:
+            return self.db.last_message_for_dm(contact_address, identity_address)
+        except AttributeError:
+            rows = self.for_dm(contact_address, identity_address)
+            return rows[-1] if rows else None
+
+    def mark_dm_read(self, contact_address: str, identity_address: str):
+        try:
+            return self.db.mark_dm_read(contact_address, identity_address)
+        except AttributeError:
+            return self.db.mark_conversation_read(contact_address, identity_address)
+
+    def delete_dm(self, contact_address: str, identity_address: str):
+        try:
+            return self.db.delete_dm_conversation(contact_address, identity_address)
+        except AttributeError:
+            return self.db.delete_conversation(contact_address)
+
     def set_status(self, message_id: int, status: str):
         return self.db.set_message_status(message_id, status)
 

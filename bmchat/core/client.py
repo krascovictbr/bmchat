@@ -787,8 +787,17 @@ class Client:
 
     def remove_contact(self, address_text):
         # Repository Pattern: remove via repositórios
+        # Seguro para self-chat: se o contato == própria identidade,
+        # apaga SÓ self-to-self para não deletar diagnósticos ao SUPORTE
+        # e todo o histórico envolvendo a identidade.
         self.contact_repo.remove(address_text)
-        self.message_repo.delete_conversation(address_text)
+        try:
+            if address_text in (self.identities or {}):
+                self.db.delete_self_conversation(address_text)
+            else:
+                self.message_repo.delete_conversation(address_text)
+        except Exception:
+            self.message_repo.delete_conversation(address_text)
         self._refresh_streams()
         self.ui_queue.put(('contact-removed', address_text, ''))
 
@@ -1194,6 +1203,23 @@ class Client:
 
     def send_message(self, identity_address, to_address, subject, body,
                      encoding=BITMESSAGE_ENCODING_TRIVIAL):
+        """Envia DM. Compat: retorna (status, error_ou_None).
+
+        Para obter o message_id sem race, use send_message_with_id().
+        """
+        status, payload = self.send_message_with_id(
+            identity_address, to_address, subject, body, encoding)
+        if status != 'success':
+            return status, payload
+        return 'success', None
+
+    def send_message_with_id(self, identity_address, to_address, subject, body,
+                             encoding=BITMESSAGE_ENCODING_TRIVIAL):
+        """Envia DM e retorna (status, message_id_ou_erro).
+
+        Corrige race do Command que fazia SELECT ... ORDER BY id DESC
+        (podia capturar mensagem de outra conversa).
+        """
         status, version, stream, ripe = addr_module.decode_address(to_address)
         if status != 'success':
             return status, 'endereço inválido'
@@ -1213,14 +1239,14 @@ class Client:
         except Exception:
             return 'invalid', 'corpo de mensagem inválido'
         ttl = self.get_msg_ttl()
-        message_id = self.db.add_message(
+        message_id = self.message_repo.add(
             None, identity_address, to_address, subject or '', body,
             encoding, int(time.time()), 'out', 'awaiting-pubkey', ttl=ttl)
         self.ui_queue.put(('status', message_id, 'sending'))
         if to_address in self.pubkeys:
             self._pow_and_publish_message(message_id, identity_address,
                                           to_address, body, encoding, ttl=ttl)
-            return 'success', None
+            return 'success', message_id
         # Factory Pattern: cria getpubkey via factory
         try:
             unsigned = self.protocol_factory.create_getpubkey(
@@ -1236,7 +1262,7 @@ class Client:
             done_cb=lambda complete, nonce: self.net.announce_object(complete),
             dest=to_address, preview='pedido de chave pública',
             kind='getpubkey')
-        return 'success', None
+        return 'success', message_id
 
     def _fail_message_no_ack(self, message_id):
         # B3: sem ACK não envia degradado silencioso

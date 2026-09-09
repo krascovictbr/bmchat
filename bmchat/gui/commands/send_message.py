@@ -42,40 +42,32 @@ class SendMessageCommand(Command):
     def execute(self) -> tuple[str, str | None]:
         from ...protocol.const import BITMESSAGE_ENCODING_TRIVIAL
         enc = self.encoding if self.encoding is not None else BITMESSAGE_ENCODING_TRIVIAL
+        # Usa send_message_with_id quando disponível (sem race de SELECT).
+        # Fallback para send_message legado (2-tupla) em clients antigos/mocks.
+        try:
+            fn = getattr(self.client, 'send_message_with_id', None)
+            if callable(fn):
+                status, payload = fn(
+                    self.from_address, self.to_address, self.subject, self.body, enc)
+                self._executed = status == 'success'
+                if status == 'success':
+                    # payload é message_id (int)
+                    try:
+                        self._message_id = int(payload) if payload is not None else None
+                    except Exception:
+                        self._message_id = payload
+                    self._result = (status, None)
+                    return status, None
+                self._error = payload
+                self._result = (status, payload)
+                return status, payload
+        except Exception:
+            pass
         status, error = self.client.send_message(
             self.from_address, self.to_address, self.subject, self.body, enc)
         self._executed = status == 'success'
         self._result = (status, error)
-        if status == 'success':
-            # Captura message_id de forma mais precisa (filtra por body para evitar
-            # capturar mensagem errada quando há várias com mesmo from/to).
-            # Usa repositório quando disponível para abstração.
-            try:
-                repo = getattr(self.client, 'message_repo', None)
-                if repo is not None:
-                    # Tenta via repositório; fallback para query direta
-                    rows = repo.query(
-                        'SELECT id FROM messages WHERE from_address=? AND to_address=? '
-                        'AND body=? ORDER BY id DESC LIMIT 1',
-                        (self.from_address, self.to_address, self.body or ''))
-                else:
-                    rows = self.client.db.query(
-                        'SELECT id FROM messages WHERE from_address=? AND to_address=? '
-                        'AND body=? ORDER BY id DESC LIMIT 1',
-                        (self.from_address, self.to_address, self.body or ''))
-                if rows:
-                    self._message_id = rows[0]['id']
-                else:
-                    # Fallback legado (sem body) para compatibilidade com testes antigos
-                    rows = self.client.db.query(
-                        'SELECT id FROM messages WHERE from_address=? AND to_address=? '
-                        'ORDER BY id DESC LIMIT 1',
-                        (self.from_address, self.to_address))
-                    if rows:
-                        self._message_id = rows[0]['id']
-            except Exception:
-                pass
-        else:
+        if status != 'success':
             self._error = error
         return status, error
 

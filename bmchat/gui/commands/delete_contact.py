@@ -28,12 +28,10 @@ class DeleteContactCommand(Command):
 
     def execute(self):
         try:
-            # Backup para undo
+            # Backup para undo (só contato; mensagens não são restauradas,
+            # então evita carregar conversa inteira — seguro para self-chat)
             self._backup_contact = self.client.db.get_contact(self.address)
-            try:
-                self._backup_messages = self.client.db.messages_for_conversation(self.address)
-            except Exception:
-                self._backup_messages = []
+            self._backup_messages = []
         except Exception:
             pass
         try:

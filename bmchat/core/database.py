@@ -353,6 +353,122 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
             (identity_address, contact_address,
              contact_address, identity_address))
 
+    def messages_for_dm(self, contact_address, identity_address, limit=None):
+        """Conversa DM isolada por par (contato, identidade).
+
+        Corrige vazamento quando contato == própria identidade (self-chat):
+        o filtro OR antigo (to==addr OR from==addr) retornava TODAS as
+        mensagens envolvendo a identidade, incluindo diagnósticos ao SUPORTE.
+        - Caso normal (contato != identidade): só o par exato, nas duas direções.
+        - Self-chat (contato == identidade): mostra tudo PARA si (to==self,
+          inclui self-to-self + inbound de qualquer remetente), mas NUNCA
+          outbound para outros (from==self AND to!=self, ex.: diagnóstico).
+          Preserva visibilidade de testes sem vazar diagnósticos.
+        """
+        if not contact_address or not identity_address:
+            return []
+        if contact_address == identity_address:
+            base = 'SELECT * FROM messages WHERE to_address=? '
+            params: tuple = (contact_address,)
+            if limit is None:
+                return self.query(base + 'ORDER BY timestamp, id', params)
+            try:
+                limit = max(1, min(int(limit), 1000))
+            except Exception:
+                limit = 200
+            return self.query(
+                'SELECT * FROM (%sORDER BY timestamp DESC, id DESC LIMIT ?) '
+                'ORDER BY timestamp, id' % base,
+                params + (limit,))
+        base = (
+            'SELECT * FROM messages WHERE '
+            '((to_address=? AND from_address=?) OR '
+            '(to_address=? AND from_address=?)) '
+        )
+        params = (
+            contact_address, identity_address,
+            identity_address, contact_address,
+        )
+        if limit is None:
+            return self.query(base + 'ORDER BY timestamp, id', params)
+        try:
+            limit = max(1, min(int(limit), 1000))
+        except Exception:
+            limit = 200
+        return self.query(
+            'SELECT * FROM (%sORDER BY timestamp DESC, id DESC LIMIT ?) '
+            'ORDER BY timestamp, id' % base,
+            params + (limit,))
+
+    def count_for_dm(self, contact_address, identity_address):
+        if contact_address == identity_address:
+            rows = self.query(
+                'SELECT COUNT(*) AS n FROM messages WHERE to_address=?',
+                (contact_address,))
+            return rows[0]['n'] if rows else 0
+        rows = self.query(
+            'SELECT COUNT(*) AS n FROM messages WHERE '
+            '((to_address=? AND from_address=?) OR '
+            '(to_address=? AND from_address=?))',
+            (contact_address, identity_address,
+             identity_address, contact_address))
+        return rows[0]['n'] if rows else 0
+
+    def last_message_for_dm(self, contact_address, identity_address):
+        if contact_address == identity_address:
+            rows = self.query(
+                'SELECT body, timestamp FROM messages WHERE to_address=? '
+                'ORDER BY timestamp DESC, id DESC LIMIT 1',
+                (contact_address,))
+            return rows[0] if rows else None
+        rows = self.query(
+            'SELECT body, timestamp FROM messages WHERE '
+            '((to_address=? AND from_address=?) OR '
+            '(to_address=? AND from_address=?)) '
+            'ORDER BY timestamp DESC, id DESC LIMIT 1',
+            (contact_address, identity_address,
+             identity_address, contact_address))
+        return rows[0] if rows else None
+
+    def mark_dm_read(self, contact_address, identity_address):
+        """Marca como lidas só as recebidas do par (não tudo com OR)."""
+        if contact_address == identity_address:
+            # Self-chat: marca tudo PARA si (inbound + self), não outbound p/ outros
+            self.execute(
+                "UPDATE messages SET status=? WHERE to_address=? AND status=?",
+                ('read', contact_address, 'received'))
+            return
+        self.execute(
+            'UPDATE messages SET status=? WHERE '
+            '((to_address=? AND from_address=?) OR '
+            '(to_address=? AND from_address=?)) AND status=?',
+            ('read', identity_address, contact_address,
+             contact_address, identity_address, 'received'))
+
+    def delete_dm_conversation(self, contact_address, identity_address):
+        """Apaga só o par (contato, identidade). Seguro para self-chat."""
+        if contact_address == identity_address:
+            # Self-chat: apaga só PARA si? Não — apaga só self-to-self para
+            # preservar inbound de outros e nunca apagar diagnósticos (outbound).
+            # Para "Excluir conversa" em self-chat, apaga to==self? Não, perigoso.
+            # Mantém self-to-self apenas; inbound órfão permanece visível.
+            self.execute(
+                'DELETE FROM messages WHERE from_address=? AND to_address=?',
+                (contact_address, contact_address))
+            return
+        self.execute(
+            'DELETE FROM messages WHERE '
+            '((to_address=? AND from_address=?) OR '
+            '(to_address=? AND from_address=?))',
+            (contact_address, identity_address,
+             identity_address, contact_address))
+
+    def delete_self_conversation(self, address):
+        """Apaga só mensagens self-to-self (usado quando contato == identidade)."""
+        self.execute(
+            'DELETE FROM messages WHERE from_address=? AND to_address=?',
+            (address, address))
+
     def messages_for_conversation(self, address, limit=None):
         if limit is None:
             return self.query(
