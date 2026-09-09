@@ -83,6 +83,13 @@ RADIUS_MD = 8
 RADIUS_LG = 12
 RADIUS_FULL = 999
 
+# CVE-2026-25990/CVE-2026-40192/CVE-2026-42311/CVE-2026-59204: prévia de
+# anexo só decodifica formatos comuns de foto. PSD/FITS/JPEG2000/etc.
+# vindos de peer caem no ícone de arquivo (sem Image.open/load nesses
+# decoders). Pillow>=12.3.0 no requirements.txt corrige as CVEs; isto é
+# defesa em profundidade para quem rodar com Pillow antigo.
+ALLOWED_PREVIEW_FORMATS = frozenset({'PNG', 'JPEG', 'GIF', 'BMP', 'WEBP'})
+
 BACKUP_WARNING = (
     'ATENÇÃO — CHAVES PRIVADAS da identidade\n%s\n\n'
     '• Salve-as em um lugar SEGURO (papel, gerenciador de senhas ou '
@@ -2651,6 +2658,8 @@ class App(tk.Tk):
         except Exception:
             return None
         try:
+            if img.format not in ALLOWED_PREVIEW_FORMATS:
+                return None
             if img.width * img.height > Image.MAX_IMAGE_PIXELS:
                 return None
         except Exception:
@@ -2740,6 +2749,8 @@ class App(tk.Tk):
         except Exception:
             return None
         try:
+            if img.format not in ALLOWED_PREVIEW_FORMATS:
+                return None
             if img.width * img.height > Image.MAX_IMAGE_PIXELS:
                 return None
         except Exception:

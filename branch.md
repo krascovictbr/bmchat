@@ -15,6 +15,7 @@
 - [fix/ci-lint-20260907 (2026-09-08)](#changelog--branch-fixci-lint-20260907)
 - [fix/security-20260908 (2026-09-08)](#changelog--branch-fixsecurity-20260908)
 - [anti-alucinação fix/security-20260908 (2026-09-08)](#caça-a-alucinações--fixsecurity-20260908)
+- [CVEs e CVSS — fix/security-20260908](#cves-e-cvss--fixsecurity-20260908)
 
 ---
 
@@ -913,3 +914,144 @@ testar).
   `py_compile` OK.
 - Smoke GUI (abrir/enviar, dark/light, maximizar, `request v3`):
   zero `report_callback_exception`.
+
+---
+
+## CVEs e CVSS — fix/security-20260908
+
+Primeiro levantamento de CVEs reais de dependências/ambiente (as
+auditorias anteriores cobriram só lógica própria). Data: 2026-09-08 ·
+Python 3.14.7 · Linux. Catálogo por-CVE em `SEGURANCA.MD` (33 blocos);
+aqui ficam metodologia, tabela de decisões e correções.
+
+### Metodologia (tolerância zero a alucinação)
+
+1. **Inventário (FASE 1):** versões exatas do runtime via
+   `pip show`/`pip freeze`, `pip index versions` (rede OK) e imports do
+   código (`grep` em `bmchat/`):
+
+   | Componente | Versão auditada | Uso no app |
+   |---|---|---|
+   | ecdsa | 0.19.2 | `crypto/ecc.py` (só secp256k1) |
+   | pycryptodome(+x) | 3.23.0 | AES-CBC, Padding, RIPEMD160, SHA256, PBKDF2 |
+   | PySocks | 1.7.1 | `net/proxy.py` (Tor/I2P) |
+   | Pillow | 11.3.0 → **12.3.0** | `gui/app.py` (prévia de anexos) — **ausente do `requirements.txt`** |
+   | six | 1.17.0 | transitivo do ecdsa (código próprio nunca importa) |
+   | Python | 3.14.7 | runtime |
+   | Tcl/Tk | 8.6.16 / 8.6 | GUI (`tkinter` stdlib) |
+   | sqlite / OpenSSL | 3.53.4 / 3.6.4 | via stdlib (só queries fixas parametrizadas; sem TLS próprio) |
+
+2. **CVE real, uma a uma (FASE 2):** `pip-audit 2.10.1`
+   (PyPI Advisory DB) sobre `ecdsa+pycryptodome+PySocks+Pillow+six` →
+   1 (ecdsa) + 25 ocorrências (18 CVEs únicas Pillow) + 0 resto;
+   `websearch` complementar para CVEs fora do DB (ecdsa antigas,
+   pycryptodome antigas, CPython, Tcl, PySocks/six-zero);
+   **os 33 registros foram abertos na fonte oficial via NVD API 2.0**
+   (`services.nvd.nist.gov/rest/json/cves/2.0?cveId=...`, JSON salvos
+   em `/tmp/opencode/nvd/`) — descrição, CVSS com vetor e faixa CPE
+   copiados de lá, sem arredondar nem inventar. PySocks e six: **zero
+   CVEs** (pip-audit 0 + Snyk "no direct vulnerabilities") — declarado,
+   não silenciado. Regra: sem página NVD aberta, sem ID citado
+   (ex.: CVE-2026-33936 foi confirmada no NVD antes de entrar).
+   Severidades pela tabela padrão (3.1 e 4.0/FIRST: 0 Nenhuma,
+   0.1–3.9 Baixa, 4.0–6.9 Média, 7.0–8.9 Alta, 9.0–10.0 Crítica).
+3. **Aplicabilidade:** cada CVE cruzada com `grep` no código
+   (função vulnerável chamada? com entrada de peer?) e faixa CPE ×
+   versão instalada. Vereditos abaixo.
+4. **Correção (FASE 3)** e **documentação (FASE 4)** nas seções abaixo.
+
+### Tabela de CVEs e decisões
+
+Legenda: AFETA = caminho real no nosso código/ambiente · NÃO AFETA +
+motivo · **(corrigida)** = eliminada pelo bump/defesa desta seção.
+
+| CVE | Comp. | Título | Faixa afetada (CPE/NVD) | CVSS | Veredito |
+|---|---|---|---|---|---|
+| CVE-2024-23342 | ecdsa | Minerva timing P-256 | ≤0.18.0, sem fix | 7.4 Alta 3.1 | NÃO AFETA: só usamos secp256k1, nunca P-256/`sign_digest`; ataque exige timing local (residual aceito, ver riscos) |
+| CVE-2019-14859 | ecdsa | DER não verificado / maleabilidade | <0.13.3 | 9.1 Crítica 3.1 | NÃO AFETA: corrigido em 0.13.3 (instalado 0.19.2) |
+| CVE-2019-14853 | ecdsa | Exceção em sig malformada (DoS) | <0.13.3 | 7.5 Alta 3.1 | NÃO AFETA: corrigido em 0.13.3 |
+| CVE-2026-33936 | ecdsa | DER truncado em `from_der` (DoS) | <0.19.2 | 5.3 Média 3.1 | NÃO AFETA: corrigido em 0.19.2 (= instalado, novo piso); `from_der` nunca chamado c/ input externo |
+| CVE-2023-52323 | pycryptodome | OAEP side-channel (Manger) | <3.19.1 | 5.9 Média 3.1 | NÃO AFETA: instalado 3.23.0; OAEP nunca usado |
+| CVE-2018-15560 | pycryptodome | int-overflow AESNI | <3.6.6 | 7.5 Alta 3.1 | NÃO AFETA: instalado 3.23.0 |
+| CVE-2025-48379 | Pillow | heap-overflow escrita DDS | 11.2.0–<11.3.0 | 7.1 Alta 3.1 | NÃO AFETA: instalado 11.3.0 já corrigido; nunca salvamos DDS |
+| CVE-2026-25990 | Pillow | OOB-write load PSD | 10.3.0–<12.1.1 | 7.5 Alta 3.1 | **AFETA (corrigida)**: `Image.open().load()` em bytes de peer |
+| CVE-2026-40192 | Pillow | bomba FITS sem limite | 10.3.0–12.1.1 | 7.5 Alta 3.1 | **AFETA (corrigida)**: mesmo caminho |
+| CVE-2026-42308 | Pillow | int-overflow avanço de fonte | <12.2.0 | 5.5 Média 3.1 | NÃO AFETA: `ImageFont` nunca usado (bump cobre) |
+| CVE-2026-42309 | Pillow | coords aninhadas ImagePath/Draw | 11.2.1–<12.2.0 | 5.5 Média 3.1 | NÃO AFETA: APIs nunca usadas (bump cobre) |
+| CVE-2026-42310 | Pillow | PDF malicioso trava (100% CPU) | 4.2.0–<12.2.0 | 5.5 Média 3.1 | **AFETA por precaução (corrigida)**: plugin PDF registrado no `Image.open()` |
+| CVE-2026-42311 | Pillow | corrupção de memória via PSD | 10.3.0–<12.2.0 | 7.8 Alta 3.1 | **AFETA (corrigida)**: mesmo caminho |
+| CVE-2026-54058 | Pillow | McIdas mmap OOB-read | <12.3.0 | 9.1 Crítica 3.1 | NÃO AFETA: abrimos via `BytesIO` (ramo mmap inalcançável); bump cobre |
+| CVE-2026-54059 | Pillow | PCF sem bomb-check | <12.3.0 | 7.5 Alta 3.1 | NÃO AFETA: `PcfFontFile` nunca usado; bump cobre |
+| CVE-2026-54060 | Pillow | FontFile.compile sem bomb-check | <12.3.0 | 7.5 Alta 3.1 | NÃO AFETA: fontes nunca usadas; bump cobre |
+| CVE-2026-55379 | Pillow | BDF sem bomb-check | <12.3.0 | 7.5 Alta 3.1 | NÃO AFETA: `BdfFontFile` nunca usado; bump cobre |
+| CVE-2026-55380 | Pillow | GD sem bomb-check | <12.3.0 | 7.5 Alta 3.1 | NÃO AFETA: `GdImageFile` nunca usado; bump cobre |
+| CVE-2026-55798 | Pillow | WindowsViewer injeta shell | <12.3.0 | 4.5 Média 3.1 | NÃO AFETA: viewer nunca chamado; Linux |
+| CVE-2026-59197 | Pillow | RankFilter OOB-write | <12.3.0 | 8.2 Alta 3.1 | NÃO AFETA: nunca usado; bump cobre |
+| CVE-2026-59198 | Pillow | TGA RLE OOB-read (vaza heap) | 5.2.0–12.3.0 | 6.5 Média 3.1 | NÃO AFETA: nunca salvamos TGA; bump cobre |
+| CVE-2026-59199 | Pillow | paste/crop OOB-write coords | <12.3.0 | 7.5 Alta 3.1 | NÃO AFETA: nunca chamadas c/ coords de peer; bump cobre |
+| CVE-2026-59200 | Pillow | PdfParser zlib sem teto | 5.1.0–12.3.0 | 7.5 Alta 3.1 | NÃO AFETA: `PdfParser` nunca usado; bump cobre |
+| CVE-2026-59204 | Pillow | JPEG2000 tiled OOM | 8.2.0–12.2.0 | 7.5 Alta 3.1 | **AFETA (corrigida)**: decoder alcançável via `Image.open().load()` |
+| CVE-2026-59205 | Pillow | ImageCms heap-corruption | <12.3.0 | 7.5 Alta 3.1 | NÃO AFETA: `ImageCms` nunca usado; bump cobre |
+| CVE-2025-4517 | Python | tarfile escreve fora do dir | (sem CPE; tarfile) | 9.4 Crítica 3.1 | NÃO AFETA: `tarfile` nunca usado |
+| CVE-2026-7210 | Python | expat hash-flooding (XML) | 3.14.0–<3.14.6 | 7.5 Alta 3.1 | NÃO AFETA: instalado 3.14.7; xml nunca usado |
+| CVE-2026-15308 | Python | html.parser DoS CPU | 3.14.0–<3.14.7 | 7.5 Alta 3.1 | NÃO AFETA: instalado 3.14.7; `html.parser` nunca usado |
+| CVE-2026-0865 | Python | injeção de header HTTP | (http) | 5.9 Média 4.0 | NÃO AFETA: sem cliente HTTP/headers externos |
+| CVE-2026-1299 | Python | email BytesGenerator injeta header | (email) | 6.0 Média 4.0 | NÃO AFETA: `email` nunca usado |
+| CVE-2026-3276 | Python | unicodedata.normalize DoS CPU | (todas formas) | 6.3 Média 4.0 | NÃO AFETA: `normalize` nunca chamado |
+| CVE-2026-2297 | Python | .pyc legado sem `open_code` (audit) | (import hook) | 5.7 Média 4.0 | NÃO AFETA: sem hooks `sys.audit` |
+| CVE-2021-35331 | Tcl | format-string nmakehlp.c (disputado) | só 8.6.11 | 7.8 Alta 3.1 | NÃO AFETA: instalado 8.6.16; helper de build Windows |
+
+Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
+**aplicáveis 5** (Alta 4 · Média 1 — todas corrigidas) ·
+**não-afeta 28**. PySocks e six: 0 CVE (pip-audit + Snyk limpos).
+
+### Correções feitas (FASE 3)
+
+- `requirements.txt`: `pycryptodome>=3.15.0→>=3.19.1` (piso da
+  correção da CVE-2023-52323), `ecdsa>=0.18.0→>=0.19.2` (piso da
+  CVE-2026-33936), **`Pillow>=12.3.0` adicionado** (estava ausente —
+  18 CVEs afetavam a 11.3.0; 12.3.0 confirmada como latest via
+  `pip index` e instalada neste ambiente). PySocks mantido (sem CVE).
+  Sem pins `==`/hashes: o estilo do repo é piso mínimo e o CI resolve
+  para as versões corrigidas; hashes travariam multi-plataforma sem
+  ganho aqui (decisão justificada, não omissão).
+- `bmchat/gui/app.py`: `ALLOWED_PREVIEW_FORMATS`
+  (PNG/JPEG/GIF/BMP/WEBP) checado em `_open_image_for_layout` e
+  `_open_image_for_render` antes do `load()` — PSD/FITS/JPEG2000/PDF
+  de peer caem no ícone de arquivo. Defesa em profundidade além do
+  bump (protege quem rodar com Pillow antigo).
+- `tests/test_cve_pillow.py` (NOVO, 12 testes): PNG válido carrega nos
+  2 helpers; magics PSD/FITS/JP2 → `None` nos 2 helpers; lixo → `None`;
+  altura de PSD cai no ícone (48); pisos do `requirements.txt`.
+
+### Risco aceito (documentado, não silenciado)
+
+- **CVE-2024-23342 residual (Minerva):** sem correção upstream
+  (side-channels fora do escopo do projeto ecdsa); trocar de lib
+  quebraria o consenso Bitmessage (secp256k1). Aceito porque: curva
+  P-256 nunca usada, `sign_digest` nunca chamada, ataque exige timing
+  local de alta precisão contra assinaturas esporádicas. Reavaliar se
+  o upstream publicar fix ou o app passar a assinar sob medição
+  adversária.
+
+### Issues de código próprio achadas no caminho (CWE, sem CVE)
+
+- **W1 [CWE-400, ALTA — corrigida]:** prévia de anexos decodificava
+  **qualquer** formato via `Image.open().load()` em bytes vindos de
+  peer (`_open_image_for_layout/_open_image_for_render`), caminho real
+  para DoS/corrupção das CVEs de decoder acima. Correção: allowlist +
+  bump + 12 testes (esta seção).
+- **Nenhuma outra issue de código próprio encontrada:** `grep`
+  confirma que o app nunca chama `tarfile/html.parser/http/email/xml/
+  unicodedata.normalize/ImageFont/PcfFontFile/BdfFontFile/GdImageFile/
+  ImageCms/RankFilter/PdfParser/OAEP/sign_digest/from_der`, nunca salva
+  DDS/TGA nem chama viewers — vereditos NÃO AFETA acima são por código,
+  não por suposição. Nada recebeu ID CVE (só as 33 reais do NVD).
+
+### Verificação
+
+- `pytest tests/ -q`: **133 passed, 1 skipped** (+12 `test_cve_pillow`).
+- `flake8` (2 comandos do CI): exit 0; `mypy`: limpo (32 arqs);
+  `py_compile` OK.
+- Fontes NVD abertas (33): `https://nvd.nist.gov/vuln/detail/<CVE>`
+  para cada ID da tabela; JSONs da API em `/tmp/opencode/nvd/`.
