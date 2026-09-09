@@ -25,6 +25,8 @@ from ..protocol.const import (
 from ..util.hashing import double_sha512, sha512
 from ..net.manager import NetworkManager
 from .database import Database
+from .events import EventEmitter
+from .events.events import LEGACY_MAP
 
 
 class Client:
@@ -45,7 +47,37 @@ class Client:
         self.data_dir = data_dir
         self.db = db if db is not None else Database(data_dir)
         self.pow_strategy: PoWStrategy = pow_strategy or StandardPoWStrategy()
-        self.ui_queue = __import__('queue').Queue()
+        import queue as _queue
+        self.ui_queue = _queue.Queue()
+        # Observer Pattern: EventEmitter para desacoplar Client da GUI
+        self.events = EventEmitter()
+        # Bridge: todo put na ui_queue também emite via EventEmitter
+        _orig_put = self.ui_queue.put
+
+        def _put_and_emit(item, block=True, timeout=None):  # noqa: C901
+            result = _orig_put(item, block, timeout)
+            try:
+                if isinstance(item, tuple) and item:
+                    legacy = item[0]
+                    data = item[1:] if len(item) > 1 else None
+                    # Desempacota payload único para conveniência do observer
+                    if isinstance(data, tuple) and len(data) == 1:
+                        data = data[0]
+                    elif isinstance(data, tuple) and len(data) == 0:
+                        data = None
+                    mapped = LEGACY_MAP.get(legacy, legacy)
+                    self.events.emit(mapped, data if data is not None else item)
+                    if mapped != legacy:
+                        self.events.emit(legacy, data)
+                    # Evento genérico para listeners que querem tudo
+                    self.events.emit('*', item)
+            except Exception:
+                pass
+            return result
+
+        self.ui_queue.put = _put_and_emit  # type: ignore[method-assign]
+        # Compat: emite também mudança de conexão quando network tem peers
+        self._event_queue_bridge = _put_and_emit
         self.identities = {}
         self.pubkeys = {}
         self._pow_stops = {}

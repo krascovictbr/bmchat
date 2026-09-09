@@ -682,6 +682,7 @@ class App(tk.Tk):
         self.client = Client(data_dir)
         self._client_started = False
         self._client_start_error = None
+        self._bind_observer_events()
         self._launch_client_start()
 
         self.title('bmchat')
@@ -768,6 +769,46 @@ class App(tk.Tk):
         self._schedule_startup(lambda: self.after_idle(self._startup_step_build))
 
     # -------------------------------------------------- startup diferido (item 1)
+
+    def _bind_observer_events(self):
+        """Observer Pattern: GUI se registra como observer dos eventos do Client.
+
+        Cada evento emitido pelo Client via EventEmitter agenda o handling
+        no main thread (after 0). Mantém compatibilidade com polling legado
+        (queue) — observer é caminho preferencial, polling é fallback.
+        """
+        try:
+            # Mapeia eventos legados (ui_queue) para handlers da GUI
+            def _make_handler(kind):
+                def _handler(data):
+                    # data é o payload sem o kind; reconstrói tupla completa
+                    if data is None:
+                        full = (kind,)
+                    elif isinstance(data, tuple):
+                        full = (kind,) + data
+                    else:
+                        full = (kind, data)
+                    try:
+                        # Agenda no main thread para segurança Tk
+                        self.after(0, lambda f=full: self._dispatch_event(f))
+                    except Exception:
+                        pass
+                return _handler
+
+            for legacy_kind in App._KNOWN_UI_EVENTS:
+                try:
+                    self.client.events.on(legacy_kind, _make_handler(legacy_kind))
+                except Exception:
+                    pass
+            # Eventos tipados novos (ex.: NEW_MESSAGE) também disparam refresh
+            try:
+                from ..core.events import NEW_MESSAGE, POW_PROGRESS, CONNECTION_CHANGE
+                # Já cobertos via legacy; mantém para exemplificar uso tipado
+                _ = (NEW_MESSAGE, POW_PROGRESS, CONNECTION_CHANGE)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _start_client_bg(self):
         try:
