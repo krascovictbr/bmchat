@@ -29,24 +29,23 @@ class NotificationManager:
 
     def _detect_backend(self) -> str:
         """Detect available notification backend."""
-        if self.system == 'linux':
+        if self.system == "linux":
             # Check for notify-send
-            if self._check_command(['notify-send', '--version']):
-                return 'notify-send'
+            if self._check_command(["notify-send", "--version"]):
+                return "notify-send"
             # Check for dbus
             if self._check_dbus():
-                return 'dbus'
-        elif self.system == 'darwin':
-            return 'osascript'
-        elif self.system == 'windows':
-            return 'powershell'
-        return 'none'
+                return "dbus"
+        elif self.system == "darwin":
+            return "osascript"
+        elif self.system == "windows":
+            return "powershell"
+        return "none"
 
     def _check_command(self, cmd: list) -> bool:
         """Check if command exists."""
         try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=2)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
             return True
         except Exception:
             return False
@@ -55,42 +54,42 @@ class NotificationManager:
         """Check if dbus is available."""
         try:
             import dbus  # noqa: F401 -- availability probe
+
             return True
         except ImportError:
             return False
 
-    def notify(self, title: str, message: str, urgency: str = 'normal',
-               timeout: int = 5000, icon: Optional[str] = None):
+    def notify(
+        self, title: str, message: str, urgency: str = "normal", timeout: int = 5000, icon: Optional[str] = None
+    ):
         """Send a desktop notification."""
         if not self._enabled:
             return
 
         # Run in background to avoid blocking
-        threading.Thread(target=self._send_notification,
-                         args=(title, message, urgency, timeout, icon),
-                         daemon=True).start()
+        threading.Thread(
+            target=self._send_notification, args=(title, message, urgency, timeout, icon), daemon=True
+        ).start()
 
-    def _send_notification(self, title: str, message: str, urgency: str,
-                           timeout: int, icon: Optional[str]):
+    def _send_notification(self, title: str, message: str, urgency: str, timeout: int, icon: Optional[str]):
         """Send notification using detected backend."""
         try:
-            if self._backend == 'notify-send':
+            if self._backend == "notify-send":
                 self._notify_send(title, message, urgency, timeout, icon)
-            elif self._backend == 'osascript':
+            elif self._backend == "osascript":
                 self._notify_osascript(title, message)
-            elif self._backend == 'powershell':
+            elif self._backend == "powershell":
                 self._notify_powershell(title, message)
-            elif self._backend == 'dbus':
+            elif self._backend == "dbus":
                 self._notify_dbus(title, message, urgency, timeout)
         except Exception:
             pass  # Silently fail
 
-    def _notify_send(self, title: str, message: str, urgency: str,
-                     timeout: int, icon: Optional[str]):
+    def _notify_send(self, title: str, message: str, urgency: str, timeout: int, icon: Optional[str]):
         """Send notification using notify-send (argv, sem shell)."""
-        cmd = ['notify-send', f'--urgency={urgency}', f'--expire-time={timeout}']
+        cmd = ["notify-send", f"--urgency={urgency}", f"--expire-time={timeout}"]
         if icon and os.path.exists(icon):
-            cmd.extend(['--icon', icon])
+            cmd.extend(["--icon", icon])
         cmd.append(title)
         cmd.append(message)
         subprocess.run(cmd, timeout=5)
@@ -100,11 +99,8 @@ class NotificationManager:
         """Build osascript argv sem interpolar texto não-confiável."""
         # Título/mensagem via argv ($1/$2) + 'quoted form of' evita
         # breakout com aspas/barras (\" não escapa em AppleScript).
-        script = ('on run argv\n'
-                  'display notification (item 2 of argv) '
-                  'with title (item 1 of argv)\n'
-                  'end run')
-        return ['osascript', '-e', script, str(title), str(message)]
+        script = "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run"
+        return ["osascript", "-e", script, str(title), str(message)]
 
     def _notify_osascript(self, title: str, message: str):
         """Send notification using osascript (macOS)."""
@@ -126,33 +122,30 @@ class NotificationManager:
             "$n.Visible=$true;"
             "$n.ShowBalloonTip(5000,$t,$m,"
             "[System.Windows.Forms.ToolTipIcon]::Info);"
-            "Start-Sleep -Seconds 6;$n.Dispose()")
-        encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
-        return ['powershell', '-NoProfile', '-NonInteractive',
-                '-EncodedCommand', encoded]
+            "Start-Sleep -Seconds 6;$n.Dispose()"
+        )
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        return ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
 
     def _notify_powershell(self, title: str, message: str):
         """Send notification using PowerShell (Windows, sem RCE)."""
         import os as _os
+
         cmd = self.build_powershell_encoded(str(title), str(message))
         env = dict(_os.environ)
-        env['BMCHAT_NT'] = base64.b64encode(
-            str(title).encode('utf-8')).decode('ascii')
-        env['BMCHAT_NM'] = base64.b64encode(
-            str(message).encode('utf-8')).decode('ascii')
+        env["BMCHAT_NT"] = base64.b64encode(str(title).encode("utf-8")).decode("ascii")
+        env["BMCHAT_NM"] = base64.b64encode(str(message).encode("utf-8")).decode("ascii")
         subprocess.run(cmd, timeout=10, env=env)
 
     def _notify_dbus(self, title: str, message: str, urgency: str, timeout: int):
         """Send notification using DBus (Linux fallback)."""
         try:
             import dbus
+
             bus = dbus.SessionBus()
-            obj = bus.get_object('org.freedesktop.Notifications',
-                                 '/org/freedesktop/Notifications')
-            interface = dbus.Interface(obj, 'org.freedesktop.Notifications')
-            interface.Notify(
-                'bmchat', 0, '', title, message, [], {},
-                timeout)
+            obj = bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
+            interface = dbus.Interface(obj, "org.freedesktop.Notifications")
+            interface.Notify("bmchat", 0, "", title, message, [], {}, timeout)
         except Exception:
             pass
 
@@ -162,7 +155,7 @@ class NotificationManager:
 
     def is_available(self) -> bool:
         """Check if notifications are available."""
-        return self._backend != 'none'
+        return self._backend != "none"
 
 
 # Global instance
@@ -177,7 +170,6 @@ def get_notification_manager() -> NotificationManager:
     return _notification_manager
 
 
-def notify(title: str, message: str, urgency: str = 'normal',
-           timeout: int = 5000, icon: Optional[str] = None):
+def notify(title: str, message: str, urgency: str = "normal", timeout: int = 5000, icon: Optional[str] = None):
     """Convenience function to send notification."""
     get_notification_manager().notify(title, message, urgency, timeout, icon)

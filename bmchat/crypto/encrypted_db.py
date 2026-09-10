@@ -37,19 +37,23 @@ def derive_key(password: str, salt: bytes) -> bytes:
         # ADV: Crypto PBKDF2 faz encode latin-1 interno e quebra com
         # emoji/acentos (UnicodeEncodeError). Normaliza para UTF-8 aqui
         # para senhas unicode funcionarem (ASCII inalterado).
-        password_bytes = password.encode('utf-8')
+        password_bytes = password.encode("utf-8")
     else:
         password_bytes = bytes(password)
-    return PBKDF2(password_bytes, bytes(salt), dkLen=KEY_SIZE,  # type: ignore[arg-type]
-                  count=PBKDF2_ITERATIONS,
-                  hmac_hash_module=SHA256)
+    return PBKDF2(  # type: ignore[arg-type]
+        password_bytes,  # type: ignore[arg-type]
+        bytes(salt),  # type: ignore[arg-type]
+        dkLen=KEY_SIZE,  # type: ignore[arg-type]
+        count=PBKDF2_ITERATIONS,
+        hmac_hash_module=SHA256,
+    )
 
 
 def encrypt_page(key: bytes, page_data: bytes, page_number: int) -> bytes:
     """Encrypt a single database page using AES-GCM."""
     nonce = get_random_bytes(NONCE_SIZE)
     # Use page number as additional authenticated data
-    aad = page_number.to_bytes(8, 'little')
+    aad = page_number.to_bytes(8, "little")
 
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     cipher.update(aad)
@@ -64,9 +68,9 @@ def decrypt_page(key: bytes, encrypted_data: bytes, page_number: int) -> bytes:
         raise ValueError("Encrypted data too short")
 
     nonce = encrypted_data[:NONCE_SIZE]
-    tag = encrypted_data[NONCE_SIZE:NONCE_SIZE + 16]
+    tag = encrypted_data[NONCE_SIZE: NONCE_SIZE + 16]
     ciphertext = encrypted_data[NONCE_SIZE + 16:]
-    aad = page_number.to_bytes(8, 'little')
+    aad = page_number.to_bytes(8, "little")
 
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     cipher.update(aad)
@@ -75,17 +79,16 @@ def decrypt_page(key: bytes, encrypted_data: bytes, page_number: int) -> bytes:
 
 def _secret_write_bytes(path: str, data: bytes) -> None:
     """Write bytes atomically with mode 0600 (tmp+fsync+os.replace)."""
-    directory = os.path.dirname(os.path.abspath(path)) or '.'
+    directory = os.path.dirname(os.path.abspath(path)) or "."
     fd = None
-    tmp_path = ''
+    tmp_path = ""
     try:
-        fd, tmp_path = tempfile.mkstemp(
-            dir=directory, prefix='.tmp-enc-')
+        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".tmp-enc-")
         try:
             os.fchmod(fd, 0o600)
         except Exception:
             pass
-        with os.fdopen(fd, 'wb') as handle:
+        with os.fdopen(fd, "wb") as handle:
             fd = None
             handle.write(data)
             try:
@@ -98,7 +101,7 @@ def _secret_write_bytes(path: str, data: bytes) -> None:
         except Exception:
             pass
         os.replace(tmp_path, path)
-        tmp_path = ''
+        tmp_path = ""
     finally:
         if fd is not None:
             try:
@@ -114,13 +117,13 @@ def _secret_write_bytes(path: str, data: bytes) -> None:
 
 def _read_backup_blob(path: str) -> tuple:
     """Read (salt, nonce, tag, ciphertext) or raise ValueError."""
-    with open(path, 'rb') as handle:
+    with open(path, "rb") as handle:
         header = handle.read(HEADER_SIZE)
         if len(header) < HEADER_SIZE:
             raise ValueError("Backup file too short")
         salt = header[:SALT_SIZE]
-        nonce = header[SALT_SIZE:SALT_SIZE + NONCE_SIZE]
-        tag = header[SALT_SIZE + NONCE_SIZE:SALT_SIZE + NONCE_SIZE + 16]
+        nonce = header[SALT_SIZE: SALT_SIZE + NONCE_SIZE]
+        tag = header[SALT_SIZE + NONCE_SIZE: SALT_SIZE + NONCE_SIZE + 16]
         ciphertext = handle.read()
     return salt, nonce, tag, ciphertext
 
@@ -143,8 +146,8 @@ def _open(blob: bytes, password: str) -> bytes:
     if len(blob) < HEADER_SIZE:
         raise ValueError("Backup file too short")
     salt = blob[:SALT_SIZE]
-    nonce = blob[SALT_SIZE:SALT_SIZE + NONCE_SIZE]
-    tag = blob[SALT_SIZE + NONCE_SIZE:SALT_SIZE + NONCE_SIZE + 16]
+    nonce = blob[SALT_SIZE: SALT_SIZE + NONCE_SIZE]
+    tag = blob[SALT_SIZE + NONCE_SIZE: SALT_SIZE + NONCE_SIZE + 16]
     ciphertext = blob[HEADER_SIZE:]
     key = derive_key(password, salt)
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
@@ -154,9 +157,9 @@ def _open(blob: bytes, password: str) -> bytes:
 
 def _backup_original(db_path: str) -> None:
     try:
-        with open(db_path, 'rb') as src:
+        with open(db_path, "rb") as src:
             original = src.read()
-        _secret_write_bytes(db_path + '.bak', original)
+        _secret_write_bytes(db_path + ".bak", original)
     except Exception:
         pass
 
@@ -184,21 +187,20 @@ def is_encrypted(db_path: str) -> bool:
     if os.path.getsize(db_path) < HEADER_SIZE:
         return False
     # Check if file has valid SQLite header (unencrypted)
-    with open(db_path, 'rb') as handle:
+    with open(db_path, "rb") as handle:
         header = handle.read(16)
-    return header[:16] != b'SQLite format 3\x00'
+    return header[:16] != b"SQLite format 3\x00"
 
 
 def export_encrypted_backup(db_path: str, output_path: str, password: str):
     """Export database as encrypted backup (atômico, 0600)."""
-    with open(db_path, 'rb') as handle:
+    with open(db_path, "rb") as handle:
         plaintext = handle.read()
     blob = _seal(plaintext, password)
     _secret_write_bytes(output_path, blob)
 
 
-def import_encrypted_backup(backup_path: str, output_path: str,
-                            password: str):
+def import_encrypted_backup(backup_path: str, output_path: str, password: str):
     """Import database from encrypted backup (atômico, 0600).
 
     Grava em arquivo temporário no mesmo diretório e troca com
@@ -206,14 +208,14 @@ def import_encrypted_backup(backup_path: str, output_path: str,
     a descriptografia falhar, sem deixar plaintext em claro para trás.
     Se ``output_path`` já existir, um ``.bak`` é preservado antes.
     """
-    with open(backup_path, 'rb') as handle:
+    with open(backup_path, "rb") as handle:
         blob = handle.read()
     plaintext = _open(blob, password)
     if os.path.exists(output_path):
         try:
-            with open(output_path, 'rb') as src:
+            with open(output_path, "rb") as src:
                 original = src.read()
-            _secret_write_bytes(output_path + '.bak', original)
+            _secret_write_bytes(output_path + ".bak", original)
         except Exception:
             pass
     _secret_write_bytes(output_path, bytes(plaintext))

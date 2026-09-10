@@ -1,4 +1,5 @@
 """ContactRepository — Repository Pattern para contatos."""
+
 from .base import BaseRepository
 
 

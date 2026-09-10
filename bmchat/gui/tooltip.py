@@ -14,9 +14,9 @@ class ToolTip:
         self.tip_window: Optional[tk.Toplevel] = None
         self.after_id: Optional[str] = None
 
-        widget.bind('<Enter>', self._schedule_show, add='+')
-        widget.bind('<Leave>', self._hide, add='+')
-        widget.bind('<ButtonPress>', self._hide, add='+')
+        widget.bind("<Enter>", self._schedule_show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
 
     def _schedule_show(self, event=None):
         self._hide()
@@ -34,17 +34,17 @@ class ToolTip:
         # Use simple colors since we can't import theme here (circular import)
         self.tip_window = tk.Toplevel(self.widget)
         self.tip_window.wm_overrideredirect(True)
-        self.tip_window.wm_geometry(f'+{x}+{y}')
+        self.tip_window.wm_geometry(f"+{x}+{y}")
 
         label = tk.Label(
             self.tip_window,
             text=self.text,
-            bg='#212529',
-            fg='#ffffff',
-            font=('TkDefaultFont', 9),
+            bg="#212529",
+            fg="#ffffff",
+            font=("TkDefaultFont", 9),
             padx=8,
             pady=4,
-            relief='solid',
+            relief="solid",
             bd=1,
         )
         label.pack()

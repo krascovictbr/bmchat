@@ -14,39 +14,38 @@ MAX_CONSECUTIVE_FAILURES = 5
 
 
 DEFAULT_NODES = [
-    ('5.45.99.75', 8444),
-    ('75.167.159.54', 8444),
-    ('95.165.168.168', 8444),
-    ('85.180.139.241', 8444),
-    ('158.222.217.190', 8080),
-    ('178.62.12.187', 8448),
-    ('24.188.198.204', 8111),
-    ('109.147.204.113', 1195),
-    ('178.11.46.221', 8444),
+    ("5.45.99.75", 8444),
+    ("75.167.159.54", 8444),
+    ("95.165.168.168", 8444),
+    ("85.180.139.241", 8444),
+    ("158.222.217.190", 8080),
+    ("178.62.12.187", 8448),
+    ("24.188.198.204", 8111),
+    ("109.147.204.113", 1195),
+    ("178.11.46.221", 8444),
 ]
 
 DNS_SEEDS = [
-    ('bootstrap8080.bitmessage.org', 8080),
-    ('bootstrap8444.bitmessage.org', 8444),
+    ("bootstrap8080.bitmessage.org", 8080),
+    ("bootstrap8444.bitmessage.org", 8444),
 ]
 
 
 class Peer:
-    __slots__ = ('host', 'port')
+    __slots__ = ("host", "port")
 
     def __init__(self, host, port):
         self.host = host
         self.port = port
 
     def __eq__(self, other):
-        return isinstance(other, Peer) and \
-            self.host == other.host and self.port == other.port
+        return isinstance(other, Peer) and self.host == other.host and self.port == other.port
 
     def __hash__(self):
         return hash((self.host, self.port))
 
     def __repr__(self):
-        return '%s:%s' % (self.host, self.port)
+        return "%s:%s" % (self.host, self.port)
 
 
 def _parse_store_entry(item):
@@ -54,29 +53,28 @@ def _parse_store_entry(item):
     try:
         if not isinstance(item, dict):
             return None
-        peer = item.get('peer', {}) or {}
-        info = item.get('info', {}) or {}
-        host = str(peer.get('host', '')).strip()
-        port = int(peer.get('port', 0))
+        peer = item.get("peer", {}) or {}
+        info = item.get("info", {}) or {}
+        host = str(peer.get("host", "")).strip()
+        port = int(peer.get("port", 0))
         if not host or not 1 <= port <= 65535:
             return None
         return (host, port), {
-            'stream': int(item.get('stream', 1)),
-            'services': info.get('services', 1),
-            'last_seen': int(info.get('lastseen', time.time())),
-            'rating': float(info.get('rating', 0)),
-            'last_try': int(info.get('lasttry', 0)),
-            'inv_count': int(info.get('invs', 0) or 0),
-            'last_inv': int(info.get('lastinv', 0) or 0),
-            'mute_count': int(info.get('mutes', 0) or 0),
-            'fail_count': int(info.get('fails', 0) or 0),
+            "stream": int(item.get("stream", 1)),
+            "services": info.get("services", 1),
+            "last_seen": int(info.get("lastseen", time.time())),
+            "rating": float(info.get("rating", 0)),
+            "last_try": int(info.get("lasttry", 0)),
+            "inv_count": int(info.get("invs", 0) or 0),
+            "last_inv": int(info.get("lastinv", 0) or 0),
+            "mute_count": int(info.get("mutes", 0) or 0),
+            "fail_count": int(info.get("fails", 0) or 0),
         }
     except Exception:
         return None
 
 
 class PeerStore:
-
     def __init__(self, path=None):
         self.path = path
         self.entries = {}
@@ -85,7 +83,7 @@ class PeerStore:
         if not self.path or not os.path.exists(self.path):
             return None
         try:
-            with open(self.path, 'r', encoding='utf-8') as handle:
+            with open(self.path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except Exception:
             return None
@@ -109,34 +107,43 @@ class PeerStore:
         now = int(time.time())
         for host, port in DEFAULT_NODES:
             self.entries[(host, port)] = {
-                'stream': 1, 'services': 1, 'last_seen': now, 'rating': 0,
-                'last_try': 0, 'inv_count': 0, 'last_inv': 0,
-                'mute_count': 0, 'fail_count': 0}
+                "stream": 1,
+                "services": 1,
+                "last_seen": now,
+                "rating": 0,
+                "last_try": 0,
+                "inv_count": 0,
+                "last_inv": 0,
+                "mute_count": 0,
+                "fail_count": 0,
+            }
 
     def save(self):
         if not self.path:
             return
         entries = []
         for (host, port), info in self.entries.items():
-            entries.append({
-                'stream': info.get('stream', 1),
-                'peer': {'host': host, 'port': port},
-                'info': {
-                    'services': info.get('services', 1),
-                    'lastseen': info.get('last_seen', int(time.time())),
-                    'rating': info.get('rating', 0),
-                    'lasttry': info.get('last_try', 0),
-                    'invs': info.get('inv_count', 0),
-                    'lastinv': info.get('last_inv', 0),
-                    'mutes': info.get('mute_count', 0),
-                    'fails': info.get('fail_count', 0),
-                },
-            })
+            entries.append(
+                {
+                    "stream": info.get("stream", 1),
+                    "peer": {"host": host, "port": port},
+                    "info": {
+                        "services": info.get("services", 1),
+                        "lastseen": info.get("last_seen", int(time.time())),
+                        "rating": info.get("rating", 0),
+                        "lasttry": info.get("last_try", 0),
+                        "invs": info.get("inv_count", 0),
+                        "lastinv": info.get("last_inv", 0),
+                        "mutes": info.get("mute_count", 0),
+                        "fails": info.get("fail_count", 0),
+                    },
+                }
+            )
         directory = os.path.dirname(self.path)
         if directory and not os.path.exists(directory):
             os.makedirs(directory, exist_ok=True)
-        tmp = self.path + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as handle:
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(entries, handle, indent=2)
             try:
                 handle.flush()
@@ -160,34 +167,40 @@ class PeerStore:
         except Exception:
             stream = 1
         key = (host, port)
-        entry = self.entries.get(key, {
-            'stream': stream, 'services': services,
-            'last_seen': int(time.time()), 'rating': rating,
-            'last_try': 0, 'inv_count': 0, 'last_inv': 0,
-            'mute_count': 0, 'fail_count': 0})
-        entry['last_seen'] = int(time.time())
-        entry['stream'] = stream
-        entry['services'] = services
-        entry.setdefault('rating', rating)
-        entry.setdefault('last_try', 0)
-        entry.setdefault('inv_count', 0)
-        entry.setdefault('last_inv', 0)
-        entry.setdefault('mute_count', 0)
-        entry.setdefault('fail_count', 0)
+        entry = self.entries.get(
+            key,
+            {
+                "stream": stream,
+                "services": services,
+                "last_seen": int(time.time()),
+                "rating": rating,
+                "last_try": 0,
+                "inv_count": 0,
+                "last_inv": 0,
+                "mute_count": 0,
+                "fail_count": 0,
+            },
+        )
+        entry["last_seen"] = int(time.time())
+        entry["stream"] = stream
+        entry["services"] = services
+        entry.setdefault("rating", rating)
+        entry.setdefault("last_try", 0)
+        entry.setdefault("inv_count", 0)
+        entry.setdefault("last_inv", 0)
+        entry.setdefault("mute_count", 0)
+        entry.setdefault("fail_count", 0)
         self.entries[key] = entry
         if len(self.entries) > self.MAX_PEERS:
             # evicta piores (rating baixo, vistos há mais tempo)
-            ranked = sorted(
-                self.entries.items(),
-                key=lambda kv: (kv[1].get('rating', 0),
-                                kv[1].get('last_seen', 0)))
-            for old_key, _ in ranked[:len(self.entries) - self.MAX_PEERS]:
+            ranked = sorted(self.entries.items(), key=lambda kv: (kv[1].get("rating", 0), kv[1].get("last_seen", 0)))
+            for old_key, _ in ranked[: len(self.entries) - self.MAX_PEERS]:
                 self.entries.pop(old_key, None)
 
     def record_attempt(self, host, port):
         entry = self.entries.get((host, int(port)))
         if entry is not None:
-            entry['last_try'] = int(time.time())
+            entry["last_try"] = int(time.time())
 
     def record_failure(self, host, port):
         """Falha de dial/handshake: rating -1 + conta falha seguida.
@@ -203,13 +216,13 @@ class PeerStore:
         entry = self.entries.get(key)
         if entry is None:
             return False
-        entry['rating'] = entry.get('rating', 0) - 1
-        entry['last_try'] = int(time.time())
+        entry["rating"] = entry.get("rating", 0) - 1
+        entry["last_try"] = int(time.time())
         try:
-            fails = int(entry.get('fail_count', 0) or 0) + 1
+            fails = int(entry.get("fail_count", 0) or 0) + 1
         except Exception:
             fails = 1
-        entry['fail_count'] = fails
+        entry["fail_count"] = fails
         if fails >= MAX_CONSECUTIVE_FAILURES:
             self.entries.pop(key, None)
             return True
@@ -218,9 +231,9 @@ class PeerStore:
     def record_success(self, host, port):
         entry = self.entries.get((host, int(port)))
         if entry is not None:
-            entry['rating'] = min(entry.get('rating', 0) + 1, 10)
-            entry['last_try'] = int(time.time())
-            entry['fail_count'] = 0
+            entry["rating"] = min(entry.get("rating", 0) + 1, 10)
+            entry["last_try"] = int(time.time())
+            entry["fail_count"] = 0
 
     def record_inv(self, host, port):
         """Par entregou inv: marca como produtivo (priorizado no giro).
@@ -236,10 +249,10 @@ class PeerStore:
             return
         now = int(time.time())
         try:
-            entry['inv_count'] = int(entry.get('inv_count', 0) or 0) + 1
+            entry["inv_count"] = int(entry.get("inv_count", 0) or 0) + 1
         except Exception:
-            entry['inv_count'] = 1
-        entry['last_inv'] = now
+            entry["inv_count"] = 1
+        entry["last_inv"] = now
 
     def record_mute(self, host, port):
         """Par estabelecido que nunca mandou nada útil: desprioriza.
@@ -254,12 +267,12 @@ class PeerStore:
             return
         if entry is None:
             return
-        entry['rating'] = entry.get('rating', 0) - 2
-        entry['last_try'] = int(time.time())
+        entry["rating"] = entry.get("rating", 0) - 2
+        entry["last_try"] = int(time.time())
         try:
-            entry['mute_count'] = int(entry.get('mute_count', 0) or 0) + 1
+            entry["mute_count"] = int(entry.get("mute_count", 0) or 0) + 1
         except Exception:
-            entry['mute_count'] = 1
+            entry["mute_count"] = 1
 
     def add_peer(self, peer, stream=1, services=1):
         self.add(peer.host, peer.port, stream, services)
@@ -295,19 +308,18 @@ class PeerStore:
         puro menos a penalidade de falha.
         """
         try:
-            base = float(info.get('rating', 0))
+            base = float(info.get("rating", 0))
         except Exception:
             base = 0.0
         try:
-            productive = int(info.get('inv_count', 0) or 0) > 0
+            productive = int(info.get("inv_count", 0) or 0) > 0
         except Exception:
             productive = False
         try:
-            fails = int(info.get('fail_count', 0) or 0)
+            fails = int(info.get("fail_count", 0) or 0)
         except Exception:
             fails = 0
-        return base + (2.0 if productive else 0.0) - \
-            float(min(max(fails, 0), 8))
+        return base + (2.0 if productive else 0.0) - float(min(max(fails, 0), 8))
 
     @staticmethod
     def backoff_for(info, base=BACKOFF_BASE_SECONDS):
@@ -316,7 +328,7 @@ class PeerStore:
         base<=0 (ex.: best(cooldown=0)) desliga: devolve 0 sem jitter.
         """
         try:
-            fails = int((info or {}).get('fail_count', 0) or 0)
+            fails = int((info or {}).get("fail_count", 0) or 0)
         except Exception:
             fails = 0
         if fails < 0:
@@ -344,14 +356,14 @@ class PeerStore:
         count = 0
         for info in list(self.entries.values()):
             try:
-                rating = info.get('rating', 0)
-                fails = int(info.get('fail_count', 0) or 0)
+                rating = info.get("rating", 0)
+                fails = int(info.get("fail_count", 0) or 0)
             except Exception:
                 continue
             if rating < 0 or fails > 0:
                 try:
                     window = self.backoff_for(info, cooldown)
-                    last = int(info.get('last_try', 0) or 0)
+                    last = int(info.get("last_try", 0) or 0)
                 except Exception:
                     continue
                 if window > 0 and now - last < window:
@@ -363,9 +375,9 @@ class PeerStore:
         now = int(time.time())
         ranked = sorted(
             self.entries.items(),
-            key=lambda kv: (self._effective_rating(kv[1]),
-                            -kv[1].get('last_seen', 0)),
-            reverse=True)
+            key=lambda kv: (self._effective_rating(kv[1]), -kv[1].get("last_seen", 0)),
+            reverse=True,
+        )
         result = []
         for (host, port), info in ranked:
             if (host, port) in exclude:
@@ -373,13 +385,12 @@ class PeerStore:
             # Nunca retesta o mesmo IP:porta dentro da janela de backoff
             # (exponencial por sequência de falha, teto ~1h+jitter).
             try:
-                fails = int(info.get('fail_count', 0) or 0)
+                fails = int(info.get("fail_count", 0) or 0)
             except Exception:
                 fails = 0
-            if info.get('rating', 0) < 0 or fails > 0:
+            if info.get("rating", 0) < 0 or fails > 0:
                 window = self.backoff_for(info, cooldown)
-                if window > 0 and \
-                        now - info.get('last_try', 0) < window:
+                if window > 0 and now - info.get("last_try", 0) < window:
                     continue
             result.append((Peer(host, port), info))
             if limit and len(result) >= limit:

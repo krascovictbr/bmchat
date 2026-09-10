@@ -8,24 +8,39 @@ Notas de consistência (sem importar ``app.py`` para evitar ciclo):
 import tkinter as tk
 from tkinter import messagebox
 
-BG = '#ffffff'
-FG = '#222222'
-DIM = '#8a96a0'
-FIELD_BG = '#f1f3f5'
-ACCENT = '#4ea4e5'
-ACCENT_DARK = '#3d93d6'
-BTN_BG = '#e6ebf0'
+BG = "#ffffff"
+FG = "#222222"
+DIM = "#8a96a0"
+FIELD_BG = "#f1f3f5"
+ACCENT = "#4ea4e5"
+ACCENT_DARK = "#3d93d6"
+BTN_BG = "#e6ebf0"
 
 # Estilos compartilhados (dicts criados uma vez; nunca em loop).
-_OK_STYLE = {'bg': ACCENT, 'fg': 'white',
-             'activebackground': ACCENT_DARK, 'activeforeground': 'white',
-             'relief': 'flat', 'width': 10}
-_CANCEL_STYLE = {'bg': BTN_BG, 'fg': FG,
-                 'activebackground': BTN_BG, 'activeforeground': FG,
-                 'relief': 'flat', 'width': 10}
-_ENTRY_STYLE = {'bg': FIELD_BG, 'fg': FG, 'insertbackground': FG,
-                'highlightthickness': 1, 'highlightbackground': ACCENT}
-_MODAL_KEYS = ('<Return>', '<KP_Enter>', '<Escape>')
+_OK_STYLE = {
+    "bg": ACCENT,
+    "fg": "white",
+    "activebackground": ACCENT_DARK,
+    "activeforeground": "white",
+    "relief": "flat",
+    "width": 10,
+}
+_CANCEL_STYLE = {
+    "bg": BTN_BG,
+    "fg": FG,
+    "activebackground": BTN_BG,
+    "activeforeground": FG,
+    "relief": "flat",
+    "width": 10,
+}
+_ENTRY_STYLE = {
+    "bg": FIELD_BG,
+    "fg": FG,
+    "insertbackground": FG,
+    "highlightthickness": 1,
+    "highlightbackground": ACCENT,
+}
+_MODAL_KEYS = ("<Return>", "<KP_Enter>", "<Escape>")
 
 
 def _release_grab(dialog):
@@ -65,7 +80,7 @@ def _center_on_parent(dialog, parent):
             pw = parent.winfo_width()
             ph = parent.winfo_height()
             if pw < 10 or ph < 10:
-                raise ValueError('pai sem geometria útil')
+                raise ValueError("pai sem geometria útil")
         except Exception:
             sw = dialog.winfo_screenwidth()
             sh = dialog.winfo_screenheight()
@@ -81,7 +96,7 @@ def _center_on_parent(dialog, parent):
                 y = max(0, min(y, sh - min(dh, sh)))
             except Exception:
                 pass
-        dialog.geometry('+%d+%d' % (x, y))
+        dialog.geometry("+%d+%d" % (x, y))
     except Exception:
         pass
 
@@ -115,12 +130,11 @@ def _make_shell(parent, title, minsize):
 def _make_button_bar(dialog, on_ok, on_cancel):
     """Barra OK/Cancelar padronizada; devolve (ok, cancel)."""
     bar = tk.Frame(dialog, bg=BG)
-    bar.pack(side='bottom', pady=(8, 12))
-    ok = tk.Button(bar, text='OK', command=lambda: on_ok(), **_OK_STYLE)
-    cancel = tk.Button(bar, text='Cancelar',
-                       command=lambda: on_cancel(), **_CANCEL_STYLE)
-    ok.pack(side='left', padx=6)
-    cancel.pack(side='left', padx=6)
+    bar.pack(side="bottom", pady=(8, 12))
+    ok = tk.Button(bar, text="OK", command=lambda: on_ok(), **_OK_STYLE)
+    cancel = tk.Button(bar, text="Cancelar", command=lambda: on_cancel(), **_CANCEL_STYLE)
+    ok.pack(side="left", padx=6)
+    cancel.pack(side="left", padx=6)
     return ok, cancel
 
 
@@ -170,10 +184,10 @@ def _run_modal(parent, dialog, on_ok, on_cancel, focus_widget=None):
     Único ``update_idletasks`` do arquivo vive em ``_center_on_parent``
     (não bloqueante; sem ``update``/``wait_visibility`` e sem ``after``).
     """
-    dialog.protocol('WM_DELETE_WINDOW', lambda: on_cancel())
-    dialog.bind('<Return>', on_ok)
-    dialog.bind('<KP_Enter>', on_ok)
-    dialog.bind('<Escape>', on_cancel)
+    dialog.protocol("WM_DELETE_WINDOW", lambda: on_cancel())
+    dialog.bind("<Return>", on_ok)
+    dialog.bind("<KP_Enter>", on_ok)
+    dialog.bind("<Escape>", on_cancel)
     _center_on_parent(dialog, parent)
     _reveal_modal(dialog, focus_widget)
     _await_modal_close(parent, dialog)
@@ -189,23 +203,20 @@ def _secret_fields(fields, password):
     return set()
 
 
-def _build_simple_entries(dialog, fields, values, labels=None,
-                          password=False):
+def _build_simple_entries(dialog, fields, values, labels=None, password=False):
     """Build the label/entry form; return [(field, entry)]."""
     form = tk.Frame(dialog, bg=BG)
-    form.pack(padx=16, pady=16, fill='both', expand=True)
+    form.pack(padx=16, pady=16, fill="both", expand=True)
     entries = []
     labels = labels or {}
     secret = _secret_fields(fields, password)
     for row, field in enumerate(fields):
-        text = labels.get(field) or field.replace('_', ' ').title()
-        tk.Label(form, text=text,
-                 bg=BG, fg=FG).grid(row=row, column=0, sticky='w', pady=4)
-        entry = tk.Entry(form, show='•' if field in secret else '',
-                         **_ENTRY_STYLE)
-        entry.grid(row=row, column=1, sticky='we', pady=4, padx=(12, 0))
+        text = labels.get(field) or field.replace("_", " ").title()
+        tk.Label(form, text=text, bg=BG, fg=FG).grid(row=row, column=0, sticky="w", pady=4)
+        entry = tk.Entry(form, show="•" if field in secret else "", **_ENTRY_STYLE)
+        entry.grid(row=row, column=1, sticky="we", pady=4, padx=(12, 0))
         try:
-            entry.insert(0, str(values.get(field, '')))
+            entry.insert(0, str(values.get(field, "")))
         except Exception:
             pass
         entries.append((field, entry))
@@ -221,25 +232,23 @@ def _read_simple_entries(entries, secret=None):
         try:
             raw = entry.get()
         except Exception:
-            result[field] = ''
+            result[field] = ""
             continue
         try:
             result[field] = raw if field in secret else raw.strip()
         except Exception:
-            result[field] = ''
+            result[field] = ""
     return result
 
 
-def ask_simple(parent, title, fields, values=None, labels=None,
-               password=False, **_kwargs):
+def ask_simple(parent, title, fields, values=None, labels=None, password=False, **_kwargs):
     fields = list(fields or [])
     values = values or {}
     dialog = _make_shell(parent, title, minsize=(360, 120))
     result = {}
     try:
         secret = _secret_fields(fields, password)
-        entries = _build_simple_entries(dialog, fields, values,
-                                        labels=labels, password=password)
+        entries = _build_simple_entries(dialog, fields, values, labels=labels, password=password)
 
         def on_ok(event=None):
             result.update(_read_simple_entries(entries, secret=secret))
@@ -292,7 +301,7 @@ def _take_listbox_selection(listbox):
     return selection[0] if selection else None
 
 
-def choose(parent, title, options, prompt='Selecione:'):
+def choose(parent, title, options, prompt="Selecione:"):
     options = list(options or [])
     dialog = _make_shell(parent, title, minsize=(400, 220))
     result = {}
@@ -300,18 +309,26 @@ def choose(parent, title, options, prompt='Selecione:'):
         tk.Label(dialog, text=prompt, bg=BG, fg=FG).pack(padx=16, pady=(14, 8))
 
         list_frame = tk.Frame(dialog, bg=BG)
-        list_frame.pack(padx=16, pady=4, fill='both', expand=True)
+        list_frame.pack(padx=16, pady=4, fill="both", expand=True)
         visible = max(4, min(12, len(options) or 4))
-        scrollbar = tk.Scrollbar(list_frame, orient='vertical')
-        listbox = tk.Listbox(list_frame, bg=FIELD_BG, fg=FG,
-                             selectbackground=ACCENT, selectforeground='white',
-                             width=52, height=visible,
-                             yscrollcommand=scrollbar.set,
-                             exportselection=False, activestyle='none',
-                             highlightthickness=1, highlightbackground=ACCENT)
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical")
+        listbox = tk.Listbox(
+            list_frame,
+            bg=FIELD_BG,
+            fg=FG,
+            selectbackground=ACCENT,
+            selectforeground="white",
+            width=52,
+            height=visible,
+            yscrollcommand=scrollbar.set,
+            exportselection=False,
+            activestyle="none",
+            highlightthickness=1,
+            highlightbackground=ACCENT,
+        )
         scrollbar.config(command=listbox.yview)
-        listbox.pack(side='left', fill='both', expand=True)
-        scrollbar.pack(side='right', fill='y')
+        listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
         # Inserção em lote: 1 chamada Tcl em vez de N (500 itens abre sem
         # engasgo). Fallback em loop se o unpack falhar (opções exóticas).
         _fill_listbox(listbox, options)
@@ -320,22 +337,21 @@ def choose(parent, title, options, prompt='Selecione:'):
         def on_ok(event=None):
             index = _take_listbox_selection(listbox)
             if index is not None:
-                result['index'] = index
+                result["index"] = index
             _close(dialog)
 
         def on_cancel(event=None):
             result.clear()
             _close(dialog)
 
-        listbox.bind('<Double-Button-1>', on_ok)
+        listbox.bind("<Double-Button-1>", on_ok)
         ok_btn, _cancel_btn = _make_button_bar(dialog, on_ok, on_cancel)
-        _run_modal(parent, dialog, on_ok, on_cancel,
-                   focus_widget=listbox if options else ok_btn)
+        _run_modal(parent, dialog, on_ok, on_cancel, focus_widget=listbox if options else ok_btn)
     except Exception:
         # Mesma garantia anti-órfão de ask_simple (ver acima).
         _close(dialog)
         raise
-    return result.get('index') if result else None
+    return result.get("index") if result else None
 
 
 def info(parent, title, message):
