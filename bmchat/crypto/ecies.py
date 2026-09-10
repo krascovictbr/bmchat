@@ -17,8 +17,8 @@ MAC_LEN = 32
 
 
 def encode_ephemeral_public(point):
-    point = ecc.decode_point_public(ecc.encode_point_public(point)) \
-        if isinstance(point, bytes) else point
+    if isinstance(point, bytes):
+        point = ecc.decode_point_public(point)
     return (
         R_PREFIX
         + point.x().to_bytes(32, 'big')
@@ -37,9 +37,16 @@ def decode_ephemeral_public(blob):
     y = blob[38:38 + ylen]
     if curve != CURVE_TYPE or xlen != 32 or ylen != 32:
         raise ValueError('invalid ephemeral public key')
-    from ecdsa.ellipticcurve import Point
+    x_int = int.from_bytes(x, 'big')
+    y_int = int.from_bytes(y, 'big')
     from .ecc import CURVE
-    return Point(CURVE, int.from_bytes(x, 'big'), int.from_bytes(y, 'big'))
+    prime = CURVE.p()
+    if not 0 < x_int < prime or not 0 < y_int < prime:
+        raise ValueError('ephemeral point fora do intervalo')
+    if not CURVE.contains_point(x_int, y_int):
+        raise ValueError('ephemeral point fora da curva')
+    from ecdsa.ellipticcurve import Point
+    return Point(CURVE, x_int, y_int)
 
 
 def _derive_keys(shared_point):

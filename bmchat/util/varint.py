@@ -46,7 +46,7 @@ def _decode_varint_prefixed(data, first_byte):
 
 def decode_varint(data):
     if not data:
-        return 0, 0
+        raise VarintDecodeError('varint truncated (empty)')
     first_byte, = unpack('>B', data[0:1])
     if first_byte < 253:
         return first_byte, 1

@@ -198,21 +198,42 @@ sua identidade. O banco não é cifrado.
 
 ## 9. Estrutura do código
 
+> Refatorado com 7 Design Patterns (branch `refactor/design-patterns`). Detalhes em [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ```
 bmchat/
-  version.py    # versão rolling (git: CalVer + commits + sha)
-  crypto/       # ecc (ECDSA DER), ecies, keys (endereços, WIF, chans), pow
-  protocol/     # const, packets (version/addr/inv/getdata...), objects
-                #   (getpubkey/pubkey/msg/broadcast + parsing/validação),
-                #   address (base58, checksum)
-  net/          # proxy (Tor/I2P), peers (pares + reputação), manager
-                #   (inventário, relay, snapshot p/ diagnóstico), peer
-                #   (handshake, comandos)
-  core/         # database (SQLite) e client (orquestração: envio, ACK,
-                #   backup keys.dat/WIF, retry, re-anúncio)
-  gui/          # app (interface Telegram-like em canvas), dialogs
-run.py          # ponto de entrada
-tests/          # integração, rede local, interopands (PoW/assinaturas/chans)
+  version.py
+  crypto/
+    ecc.py, ecies.py, keys.py, encrypted_db.py
+    pow/                 # Strategy Pattern
+      strategy.py        # PoWStrategy (ABC)
+      standard.py        # StandardPoWStrategy (produção)
+      mock.py            # MockPoWStrategy (testes)
+  protocol/
+    const.py, packets.py, objects.py, address.py
+    factory.py           # Factory Pattern (ProtocolObjectFactory)
+  net/
+    proxy.py, peers.py, manager.py, peer.py
+    mock.py              # DI Mock (MockNetworkManager)
+  core/
+    database.py
+    client.py            # DI + Observer + State helpers
+    events/              # Observer Pattern
+      emitter.py         # EventEmitter
+      events.py          # NEW_MESSAGE, POW_PROGRESS, ...
+    repositories/        # Repository Pattern
+      message_repo.py, contact_repo.py, pubkey_repo.py
+    models/              # State Pattern
+      message.py         # Message model
+      states.py          # Pending/Published/Delivered/Failed
+  gui/
+    app.py               # DI + Observer + CommandHistory
+    dialogs.py, theme.py, tooltip.py, notification.py
+    commands/            # Command Pattern
+      send_message.py, delete_contact.py, backup_keys.py
+run.py                   # DI: create_client() monta o grafo
+ARCHITECTURE.md          # diagrama e descrição dos padrões
+tests/                   # 209 testes (integração, rede, interop)
 ```
 
 ## Suporte

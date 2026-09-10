@@ -11,6 +11,8 @@ from ..crypto.pow import (
     PowExecutor, calculate_target, initial_hash_of,
     is_proof_of_work_sufficient,
 )
+from ..crypto.pow.strategy import PoWStrategy
+from ..crypto.pow.standard import StandardPoWStrategy
 from ..protocol import address as addr_module
 from ..protocol import objects
 from ..protocol import packets
@@ -23,14 +25,73 @@ from ..protocol.const import (
 from ..util.hashing import double_sha512, sha512
 from ..net.manager import NetworkManager
 from .database import Database
+from .events import EventEmitter
+from .events.events import LEGACY_MAP
+from .models import Message as MessageModel
+from ..protocol.factory import ProtocolObjectFactory
+from .repositories import MessageRepository, ContactRepository, PubkeyRepository
 
 
 class Client:
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, pow_strategy: PoWStrategy | None = None,
+                 network_manager=None, db=None, protocol_factory=None,
+                 message_repo=None, contact_repo=None, pubkey_repo=None):
+        """Client com Dependency Injection para PoW, NetworkManager, Factory e Repositories.
+
+        Args:
+            data_dir: diretório de dados (SQLite, knownnodes).
+            pow_strategy: Strategy de PoW injetada; se None usa
+                StandardPoWStrategy (produção). Testes podem injetar
+                MockPoWStrategy para execução instantânea.
+            network_manager: NetworkManager injetado; se None cria um
+                padrão (mantém compatibilidade).
+            db: Database injetada (para testes sem I/O real).
+            protocol_factory: Factory de objetos de protocolo; se None usa
+                ProtocolObjectFactory padrão (Factory Pattern).
+            message_repo: MessageRepository injetado (Repository Pattern).
+            contact_repo: ContactRepository injetado.
+            pubkey_repo: PubkeyRepository injetado.
+        """
         self.data_dir = data_dir
-        self.db = Database(data_dir)
-        self.ui_queue = __import__('queue').Queue()
+        self.db = db if db is not None else Database(data_dir)
+        self.pow_strategy: PoWStrategy = pow_strategy or StandardPoWStrategy()
+        self.protocol_factory = protocol_factory or ProtocolObjectFactory()
+        # Repository Pattern: abstrai acesso a dados
+        self.message_repo = message_repo or MessageRepository(self.db)
+        self.contact_repo = contact_repo or ContactRepository(self.db)
+        self.pubkey_repo = pubkey_repo or PubkeyRepository(self.db)
+        import queue as _queue
+        self.ui_queue = _queue.Queue()
+        # Observer Pattern: EventEmitter para desacoplar Client da GUI
+        self.events = EventEmitter()
+        # Bridge: todo put na ui_queue também emite via EventEmitter
+        _orig_put = self.ui_queue.put
+
+        def _put_and_emit(item, block=True, timeout=None):  # noqa: C901
+            result = _orig_put(item, block, timeout)
+            try:
+                if isinstance(item, tuple) and item:
+                    legacy = item[0]
+                    data = item[1:] if len(item) > 1 else None
+                    # Desempacota payload único para conveniência do observer
+                    if isinstance(data, tuple) and len(data) == 1:
+                        data = data[0]
+                    elif isinstance(data, tuple) and len(data) == 0:
+                        data = None
+                    mapped = LEGACY_MAP.get(legacy, legacy)
+                    self.events.emit(mapped, data if data is not None else item)
+                    if mapped != legacy:
+                        self.events.emit(legacy, data)
+                    # Evento genérico para listeners que querem tudo
+                    self.events.emit('*', item)
+            except Exception:
+                pass
+            return result
+
+        self.ui_queue.put = _put_and_emit  # type: ignore[method-assign]
+        # Compat: emite também mudança de conexão quando network tem peers
+        self._event_queue_bridge = _put_and_emit
         self.identities = {}
         self.pubkeys = {}
         self._pow_stops = {}
@@ -51,8 +112,15 @@ class Client:
         self._lock_owned = False
         self._log_lines = collections.deque(maxlen=200)
         self._lock = threading.RLock()
-        self.net = NetworkManager(
-            data_dir, self.db, on_object=self._on_object, on_log=self._log)
+        if network_manager is not None:
+            self.net = network_manager
+            # Garante callbacks corretos mesmo quando injetado
+            self.net.on_object = self._on_object
+            self.net.on_log = self._log
+            self.net.db = self.db
+        else:
+            self.net = NetworkManager(
+                data_dir, self.db, on_object=self._on_object, on_log=self._log)
         self.started = False
 
     # ------------------------------------------------------------------
@@ -447,6 +515,11 @@ class Client:
             keys.nonce_trials_per_byte = row['noncetrials']
             keys.payload_length_extra_bytes = row['extrabytes']
             self.identities[row['address']] = keys
+        # Mantém self-pubkeys sincronizados após recarregar identidades
+        try:
+            self._ensure_self_pubkeys()
+        except Exception:
+            pass
 
     def _reparse_orphans(self, limit=100):
         """M7: retenta objetos guardados que não tinham identidade na chegada."""
@@ -480,6 +553,10 @@ class Client:
         keys.payload_length_extra_bytes = 1000
         with self._lock:
             self.identities[keys.address] = keys
+        try:
+            self._ensure_self_pubkeys()
+        except Exception:
+            pass
         self._refresh_streams()
         self.ui_queue.put(('identity-created', keys.address, label))
         self._reparse_orphans()
@@ -686,16 +763,66 @@ class Client:
         return result
 
     def _load_pubkeys(self):
-        for row in self.db.all_pubkeys():
+        # Repository Pattern: usa pubkey_repo em vez de SQL direto
+        for row in self.pubkey_repo.all():
             self.pubkeys[row['address']] = {
                 'signing_public': row['signing_public'],
                 'encryption_public': row['encryption_public'],
                 'nonce_trials_per_byte': row['noncetrials'],
                 'payload_length_extra_bytes': row['extrabytes'],
             }
+        # Self-pubkeys: chaves próprias sempre conhecidas (sem rede).
+        # Evita que self-chat (contato == identidade) trave em awaiting-pubkey.
+        self._ensure_self_pubkeys()
+
+    def _ensure_self_pubkeys(self):
+        """Popula pubkeys com as chaves das próprias identidades."""
+        try:
+            for addr, keys in list((self.identities or {}).items()):
+                try:
+                    if getattr(keys, 'signing_public', None) is None:
+                        continue
+                    self.pubkeys[addr] = {
+                        'signing_public': keys.signing_public,
+                        'encryption_public': keys.encryption_public,
+                        'nonce_trials_per_byte': getattr(keys, 'nonce_trials_per_byte', 1000) or 1000,
+                        'payload_length_extra_bytes': getattr(keys, 'payload_length_extra_bytes', 1000) or 1000,
+                    }
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _pub_entry_for(self, address):
+        """Retorna entrada pubkey (cache, self-keys ou repo)."""
+        pub = (self.pubkeys or {}).get(address)
+        if pub is not None:
+            return pub
+        try:
+            keys = (self.identities or {}).get(address)
+            if keys is not None and getattr(keys, 'signing_public', None) is not None:
+                entry = {
+                    'signing_public': keys.signing_public,
+                    'encryption_public': keys.encryption_public,
+                    'nonce_trials_per_byte': getattr(keys, 'nonce_trials_per_byte', 1000) or 1000,
+                    'payload_length_extra_bytes': getattr(keys, 'payload_length_extra_bytes', 1000) or 1000,
+                }
+                self.pubkeys[address] = entry
+                return entry
+        except Exception:
+            pass
+        return None
 
     def has_pubkey(self, address):
-        return address in self.pubkeys
+        # Cache + self-keys (sem rede) + repositório
+        if address in (self.pubkeys or {}):
+            return True
+        if address in (self.identities or {}):
+            return True
+        try:
+            return self.pubkey_repo.exists(address)
+        except Exception:
+            return False
 
     # ---------- contatos / canais ----------
 
@@ -706,15 +833,26 @@ class Client:
             return status, version
         if version < 3:
             return 'unsupported', version
-        self.db.add_contact(address_text, label or address_text,
+        # Repository Pattern: delega ao ContactRepository
+        self.contact_repo.add(address_text, label or address_text,
                             stream=stream)
         self._refresh_streams()
         self.ui_queue.put(('contact-added', address_text, label))
         return 'success', version
 
     def remove_contact(self, address_text):
-        self.db.remove_contact(address_text)
-        self.db.delete_conversation(address_text)
+        # Repository Pattern: remove via repositórios
+        # Seguro para self-chat: se o contato == própria identidade,
+        # apaga SÓ self-to-self para não deletar diagnósticos ao SUPORTE
+        # e todo o histórico envolvendo a identidade.
+        self.contact_repo.remove(address_text)
+        try:
+            if address_text in (self.identities or {}):
+                self.db.delete_self_conversation(address_text)
+            else:
+                self.message_repo.delete_conversation(address_text)
+        except Exception:
+            self.message_repo.delete_conversation(address_text)
         self._refresh_streams()
         self.ui_queue.put(('contact-removed', address_text, ''))
 
@@ -781,7 +919,8 @@ class Client:
         if message_id:
             try:
                 # A2: DB pode estar fechado no stop(); nunca levantar aqui.
-                self.db.set_message_status(message_id, 'ackreceived')
+                # Repository Pattern: usa MessageRepository
+                self.message_repo.set_status(message_id, 'ackreceived')
             except Exception:
                 return
             try:
@@ -816,7 +955,8 @@ class Client:
 
     def _on_pubkey(self, parsed, raw):
         tag = parsed.data[:32]
-        for contact in self.db.all_contacts():
+        # Repository Pattern: busca contatos via ContactRepository
+        for contact in self.contact_repo.all():
             try:
                 contact_keys = AddressKeys.from_address(contact['address'])
             except Exception:
@@ -826,7 +966,8 @@ class Client:
             incoming = objects.process_pubkey(raw, contact_keys)
             if incoming is None:
                 continue
-            self.db.store_pubkey(
+            # Repository Pattern: persiste via PubkeyRepository
+            self.pubkey_repo.store(
                 contact['address'], incoming.signing_public,
                 incoming.encryption_public,
                 incoming.nonce_trials_per_byte,
@@ -1000,6 +1141,46 @@ class Client:
             self._log('rede', hint % format_ttl_pt(effective))
         return effective, clamped
 
+    def _send_self_loopback(self, identity_address, subject, body, encoding):
+        """Entrega local para self-chat (sem PoW/rede).
+
+        Cria outbound (ackreceived) + inbound (received) e emite eventos,
+        para envio para si mesmo funcionar mesmo offline/sem pubkey de rede.
+        Retorna (status, outbound_id).
+        """
+        now = int(time.time())
+        ttl = self.get_msg_ttl()
+        expires = now + ttl
+        try:
+            out_id = self.message_repo.add(
+                None, identity_address, identity_address, subject, body,
+                encoding, now, 'out', 'ackreceived', ttl=ttl, expires=expires)
+        except TypeError:
+            out_id = self.db.add_message(
+                None, identity_address, identity_address, subject, body,
+                encoding, now, 'out', 'ackreceived', ttl=ttl)
+            try:
+                self.db.set_message_expiry(out_id, expires)
+            except Exception:
+                pass
+        try:
+            self.message_repo.add(
+                None, identity_address, identity_address, subject, body,
+                encoding, now, 'in', 'received', ttl=ttl, expires=expires)
+        except TypeError:
+            try:
+                self.db.add_message(
+                    None, identity_address, identity_address, subject, body,
+                    encoding, now, 'in', 'received', ttl=ttl)
+            except Exception:
+                pass
+        try:
+            self.ui_queue.put(('status', out_id, 'ackreceived'))
+            self.ui_queue.put(('message', identity_address, identity_address, body, expires))
+        except Exception:
+            pass
+        return 'success', out_id
+
     def _resolve_message_ttl(self, message_id, ttl=None):
         # Retry usa o TTL guardado na linha; linhas legadas usam o vigente.
         if ttl is not None:
@@ -1041,6 +1222,18 @@ class Client:
                 pass
         return len(expired)
 
+    # ---------- State Pattern helpers ----------
+    def get_message_model(self, message_id: int):
+        """Retorna Message model com State Pattern para message_id."""
+        row = self.db.get_message(message_id)
+        if row is None:
+            return None
+        return MessageModel(row, client=self)
+
+    def messages_for_conversation_models(self, address: str, limit=None):
+        """Retorna mensagens de uma conversa como Message models."""
+        rows = self.db.messages_for_conversation(address, limit=limit)
+        return [MessageModel(r, client=self) for r in rows]
 
     # ---------- envio ----------  # noqa: E303
 
@@ -1055,8 +1248,15 @@ class Client:
             keys = AddressKeys.from_address(address_text)
         except Exception:
             return 'invalid'
-        unsigned = objects.build_getpubkey_unsigned(
-            int(time.time()) + GETPUBKEY_TTL, stream, 4, keys.tag)
+        # Factory Pattern: cria via factory (validação não é silenciada)
+        try:
+            unsigned = self.protocol_factory.create_getpubkey(
+                int(time.time()) + GETPUBKEY_TTL, stream, keys.tag)
+        except ValueError:
+            raise
+        except Exception:
+            unsigned = objects.build_getpubkey_unsigned(
+                int(time.time()) + GETPUBKEY_TTL, stream, 4, keys.tag)
         target = calculate_target(1000, 1000, len(unsigned) + 8,
                                   GETPUBKEY_TTL)
         self._pow_and_publish(
@@ -1100,6 +1300,23 @@ class Client:
 
     def send_message(self, identity_address, to_address, subject, body,
                      encoding=BITMESSAGE_ENCODING_TRIVIAL):
+        """Envia DM. Compat: retorna (status, error_ou_None).
+
+        Para obter o message_id sem race, use send_message_with_id().
+        """
+        status, payload = self.send_message_with_id(
+            identity_address, to_address, subject, body, encoding)
+        if status != 'success':
+            return status, payload
+        return 'success', None
+
+    def send_message_with_id(self, identity_address, to_address, subject, body,
+                             encoding=BITMESSAGE_ENCODING_TRIVIAL):
+        """Envia DM e retorna (status, message_id_ou_erro).
+
+        Corrige race do Command que fazia SELECT ... ORDER BY id DESC
+        (podia capturar mensagem de outra conversa).
+        """
         status, version, stream, ripe = addr_module.decode_address(to_address)
         if status != 'success':
             return status, 'endereço inválido'
@@ -1118,17 +1335,33 @@ class Client:
                 return 'too-large', 'mensagem grande demais para um objeto'
         except Exception:
             return 'invalid', 'corpo de mensagem inválido'
+        # Self-send (contato == identidade): entrega local instantânea,
+        # sem PoW/rede. Corrige "envio não funciona" no self-chat (teste).
+        if to_address == identity_address and identity_address in (self.identities or {}):
+            try:
+                return self._send_self_loopback(
+                    identity_address, subject or '', body, encoding)
+            except Exception as exc:
+                return 'error', str(exc)
         ttl = self.get_msg_ttl()
-        message_id = self.db.add_message(
+        message_id = self.message_repo.add(
             None, identity_address, to_address, subject or '', body,
             encoding, int(time.time()), 'out', 'awaiting-pubkey', ttl=ttl)
         self.ui_queue.put(('status', message_id, 'sending'))
-        if to_address in self.pubkeys:
+        # Pubkey própria ou conhecida envia direto; senão pede chave via rede
+        if self._pub_entry_for(to_address) is not None:
             self._pow_and_publish_message(message_id, identity_address,
                                           to_address, body, encoding, ttl=ttl)
-            return 'success', None
-        unsigned = objects.build_getpubkey_unsigned(
-            int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
+            return 'success', message_id
+        # Factory Pattern: cria getpubkey via factory (validação não silenciada)
+        try:
+            unsigned = self.protocol_factory.create_getpubkey(
+                int(time.time()) + GETPUBKEY_TTL, stream, contact_keys.tag)
+        except ValueError:
+            raise
+        except Exception:
+            unsigned = objects.build_getpubkey_unsigned(
+                int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
         target = calculate_target(1000, 1000, len(unsigned) + 8,
                                   GETPUBKEY_TTL)
         # A1: antes o PoW era descartado (sem done_cb) — agora anuncia
@@ -1137,7 +1370,7 @@ class Client:
             done_cb=lambda complete, nonce: self.net.announce_object(complete),
             dest=to_address, preview='pedido de chave pública',
             kind='getpubkey')
-        return 'success', None
+        return 'success', message_id
 
     def _fail_message_no_ack(self, message_id):
         # B3: sem ACK não envia degradado silencioso
@@ -1302,7 +1535,14 @@ class Client:
         if row['status'] not in ('ack-failed', 'sending', 'awaiting-pubkey'):
             return 'error', 'estado não permite reenvio (%s)' % row['status']
         to_address = row['to_address']
-        if to_address not in self.pubkeys:
+        # Self-send travado: entrega local imediata (sem gastar slot de retry)
+        try:
+            if (to_address == row.get('from_address')
+                    and to_address in (self.identities or {})):
+                return self._resend_self_loopback(message_id, row)
+        except Exception:
+            pass
+        if self._pub_entry_for(to_address) is None:
             if not self._claim_resend_slot(message_id):
                 return 'error', 'limite de reenvios atingido'
             return self._resend_without_pubkey(message_id, to_address)
@@ -1316,9 +1556,56 @@ class Client:
                                       to_address, row['body'], row['encoding'])
         return 'success', None
 
+    def _resend_self_loopback(self, message_id, row):
+        """Converte mensagem self travada em entregue local."""
+        try:
+            self.message_repo.set_status(message_id, 'ackreceived')
+        except Exception:
+            try:
+                self.db.set_message_status(message_id, 'ackreceived')
+            except Exception:
+                pass
+        try:
+            self.ui_queue.put(('status', message_id, 'ackreceived'))
+        except Exception:
+            pass
+        # Garante inbound correspondente para o chat mostrar
+        try:
+            body = row.get('body') or ''
+            exists = self.db.query(
+                'SELECT id FROM messages WHERE direction=? AND from_address=? '
+                'AND to_address=? AND body=? ORDER BY id DESC LIMIT 1',
+                ('in', row.get('from_address'), row.get('to_address'), body))
+            if not exists:
+                now = int(time.time())
+                ttl = self._clamp_ttl(row.get('ttl') or self.get_msg_ttl())
+                self.message_repo.add(
+                    None, row.get('from_address'), row.get('to_address'),
+                    row.get('subject') or '', body, row.get('encoding') or 1,
+                    now, 'in', 'received', ttl=ttl, expires=now + ttl)
+                self.ui_queue.put(('message', row.get('from_address'),
+                                   row.get('to_address'), body, now + ttl))
+        except Exception:
+            pass
+        return 'success', None
+
     def _pow_and_publish_message(self, message_id, identity_address,
                                  to_address, body, encoding, ttl=None):
-        pub = self.pubkeys.get(to_address)
+        # Self-send antigo travado: resolve via loopback, sem PoW
+        try:
+            if (to_address == identity_address
+                    and to_address in (self.identities or {})):
+                row = None
+                try:
+                    row = self.db.get_message(message_id)
+                except Exception:
+                    row = None
+                if row is not None:
+                    return self._resend_self_loopback(message_id, row)
+                return None
+        except Exception:
+            pass
+        pub = self._pub_entry_for(to_address)
         if pub is None:
             return
         keys = self.identities.get(identity_address)
@@ -1361,21 +1648,42 @@ class Client:
             expires = int(expires)
             ttl = max(300, expires - now)
         watch = os.urandom(32)
-        unsigned = objects.build_ack_unsigned(expires, watch, stream)
+        # Factory Pattern: cria objeto ACK via factory (com validação)
+        # Não mascara ValueError de validação (ex.: stream inválido)
+        try:
+            unsigned = self.protocol_factory.create_ack(expires, watch, stream)
+        except ValueError:
+            raise
+        except Exception:
+            unsigned = objects.build_ack_unsigned(expires, watch, stream)
         target = calculate_target(1000, 1000, len(unsigned) + 8, ttl)
         try:
             nonce = self._quick_pow(unsigned, target)
         except Exception:
             return b'', None
-        ack_object = objects.complete_object(unsigned, nonce)
+        try:
+            ack_object = self.protocol_factory.complete(unsigned, nonce)
+        except ValueError:
+            raise
+        except Exception:
+            ack_object = objects.complete_object(unsigned, nonce)
         return packets.create_packet('object', ack_object), \
             objects.ack_watch_key(ack_object)
 
     def _quick_pow(self, unsigned, target):
+        # Strategy Pattern: delega a PoWStrategy injetada (qualquer implementação)
+        initial = initial_hash_of(unsigned)
+        strat = getattr(self, 'pow_strategy', None)
+        if strat is not None and hasattr(strat, 'solve'):
+            # Usa estratégia injetada (Mock ou custom Standard)
+            try:
+                return strat.solve(initial, target, stop_event=threading.Event())
+            except NotImplementedError:
+                pass
         return PowExecutor(
             workers=1, progress_cb=None,
             stop_event=threading.Event()
-        ).run(initial_hash_of(unsigned), target)
+        ).run(initial, target)
 
     def _pow_and_publish(self, unsigned, target, message_id=None,
                          done_cb=None, dest=None, preview=None, kind=None):
@@ -1438,20 +1746,57 @@ class Client:
             if stop_event is None:
                 stop_event = threading.Event()
         self._ensure_pow_entry(token, stop_event, message_id)
-        executor = PowExecutor(
-            workers=max(1, self.db.get_int('pow_workers', 0) or 0) or
-            max(1, os.cpu_count() or 2),
-            progress_cb=self._pow_progress(token),
-            stop_event=stop_event)
+        # Strategy Pattern: usa PoWStrategy injetada se disponível
+        strat = getattr(self, 'pow_strategy', None)
+        if strat is not None and hasattr(strat, 'solve') and not isinstance(strat, type):
+            # Tenta usar estratégia injetada; se for Standard, respeita workers do DB
+            # via criação de instância temporária com workers dinâmicos
+            try:
+                # Se strat é StandardPoWStrategy, recria com workers atuais para refletir config
+                from ..crypto.pow.standard import StandardPoWStrategy
+                if isinstance(strat, StandardPoWStrategy):
+                    workers = max(1, self.db.get_int('pow_workers', 0) or 0) or max(1, __import__('os').cpu_count() or 2)
+                    tmp = StandardPoWStrategy(workers=workers)
+                    nonce = tmp.solve(
+                        initial_hash_of(unsigned), target,
+                        progress_cb=self._pow_progress(token),
+                        stop_event=stop_event)
+                else:
+                    nonce = strat.solve(
+                        initial_hash_of(unsigned), target,
+                        progress_cb=self._pow_progress(token),
+                        stop_event=stop_event)
+                # Sucesso via strategy
+                complete = objects.complete_object(unsigned, nonce)
+                self._untrack_pow(token)
+                if done_cb is not None:
+                    done_cb(complete, nonce)
+                return
+            except NotImplementedError:
+                pass
+            except Exception:
+                self._fail_pow(token, message_id)
+                return
+        # Fallback legado: PowExecutor
         try:
-            nonce = executor.run(initial_hash_of(unsigned), target)
+            executor = PowExecutor(
+                workers=max(1, self.db.get_int('pow_workers', 0) or 0) or
+                max(1, __import__('os').cpu_count() or 2),
+                progress_cb=self._pow_progress(token),
+                stop_event=stop_event)
+            try:
+                nonce = executor.run(initial_hash_of(unsigned), target)
+            except Exception:
+                self._fail_pow(token, message_id)
+                return
+            complete = objects.complete_object(unsigned, nonce)
+            self._untrack_pow(token)
+            if done_cb is not None:
+                done_cb(complete, nonce)
+            return
         except Exception:
             self._fail_pow(token, message_id)
             return
-        complete = objects.complete_object(unsigned, nonce)
-        self._untrack_pow(token)
-        if done_cb is not None:
-            done_cb(complete, nonce)
 
     def _pow_progress(self, token):
         def progress(tried, rate):

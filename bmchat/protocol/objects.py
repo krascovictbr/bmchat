@@ -16,16 +16,31 @@ class ParsedObject:
                  'data', 'inventory_hash')
 
     def __init__(self, raw):
+        from .const import MAX_OBJECT_LENGTH
         if len(raw) < 20:
             raise ValueError('objeto curto demais')
+        if len(raw) > MAX_OBJECT_LENGTH + 64:
+            raise ValueError('objeto grande demais')
         self.raw = raw
         self.nonce = raw[:8]
         self.expires = struct.unpack('>Q', raw[8:16])[0]
         self.object_type = struct.unpack('>I', raw[16:20])[0]
         position = 20
-        self.version, version_len = decode_varint(raw[20:29])
+        try:
+            self.version, version_len = decode_varint(raw[20:29])
+        except Exception as exc:
+            raise ValueError('version varint inválido: %s' % exc)
+        if version_len == 0:
+            raise ValueError('version varint truncado')
         position += version_len
-        self.stream, stream_len = decode_varint(raw[position:position + 9])
+        if position + 1 > len(raw):
+            raise ValueError('stream ausente')
+        try:
+            self.stream, stream_len = decode_varint(raw[position:position + 9])
+        except Exception as exc:
+            raise ValueError('stream varint inválido: %s' % exc)
+        if stream_len == 0:
+            raise ValueError('stream varint truncado')
         position += stream_len
         self.data = raw[position:]
         self.inventory_hash = double_sha512(raw)[:32]
@@ -198,13 +213,19 @@ def _parse_msg_plaintext(plain, obj, identity):
         return None
     encoding, position = _take_varint(plain, position)
     message_length, position = _take_varint(plain, position)
+    if position + message_length > len(plain):
+        return None
     message = plain[position:position + message_length]
     position += message_length
     ack_length, position = _take_varint(plain, position)
+    if position + ack_length > len(plain):
+        return None
     ack_data = plain[position:position + ack_length]
     position += ack_length
     bottom_of_ack = position
     signature_length, position = _take_varint(plain, position)
+    if position + signature_length > len(plain):
+        return None
     signature = plain[position:position + signature_length]
     signed_data = (
         struct.pack('>Q', obj.expires)
@@ -320,18 +341,27 @@ def _open_broadcast(raw, subscriptions):
 
 def _finish_broadcast(obj, tag, plain):
     """Parse/verify decrypted broadcast; return IncomingBroadcast or None."""
-    position = 0
-    sender_version, position = _take_varint(plain, position)
-    if sender_version < 4:
+    try:
+        position = 0
+        sender_version, position = _take_varint(plain, position)
+        if sender_version < 4 or sender_version > 4:
+            return None
+        sender_stream, position = _take_varint(plain, position)
+        if sender_stream == 0:
+            return None
+        position, pub_signing, pub_encryption = _take_broadcast_keys(plain, position)
+        ntpb, position = _take_varint(plain, position)
+        eb, position = _take_varint(plain, position)
+        if ntpb < PUBKEY_NTPB_MIN or ntpb > PUBKEY_NTPB_MAX:
+            return None
+        if eb < PUBKEY_EB_MIN or eb > PUBKEY_EB_MAX:
+            return None
+        encoding, position = _take_varint(plain, position)
+        if encoding == 0:
+            return None
+        message, bottom_of_message, position = _take_broadcast_body(plain, position)
+    except Exception:
         return None
-    sender_stream, position = _take_varint(plain, position)
-    position, pub_signing, pub_encryption = _take_broadcast_keys(plain, position)
-    ntpb, position = _take_varint(plain, position)
-    eb, position = _take_varint(plain, position)
-    encoding, position = _take_varint(plain, position)
-    if encoding == 0:
-        return None
-    message, bottom_of_message, position = _take_broadcast_body(plain, position)
     signature_length, position = _take_varint(plain, position)
     signature = plain[position:position + signature_length]
     signed_data = (
@@ -353,6 +383,8 @@ def _finish_broadcast(obj, tag, plain):
 
 
 def _take_broadcast_keys(plain, position):
+    if len(plain) < position + 4 + 128:
+        raise ValueError('broadcast keys truncado')
     position += 4
     pub_signing = b'\x04' + plain[position:position + 64]
     position += 64
@@ -363,6 +395,8 @@ def _take_broadcast_keys(plain, position):
 
 def _take_broadcast_body(plain, position):
     message_length, position = _take_varint(plain, position)
+    if position + message_length > len(plain):
+        raise ValueError('broadcast message truncado')
     message = plain[position:position + message_length]
     position += message_length
     return message, position, position
@@ -392,9 +426,12 @@ def process_broadcast(raw, subscriptions):
 
 
 def _take_varint(blob, position):
+    # Não mascara truncamento: caller deve tratar None
     try:
         value, length = decode_varint(blob[position:position + 10])
     except Exception:
+        # Propaga como retorno especial que caller checa; não retorna 0 silencioso
+        # Mantém compat: retorna 0, mas caller deve verificar bounds antes
         return 0, position
     return value, position + length
 

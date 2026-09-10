@@ -13,6 +13,7 @@ from .tooltip import ToolTip
 from .notification import notify
 from .. import SUPPORT_ADDRESS, SUPPORT_LABEL
 from ..core.client import Client
+from .commands import CommandHistory, SendMessageCommand, DeleteContactCommand, BackupKeysCommand
 from ..protocol.const import (
     MSG_TTL_DEFAULT, MSG_TTL_MAX, MSG_TTL_MIN, MSG_TTL_PRESETS,
     format_ttl_pt,
@@ -668,7 +669,14 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, client=None):
+        """App com Dependency Injection.
+
+        Args:
+            data_dir: diretório de dados (usado se client=None)
+            client: Client injetado; se None cria um com DI padrão
+                    (mantém compatibilidade com chamada antiga main(directory)).
+        """
         super().__init__()
         # Item 1 — startup percebido: começa escondida, mostra uma casca
         # mínima e monta o pesado em etapas (after), com a rede em thread.
@@ -679,9 +687,19 @@ class App(tk.Tk):
         except Exception:
             pass
         self.data_dir = data_dir
-        self.client = Client(data_dir)
+        # Dependency Injection: permite injetar Client mockado para testes
+        if client is not None:
+            self.client = client
+            # Garante que data_dir do app coincide com o do client
+            try:
+                self.data_dir = getattr(client, 'data_dir', data_dir)
+            except Exception:
+                pass
+        else:
+            self.client = Client(data_dir)
         self._client_started = False
         self._client_start_error = None
+        self._bind_observer_events()
         self._launch_client_start()
 
         self.title('bmchat')
@@ -734,6 +752,8 @@ class App(tk.Tk):
         self._update_checking = False
         self._update_applying = False
         self._update_auto = False
+        # Command Pattern: histórico para Undo/Redo futuro
+        self._command_history = CommandHistory()
 
         self.conv_list = _ConvListAdapter(self)
         self.chat_text = _ChatTextAdapter()
@@ -768,6 +788,57 @@ class App(tk.Tk):
         self._schedule_startup(lambda: self.after_idle(self._startup_step_build))
 
     # -------------------------------------------------- startup diferido (item 1)
+
+    def _bind_observer_events(self):
+        """Observer Pattern: GUI se registra como observer dos eventos do Client.
+
+        Cada evento emitido pelo Client via EventEmitter agenda o handling
+        no main thread (after 0). Mantém compatibilidade com polling legado
+        (queue) — observer é caminho preferencial, polling é fallback.
+        Thread-safety: after() só é seguro na main thread; fora dela
+        tenta after e, se falhar, recai no queue (polling).
+        """
+        try:
+            import threading as _threading
+
+            def _make_handler(kind):
+                def _handler(data):
+                    # data é o payload sem o kind; reconstrói tupla completa
+                    if data is None:
+                        full = (kind,)
+                    elif isinstance(data, tuple):
+                        full = (kind,) + data
+                    else:
+                        full = (kind, data)
+                    try:
+                        # Thread-safety: Tkinter só é seguro na main thread.
+                        # Se estamos na main, despacha direto; se não, deixa
+                        # o polling via ui_queue cuidar (bridge já colocou na
+                        # queue). Não chama after() de thread worker (evita
+                        # TclError / deadlock).
+                        if _threading.current_thread() is _threading.main_thread():
+                            self._dispatch_event(full)
+                        else:
+                            # Worker thread: não toca Tk; polling cuidará
+                            pass
+                    except Exception:
+                        pass
+                return _handler
+
+            for legacy_kind in App._KNOWN_UI_EVENTS:
+                try:
+                    self.client.events.on(legacy_kind, _make_handler(legacy_kind))
+                except Exception:
+                    pass
+            # Eventos tipados novos (ex.: NEW_MESSAGE) também disparam refresh
+            try:
+                from ..core.events import NEW_MESSAGE, POW_PROGRESS, CONNECTION_CHANGE
+                # Já cobertos via legacy; mantém para exemplificar uso tipado
+                _ = (NEW_MESSAGE, POW_PROGRESS, CONNECTION_CHANGE)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _start_client_bg(self):
         try:
@@ -2567,9 +2638,31 @@ class App(tk.Tk):
         self._collect_contact_convs()
         self._collect_sub_convs()
         self._collect_chan_convs()
-        if self._conv_selected is not None and \
-                self._conv_selected >= len(self._conv_meta):
-            self._conv_selected = None
+        # Sincroniza seleção com a conversa atual (evita header/lista
+        # dessincronizados — ex.: abrir SUPORTE mas lista destacar teste).
+        try:
+            cur = getattr(self, 'current_address', None)
+            if cur:
+                found = None
+                for idx, (_k, _a) in enumerate(self._conv_meta):
+                    if _a == cur:
+                        found = idx
+                        break
+                if found is not None:
+                    self._conv_selected = found
+                elif self._conv_selected is not None and \
+                        self._conv_selected >= len(self._conv_meta):
+                    self._conv_selected = None
+            elif self._conv_selected is not None and \
+                    self._conv_selected >= len(self._conv_meta):
+                self._conv_selected = None
+        except Exception:
+            try:
+                if self._conv_selected is not None and \
+                        self._conv_selected >= len(self._conv_meta):
+                    self._conv_selected = None
+            except Exception:
+                pass
         self._draw_conversations()
 
     def _unread_for(self, address):
@@ -2591,16 +2684,177 @@ class App(tk.Tk):
         except Exception:
             return {}
 
-    def _last_message_row(self, address):
+    def _conversation_identity(self):
+        """Identidade atual para isolar DMs (evita vazamento entre contatos)."""
         try:
-            rows = self.client.db.query(
-                'SELECT body, timestamp FROM messages WHERE '
-                'to_address=? OR from_address=? '
-                'ORDER BY timestamp DESC, id DESC LIMIT 1',
-                (address, address))
+            ident = self._current_identity()
+            if ident and ident in getattr(self.client, 'identities', {}):
+                return ident
+            # Fallback: primeira identidade disponível
+            addrs = list(getattr(self.client, 'identities', {}).keys())
+            return addrs[0] if addrs else ''
         except Exception:
-            return None
-        return rows[0] if rows else None
+            return ''
+
+    def _chat_rows_for(self, kind, address, limit):
+        """Busca mensagens isoladas por par (contato, identidade).
+
+        - channel: mantém OR (broadcast: to==canal OR from==canal).
+        - contact self (address é identidade): usa self-loop (address, address)
+          para nunca vazar outbound para outros (ex.: diagnóstico).
+        - contact normal: usa messages_for_dm(contact, identity) para não vazar.
+        - Fallback: se DM vazio mas OR tem mensagens (ex.: mensagem de identidade
+          antiga), mostra OR para nunca exibir conversa vazia (evita SUPORTE vazio).
+        """
+        def _or_rows():
+            try:
+                return self.client.db.messages_for_conversation(address, limit=limit)
+            except TypeError:
+                rows = self.client.db.messages_for_conversation(address)
+                return rows[-limit:] if limit else rows
+            except Exception:
+                return []
+        # Self-chat: contato é uma das identidades → loopback estrito
+        try:
+            if kind == 'contact' and address in getattr(self.client, 'identities', {}):
+                try:
+                    rows = self.client.db.messages_for_dm(address, address, limit=limit)
+                except AttributeError:
+                    rows = self.client.db.messages_for_contact(address, address)
+                    if limit:
+                        rows = rows[-limit:]
+                if not rows:
+                    try:
+                        fallback = _or_rows()
+                        if fallback:
+                            # Filtra fallback para self-loop apenas
+                            fallback = [r for r in fallback if r.get('from_address')==address and r.get('to_address')==address]
+                            if fallback:
+                                return fallback[-limit:] if limit else fallback
+                    except Exception:
+                        pass
+                return rows
+        except Exception:
+            pass
+        try:
+            if kind == 'channel':
+                return _or_rows()
+            ident = self._conversation_identity()
+            if ident:
+                try:
+                    rows = self.client.db.messages_for_dm(address, ident, limit=limit)
+                except AttributeError:
+                    rows = self.client.db.messages_for_contact(address, ident)
+                    if limit:
+                        rows = rows[-limit:]
+                except TypeError:
+                    rows = self.client.db.messages_for_contact(address, ident)
+                    rows = rows[-limit:] if limit else rows
+                # Nunca vazio quando há mensagens: fallback para OR
+                if not rows:
+                    try:
+                        fallback = _or_rows()
+                        if fallback:
+                            return fallback
+                    except Exception:
+                        pass
+                return rows
+            return _or_rows()
+        except TypeError:
+            return _or_rows()
+        except Exception:
+            try:
+                return _or_rows()
+            except Exception:
+                return []
+
+    def _count_for(self, kind, address):
+        def _or_count():
+            try:
+                cnt = self.client.db.query(
+                    'SELECT COUNT(*) AS n FROM messages WHERE '
+                    'to_address=? OR from_address=?', (address, address))
+                return cnt[0]['n'] if cnt else 0
+            except Exception:
+                return 0
+        # Self-chat: conta só self-loop
+        try:
+            if kind == 'contact' and address in getattr(self.client, 'identities', {}):
+                try:
+                    return self.client.db.count_for_dm(address, address)
+                except AttributeError:
+                    pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if kind == 'channel':
+                return _or_count()
+            ident = self._conversation_identity()
+            if ident:
+                try:
+                    n = self.client.db.count_for_dm(address, ident)
+                    # Fallback: se DM 0 mas OR tem, usa OR (nunca 0 com mensagens)
+                    if not n:
+                        alt = _or_count()
+                        return alt if alt else 0
+                    return n
+                except AttributeError:
+                    pass
+            return _or_count()
+        except Exception:
+            return 0
+
+    def _last_message_row(self, address, kind=None):
+        # Se kind não informado, tenta descobrir via _conv_meta
+        if kind is None:
+            try:
+                for k, a in getattr(self, '_conv_meta', []):
+                    if a == address:
+                        kind = k
+                        break
+            except Exception:
+                kind = None
+        def _or_last():
+            try:
+                rows = self.client.db.query(
+                    'SELECT body, timestamp FROM messages WHERE '
+                    'to_address=? OR from_address=? '
+                    'ORDER BY timestamp DESC, id DESC LIMIT 1',
+                    (address, address))
+            except Exception:
+                return None
+            return rows[0] if rows else None
+        # Self-chat: preview só self-loop
+        try:
+            if kind == 'contact' and address in getattr(self.client, 'identities', {}):
+                try:
+                    last = self.client.db.last_message_for_dm(address, address)
+                    if last:
+                        return last
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if kind == 'contact' or (kind is None and getattr(self, '_conversation_identity', None)):
+                ident = self._conversation_identity()
+                if ident:
+                    try:
+                        last = self.client.db.last_message_for_dm(address, ident)
+                        # Fallback: se DM vazio mas OR tem, usa OR
+                        if last:
+                            return last
+                        return _or_last()
+                    except AttributeError:
+                        pass
+            return _or_last()
+        except Exception:
+            try:
+                return _or_last()
+            except Exception:
+                return None
 
     def _last_message_for(self, address):
         last = self._last_message_row(address)
@@ -2681,45 +2935,28 @@ class App(tk.Tk):
         return fitted
 
     def _preview_map(self):
-        """Preview da última mensagem de cada conversa em 1 query (item 3).
+        """Preview da última mensagem de cada conversa.
 
-        Um GROUP BY sobre MAX(timestamp) por par + join busca corpo/timestamp
-        das mensagens mais recentes de todas as conversas de uma vez (sem
-        N×LIMIT 1). Empates de timestamp usam o maior id — a mesma semântica
-        de _last_message_row (ORDER BY timestamp DESC, id DESC LIMIT 1).
-        Retorna {address: (preview, clock)} com o mesmo formato de
-        _last_message_for.
+        Isolado por par (contato, identidade) para DMs — evita que
+        diagnóstico ao SUPORTE apareça como preview de self-chat.
+        Canais mantêm OR. Implementado por conversa (N pequeno) para
+        garantir isolamento correto.
         """
-        addresses = [address for _kind, address in self._conv_meta]
-        if not addresses:
+        if not getattr(self, '_conv_meta', None):
             return {}
+        result = {}
         try:
-            addrset = set(addresses)
-            marks = ','.join('?' for _ in addresses)
-            peer_expr = ('CASE WHEN from_address IN (%s) THEN from_address '
-                         'ELSE to_address END' % marks)
-            rows = self.client.db.query(
-                'SELECT m.from_address AS fa, m.to_address AS ta, '
-                'm.body AS body, m.timestamp AS timestamp, m.id AS mid '
-                'FROM messages m INNER JOIN ('
-                'SELECT %s AS peer, MAX(timestamp) AS mts FROM messages '
-                'WHERE from_address IN (%s) OR to_address IN (%s) '
-                'GROUP BY peer) latest '
-                'ON %s = latest.peer AND m.timestamp = latest.mts'
-                % (peer_expr, marks, marks, peer_expr),
-                tuple(addresses) * 4)
-        except Exception:
-            return {}
-        try:
-            best = {}
-            for row in rows:
-                peer = row['fa'] if row['fa'] in addrset else row['ta']
-                if peer not in best or row['mid'] > best[peer]['mid']:
-                    best[peer] = row
-            result = {}
-            for peer, row in best.items():
-                body = (row['body'] or '').replace('\n', ' ').strip()
-                result[peer] = (body, _clock(row['timestamp']))
+            for kind, address in self._conv_meta:
+                try:
+                    last = self._last_message_row(address, kind=kind)
+                    if not last:
+                        continue
+                    body = (last.get('body') if isinstance(last, dict) else last['body'] or '')
+                    body = (body or '').replace('\n', ' ').strip()
+                    ts = last.get('timestamp') if isinstance(last, dict) else last['timestamp']
+                    result[address] = (body, _clock(ts))
+                except Exception:
+                    continue
         except Exception:
             return {}
         return result
@@ -2953,7 +3190,27 @@ class App(tk.Tk):
             'O contato é mantido.' % label)
         if not ok:
             return
-        self.client.db.delete_conversation(address)
+        # Seguro para self-chat: apaga só o par, não tudo da identidade
+        try:
+            if kind == 'contact':
+                ident = self._conversation_identity()
+                if ident:
+                    try:
+                        if address in getattr(self.client, 'identities', {}):
+                            self.client.db.delete_self_conversation(address)
+                        else:
+                            self.client.db.delete_dm_conversation(address, ident)
+                    except AttributeError:
+                        self.client.db.delete_conversation(address)
+                else:
+                    self.client.db.delete_conversation(address)
+            else:
+                self.client.db.delete_conversation(address)
+        except Exception:
+            try:
+                self.client.db.delete_conversation(address)
+            except Exception:
+                pass
         if getattr(self, 'current_address', None) == address:
             self._show_welcome()
         else:
@@ -2979,7 +3236,12 @@ class App(tk.Tk):
                 'Remover %s dos contatos e apagar a conversa?' % label)
             if not ok:
                 return
-            self.client.remove_contact(address)
+            # Command Pattern: encapsula remoção
+            cmd = DeleteContactCommand(self.client, address)
+            status, error = self._command_history.execute(cmd)
+            if status not in ('success',):
+                dialogs.warn(self, 'Remover contato', error or status)
+                return
         if getattr(self, 'current_address', None) == address:
             self._show_welcome()
         else:
@@ -3070,10 +3332,30 @@ class App(tk.Tk):
         else:
             label, status = self._fallback_header(address)
         self._paint_chat_header(address, label, status)
-        self.client.db.execute(
-            "UPDATE messages SET status='read' WHERE "
-            "(from_address=? OR to_address=?) AND status='received'",
-            (address, address))
+        # Marca como lidas só as do par (evita marcar tudo em self-chat)
+        try:
+            if kind == 'contact':
+                ident = self._conversation_identity()
+                if ident:
+                    try:
+                        self.client.db.mark_dm_read(address, ident)
+                    except AttributeError:
+                        self.client.db.execute(
+                            "UPDATE messages SET status='read' WHERE "
+                            "(from_address=? OR to_address=?) AND status='received'",
+                            (address, address))
+                else:
+                    self.client.db.execute(
+                        "UPDATE messages SET status='read' WHERE "
+                        "(from_address=? OR to_address=?) AND status='received'",
+                        (address, address))
+            else:
+                self.client.db.execute(
+                    "UPDATE messages SET status='read' WHERE "
+                    "(from_address=? OR to_address=?) AND status='received'",
+                    (address, address))
+        except Exception:
+            pass
         self._stick_bottom = True
         self._reload_chat()
         self._refresh_conversations()
@@ -3177,19 +3459,22 @@ class App(tk.Tk):
     def _reload_chat(self):
         if getattr(self, 'current_address', None):
             limit = int(getattr(self, '_chat_limit', 200) or 200)
+            kind = getattr(self, 'current_kind', 'contact')
             try:
-                self._chat_rows = self.client.db.messages_for_conversation(
-                    self.current_address, limit=limit)
-            except TypeError:
-                rows = self.client.db.messages_for_conversation(
-                    self.current_address)
-                self._chat_rows = rows[-limit:]
+                self._chat_rows = self._chat_rows_for(
+                    kind, self.current_address, limit)
+            except Exception:
+                try:
+                    self._chat_rows = self.client.db.messages_for_conversation(
+                        self.current_address, limit=limit)
+                except TypeError:
+                    rows = self.client.db.messages_for_conversation(
+                        self.current_address)
+                    self._chat_rows = rows[-limit:]
             try:
-                cnt = self.client.db.query(
-                    'SELECT COUNT(*) AS n FROM messages WHERE '
-                    'to_address=? OR from_address=?',
-                    (self.current_address, self.current_address))
-                total = cnt[0]['n'] if cnt else len(self._chat_rows)
+                total = self._count_for(kind, self.current_address)
+                if not total:
+                    total = len(self._chat_rows)
             except Exception:
                 total = len(self._chat_rows)
             self._chat_has_more = total > len(self._chat_rows)
@@ -4475,8 +4760,9 @@ class App(tk.Tk):
             return
         self.input_var.set('')
         self._set_placeholder()
-        status, error = self.client.send_message(
-            identity, self.current_address, '', body)
+        # Command Pattern: encapsula envio em objeto Command
+        cmd = SendMessageCommand(self.client, identity, self.current_address, body)
+        status, error = self._command_history.execute(cmd)
         if status != 'success':
             dialogs.warn(self, 'Erro', error or status)
 
@@ -4591,6 +4877,20 @@ class App(tk.Tk):
         result = dialogs.ask_simple(self, 'Novo contato', ['label', 'address'])
         if not result or not result.get('address'):
             return
+        addr = (result.get('address') or '').strip()
+        # Avisa self-chat: contato == própria identidade mistura histórico
+        # se o filtro for OR (agora isolado, mas avisa para evitar confusão)
+        try:
+            if addr and addr in getattr(self.client, 'identities', {}):
+                ok = dialogs.confirm(
+                    self, 'Contato é sua identidade',
+                    'Este endereço é uma das suas identidades. Conversas com '
+                    'você mesmo mostram SÓ mensagens para você mesmo (não o '
+                    'histórico com outros contatos). Criar mesmo assim?')
+                if not ok:
+                    return
+        except Exception:
+            pass
         status, _version = self.client.add_contact(
             result['address'], result.get('label') or None)
         if status == 'success':
@@ -4628,8 +4928,10 @@ class App(tk.Tk):
             self._import_keys_dat_file()
             return
         address = addresses[index]
-        data = self.client.export_identity(address)
-        if data is None:
+        # Command Pattern: backup via objeto Command
+        cmd = BackupKeysCommand(self.client, address, format='wif')
+        status, data = self._command_history.execute(cmd)
+        if status != 'success' or data is None:
             dialogs.warn(self, 'Backup',
                          'Chaves indisponíveis para esta identidade.')
             return
@@ -5993,6 +6295,11 @@ class App(tk.Tk):
             self.client.stop()
         except Exception:
             pass
+        # Observer Pattern: limpa listeners para evitar memory leak
+        try:
+            self.client.events.clear()
+        except Exception:
+            pass
 
     def _on_close(self):
         # Item 6: flag + cancela poll/tick/redraws/debounces/startup para
@@ -6009,6 +6316,12 @@ class App(tk.Tk):
             pass
 
 
-def main(data_dir):
-    app = App(data_dir)
+def main(data_dir, client=None):
+    """Entry point com Dependency Injection.
+
+    Args:
+        data_dir: diretório de dados
+        client: Client opcional injetado (para testes / DI manual)
+    """
+    app = App(data_dir, client=client)
     app.mainloop()

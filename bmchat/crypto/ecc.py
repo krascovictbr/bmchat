@@ -80,9 +80,13 @@ def ecdh_x(private, point):
 
 
 def sign_data(private, data):
+    if len(private) != 32:
+        raise ValueError('chave privada deve ter 32 bytes')
+    scalar = int.from_bytes(private, 'big')
+    if not 1 <= scalar < ORDER:
+        raise ValueError('chave privada fora do intervalo')
     from ecdsa import SigningKey
-    sk = SigningKey.from_secret_exponent(
-        int.from_bytes(private, 'big'), curve=SECP256k1)
+    sk = SigningKey.from_secret_exponent(scalar, curve=SECP256k1)
     # DER, como o OpenSSL do PyBitmessage: é o único formato que a rede aceita
     signature = sk.sign(
         data, hashfunc=hashlib.sha256, sigencode=sigencode_der)
@@ -94,8 +98,11 @@ def verify_signature(public, signature, data):
     if isinstance(public, bytes) and len(public) == 65 and \
             public[:1] == b'\x04':
         public = public[1:]
-    if len(signature) < 64:
+    # DER mínimo 8 bytes; 64 é para raw, mas DER pode ser 70-72
+    if len(signature) < 8:
         return False
+    # Mitiga maleabilidade: rejeita S na metade superior (low-S)
+    # Só para DER; raw já é validado pela curva
     try:
         vk = VerifyingKey.from_string(public, curve=SECP256k1)
     except Exception:
@@ -105,6 +112,16 @@ def verify_signature(public, signature, data):
         try:
             if vk.verify(signature, data, hashfunc=hashlib.sha256,
                          sigdecode=decoder):
+                # low-S check para DER
+                if decoder is sigdecode_der:
+                    # decodifica s e verifica low-S
+                    try:
+                        from ecdsa.util import sigdecode_der as _dder
+                        r, s = _dder(signature, ORDER)
+                        if s > ORDER // 2:
+                            continue
+                    except Exception:
+                        pass
                 return True
         except Exception:
             continue

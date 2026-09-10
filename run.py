@@ -3,7 +3,47 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from bmchat.core.client import Client
+from bmchat.core.database import Database
+from bmchat.crypto.pow.standard import StandardPoWStrategy
+from bmchat.net.manager import NetworkManager
+from bmchat.net.mock import MockNetworkManager
+from bmchat.protocol.factory import ProtocolObjectFactory
 from bmchat.gui.app import main
+
+
+def create_client(data_dir, use_mock_net: bool = False) -> Client:
+    """Factory com Dependency Injection — cria Client com todas as dependências.
+
+    Centraliza a criação do grafo de objetos (Database, Repositories,
+    Factory, Strategy, NetworkManager) para facilitar testes e substituição
+    de implementações (ex.: MockNetworkManager).
+
+    Args:
+        data_dir: diretório de dados
+        use_mock_net: se True injeta MockNetworkManager (para testes)
+
+    Returns:
+        Client totalmente configurado
+    """
+    db = Database(data_dir)
+    pow_strategy = StandardPoWStrategy()
+    protocol_factory = ProtocolObjectFactory()
+    # Repositories são criados dentro do Client; mas poderiam ser injetados aqui:
+    #   msg_repo = MessageRepository(db) etc.
+    if use_mock_net:
+        # Injeta mock sem I/O de rede real
+        net = MockNetworkManager(data_dir, db, on_object=None, on_log=None)
+    else:
+        net = NetworkManager(data_dir, db, on_object=None, on_log=None)
+    client = Client(
+        data_dir,
+        pow_strategy=pow_strategy,
+        network_manager=net,
+        db=db,
+        protocol_factory=protocol_factory,
+    )
+    return client
 
 
 def _ensure_writable_dir(path):
@@ -50,4 +90,8 @@ if __name__ == '__main__':
             os.path.abspath(os.path.expanduser(raw.strip())))
     else:
         directory = data_dir_default()
-    main(directory)
+    # Dependency Injection: cria o grafo completo e injeta no App
+    # Em produção usa implementação real; em testes pode usar Mock
+    use_mock = os.environ.get('BMCHAT_MOCK_NET') == '1'
+    client = create_client(directory, use_mock_net=use_mock)
+    main(directory, client=client)
