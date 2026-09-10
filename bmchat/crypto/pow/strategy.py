@@ -5,6 +5,7 @@ cálculo do PoW do cliente. Permite trocar implementações
 (Standard, Mock, etc.) via injeção de dependência sem alterar o
 Client.
 """
+
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 

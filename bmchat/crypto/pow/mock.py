@@ -3,6 +3,7 @@
 Retorna um nonce válido sem queimar CPU multi-core. Útil para
 suítes de teste que precisam validar fluxo sem esperar segundos.
 """
+
 import hashlib
 import time
 
@@ -11,10 +12,10 @@ from .strategy import PoWStrategy
 
 def _pow_value_for_nonce(nonce: int, initial_hash: bytes) -> int:
     """Calcula pow_value para um nonce candidato (double SHA512)."""
-    buf = nonce.to_bytes(8, 'big') + initial_hash
+    buf = nonce.to_bytes(8, "big") + initial_hash
     inner = hashlib.sha512(buf)
     h = hashlib.sha512(inner.digest())
-    return int.from_bytes(h.digest()[:8], 'big')
+    return int.from_bytes(h.digest()[:8], "big")
 
 
 class MockPoWStrategy(PoWStrategy):
@@ -44,13 +45,13 @@ class MockPoWStrategy(PoWStrategy):
         stop_event=None,
     ) -> int:
         if len(initial_hash) != 64:
-            raise ValueError('initial_hash deve ter 64 bytes')
+            raise ValueError("initial_hash deve ter 64 bytes")
         nonce = start_nonce
         tries = 0
         begin = time.time()
         while tries < self.max_tries:
             if stop_event is not None and stop_event.is_set():
-                raise RuntimeError('proof of work interrompido')
+                raise RuntimeError("proof of work interrompido")
             if _pow_value_for_nonce(nonce, initial_hash) <= target:
                 self.tried = tries + 1
                 if progress_cb:
@@ -67,7 +68,7 @@ class MockPoWStrategy(PoWStrategy):
             if progress_cb:
                 progress_cb(tries, 0.0)
             return start_nonce
-        raise RuntimeError('mock: não encontrou nonce em %d tentativas (target=%r)' % (self.max_tries, target))
+        raise RuntimeError("mock: não encontrou nonce em %d tentativas (target=%r)" % (self.max_tries, target))
 
     def get_difficulty(self) -> int:
         return 0

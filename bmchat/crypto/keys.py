@@ -1,7 +1,12 @@
 import os
 
 from ..util import (
-    encode_varint, double_sha512, sha512, ripemd160, encode_base58, decode_base58,
+    encode_varint,
+    double_sha512,
+    sha512,
+    ripemd160,
+    encode_base58,
+    decode_base58,
     double_sha256,
 )
 from ..protocol.address import encode_address, decode_address
@@ -10,10 +15,18 @@ from . import ecc
 
 class AddressKeys:
     __slots__ = (
-        'version', 'stream', 'ripe', 'address', 'signing_private',
-        'encryption_private', 'signing_public', 'encryption_public',
-        'tag', 'encryption_private_from_address',
-        'nonce_trials_per_byte', 'payload_length_extra_bytes',
+        "version",
+        "stream",
+        "ripe",
+        "address",
+        "signing_private",
+        "encryption_private",
+        "signing_public",
+        "encryption_public",
+        "tag",
+        "encryption_private_from_address",
+        "nonce_trials_per_byte",
+        "payload_length_extra_bytes",
     )
 
     def __init__(self):
@@ -33,13 +46,13 @@ class AddressKeys:
     @classmethod
     def from_private_keys(cls, signing_private, encryption_private, stream=1):
         if len(signing_private) != 32 or len(encryption_private) != 32:
-            raise ValueError('chaves privadas devem ter 32 bytes')
+            raise ValueError("chaves privadas devem ter 32 bytes")
         try:
             stream = int(stream)
         except Exception:
             stream = 1
         if stream < 1:
-            raise ValueError('stream inválido')
+            raise ValueError("stream inválido")
         obj = cls()
         obj.version = 4
         obj.stream = stream
@@ -55,21 +68,20 @@ class AddressKeys:
     @classmethod
     def from_address(cls, address):
         status, version, stream, ripe = decode_address(address)
-        if status != 'success' or version != 4:
-            raise ValueError('somente endereços versão 4 são suportados')
+        if status != "success" or version != 4:
+            raise ValueError("somente endereços versão 4 são suportados")
         obj = cls()
         obj.version = version
         obj.stream = stream
         obj.ripe = ripe
         obj.address = address
         obj.tag = tag_of(version, stream, ripe)
-        obj.encryption_private_from_address = address_encryption_private(
-            version, stream, ripe)
+        obj.encryption_private_from_address = address_encryption_private(version, stream, ripe)
         return obj
 
     def public_encryption_point(self):
         if self.encryption_public is None:
-            raise ValueError('sem chave pública de cifragem')
+            raise ValueError("sem chave pública de cifragem")
         return ecc.decode_point_public(self.encryption_public)
 
 
@@ -78,41 +90,36 @@ def ripe_of(public_signing, public_encryption):
 
 
 def tag_of(version, stream, ripe):
-    return double_sha512(
-        encode_varint(version) + encode_varint(stream) + ripe)[32:]
+    return double_sha512(encode_varint(version) + encode_varint(stream) + ripe)[32:]
 
 
 def address_encryption_private(version, stream, ripe):
-    return double_sha512(
-        encode_varint(version) + encode_varint(stream) + ripe)[:32]
+    return double_sha512(encode_varint(version) + encode_varint(stream) + ripe)[:32]
 
 
 def chan_keys_from_name(name, stream=1):
     if not isinstance(name, str) or not name.strip():
-        raise ValueError('nome do canal inválido')
-    passphrase = name.encode('utf-8')
+        raise ValueError("nome do canal inválido")
+    passphrase = name.encode("utf-8")
     signing_nonce, encryption_nonce = 0, 1
     for _ in range(1000000):
-        signing_private = sha512(
-            passphrase + encode_varint(signing_nonce))[:32]
-        encryption_private = sha512(
-            passphrase + encode_varint(encryption_nonce))[:32]
+        signing_private = sha512(passphrase + encode_varint(signing_nonce))[:32]
+        encryption_private = sha512(passphrase + encode_varint(encryption_nonce))[:32]
         signing_public = ecc.point_mult(signing_private)
         encryption_public = ecc.point_mult(encryption_private)
-        if ripe_of(signing_public, encryption_public)[:1] == b'\x00':
-            return AddressKeys.from_private_keys(
-                signing_private, encryption_private, stream)
+        if ripe_of(signing_public, encryption_public)[:1] == b"\x00":
+            return AddressKeys.from_private_keys(signing_private, encryption_private, stream)
         signing_nonce += 2
         encryption_nonce += 2
-    raise RuntimeError('canal não derivável (limite excedido)')
+    raise RuntimeError("canal não derivável (limite excedido)")
 
 
 def generate_keys(stream=1, nullprefix=1, max_tries=1000000):
     if nullprefix < 0 or nullprefix > 20:
-        raise ValueError('nullprefix inválido')
+        raise ValueError("nullprefix inválido")
     if nullprefix > 4:
-        raise ValueError('nullprefix grande demais (travamento)')
-    target = b'\x00' * nullprefix
+        raise ValueError("nullprefix grande demais (travamento)")
+    target = b"\x00" * nullprefix
     for _ in range(max_tries):
         signing_private = os.urandom(32)
         encryption_private = os.urandom(32)
@@ -120,32 +127,31 @@ def generate_keys(stream=1, nullprefix=1, max_tries=1000000):
         encryption_public = ecc.point_mult(encryption_private)
         ripe = ripe_of(signing_public, encryption_public)
         if ripe.startswith(target):
-            result = AddressKeys.from_private_keys(
-                signing_private, encryption_private, stream)
+            result = AddressKeys.from_private_keys(signing_private, encryption_private, stream)
             if encode_address(4, stream, ripe) == result.address:
                 return result
-    raise RuntimeError('não foi possível gerar chaves (limite excedido)')
+    raise RuntimeError("não foi possível gerar chaves (limite excedido)")
 
 
 def wif_encode(private):
     if len(private) != 32:
-        raise ValueError('chave privada deve ter 32 bytes')
-    scalar = int.from_bytes(private, 'big')
+        raise ValueError("chave privada deve ter 32 bytes")
+    scalar = int.from_bytes(private, "big")
     if not 1 <= scalar < ecc.ORDER:
-        raise ValueError('chave privada fora do intervalo')
-    data = b'\x80' + private
+        raise ValueError("chave privada fora do intervalo")
+    data = b"\x80" + private
     return encode_base58(data + double_sha256(data)[:4])
 
 
 def wif_decode(wif):
     raw = decode_base58(wif)
     if len(raw) != 37 or raw[0] != 0x80:
-        raise ValueError('WIF inválido')
+        raise ValueError("WIF inválido")
     payload, checksum = raw[:-4], raw[-4:]
     if double_sha256(payload)[:4] != checksum:
-        raise ValueError('WIF checksum inválido')
+        raise ValueError("WIF checksum inválido")
     private = raw[1:-4]
-    scalar = int.from_bytes(private, 'big')
+    scalar = int.from_bytes(private, "big")
     if not 1 <= scalar < ecc.ORDER:
-        raise ValueError('WIF: chave privada fora do intervalo')
+        raise ValueError("WIF: chave privada fora do intervalo")
     return private

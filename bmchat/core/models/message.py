@@ -2,6 +2,7 @@
 
 Encapsula dados da mensagem e delega comportamento ao estado atual.
 """
+
 from typing import Any
 
 from .states import MessageState, get_state_class
@@ -18,17 +19,17 @@ class Message:
     def __init__(self, row: dict[str, Any], client=None):
         self._row = dict(row)
         self.client = client
-        self.id: int | None = row.get('id')
-        self.from_address: str | None = row.get('from_address')
-        self.to_address: str | None = row.get('to_address')
-        self.subject: str = row.get('subject') or ''
-        self.body: str = row.get('body') or ''
-        self.encoding: int = row.get('encoding') or 1
-        self.timestamp: int = row.get('timestamp') or 0
-        self.direction: str = row.get('direction') or 'out'
-        self.status: str = row.get('status') or 'pending'
-        self.expires: int | None = row.get('expires')
-        self.ttl: int | None = row.get('ttl')
+        self.id: int | None = row.get("id")
+        self.from_address: str | None = row.get("from_address")
+        self.to_address: str | None = row.get("to_address")
+        self.subject: str = row.get("subject") or ""
+        self.body: str = row.get("body") or ""
+        self.encoding: int = row.get("encoding") or 1
+        self.timestamp: int = row.get("timestamp") or 0
+        self.direction: str = row.get("direction") or "out"
+        self.status: str = row.get("status") or "pending"
+        self.expires: int | None = row.get("expires")
+        self.ttl: int | None = row.get("ttl")
         # Instancia estado correspondente
         self._state: MessageState = get_state_class(self.status)(self)
 
@@ -40,7 +41,7 @@ class Message:
     def state_name(self) -> str:
         return self._state.name
 
-    def transition_to(self, new_status: str, persist: bool = False) -> bool:
+    def transition_to(self, new_status: str, persist: bool = False) -> bool:  # noqa: C901
         """Transita para novo estado se permitido (State Pattern).
 
         Valida transição via ``can_transition_to``; se inválida, não
@@ -59,7 +60,7 @@ class Message:
             return True
         cls = get_state_class(new_status)
         # Verifica permissão; novos estados podem ser forçados
-        allowed = self._state.can_transition_to(new_status) or new_status in ('cancelled', 'expired')
+        allowed = self._state.can_transition_to(new_status) or new_status in ("cancelled", "expired")
         if not allowed:
             # Transição inválida: não altera (previne corrupção)
             return False
@@ -70,7 +71,7 @@ class Message:
         new_state = cls(self)
         self._state = new_state
         self.status = new_status
-        self._row['status'] = new_status
+        self._row["status"] = new_status
         try:
             new_state.on_enter()
         except Exception:
@@ -78,7 +79,7 @@ class Message:
         if persist and self.client is not None and self.id is not None:
             try:
                 # Persiste via repositório se disponível, senão via db direto
-                repo = getattr(self.client, 'message_repo', None)
+                repo = getattr(self.client, "message_repo", None)
                 if repo is not None:
                     repo.set_status(self.id, new_status)
                 else:
@@ -101,25 +102,25 @@ class Message:
     # -- helpers --
 
     def is_outgoing(self) -> bool:
-        return self.direction == 'out'
+        return self.direction == "out"
 
     def is_incoming(self) -> bool:
-        return self.direction == 'in'
+        return self.direction == "in"
 
     def is_pending(self) -> bool:
-        return self.status in ('pending', 'awaiting-pubkey', 'sending')
+        return self.status in ("pending", "awaiting-pubkey", "sending")
 
     def is_delivered(self) -> bool:
-        return self.status in ('delivered', 'ackreceived', 'received', 'read')
+        return self.status in ("delivered", "ackreceived", "received", "read")
 
     def is_failed(self) -> bool:
-        return self.status in ('failed', 'ack-failed')
+        return self.status in ("failed", "ack-failed")
 
     def to_dict(self) -> dict:
         return dict(self._row)
 
     def __repr__(self) -> str:
-        return '<Message id=%s status=%s state=%s>' % (self.id, self.status, self.state_name)
+        return "<Message id=%s status=%s state=%s>" % (self.id, self.status, self.state_name)
 
     # Compat: permite acesso como dict (row['status'])
     def __getitem__(self, key):

@@ -1,4 +1,5 @@
 """SendMessageCommand — Command Pattern para envio de mensagem."""
+
 from .base import Command
 
 
@@ -14,43 +15,44 @@ class SendMessageCommand(Command):
         encoding: encoding Bitmessage (padrão TRIVIAL)
     """
 
-    def __init__(self, client, from_address: str, to_address: str, body: str,
-                 subject: str = '', encoding: int | None = None):
+    def __init__(
+        self, client, from_address: str, to_address: str, body: str, subject: str = "", encoding: int | None = None
+    ):
         super().__init__(client)
         self.from_address = from_address
         self.to_address = to_address
-        self.body = body or ''
-        self.subject = subject or ''
+        self.body = body or ""
+        self.subject = subject or ""
         self.encoding = encoding
         self._message_id: int | None = None
 
     def can_execute(self):
         if not self.from_address or not self.to_address:
-            return False, 'identidade ou destino ausente'
-        if self.from_address not in getattr(self.client, 'identities', {}):
-            return False, 'identidade de origem não encontrada'
+            return False, "identidade ou destino ausente"
+        if self.from_address not in getattr(self.client, "identities", {}):
+            return False, "identidade de origem não encontrada"
         # Validação de tamanho reutiliza lógica do Client
         try:
-            body = self.body or ''
-            wire = ('Subject: %s\n\n%s' % (self.subject, body)) if self.subject.strip() else body
+            body = self.body or ""
+            wire = ("Subject: %s\n\n%s" % (self.subject, body)) if self.subject.strip() else body
             if self.client._wire_too_large(wire):
-                return False, 'mensagem grande demais para um objeto'
+                return False, "mensagem grande demais para um objeto"
         except Exception:
             pass
         return True, None
 
     def execute(self) -> tuple[str, str | None]:
         from ...protocol.const import BITMESSAGE_ENCODING_TRIVIAL
+
         enc = self.encoding if self.encoding is not None else BITMESSAGE_ENCODING_TRIVIAL
         # Usa send_message_with_id quando disponível (sem race de SELECT).
         # Fallback para send_message legado (2-tupla) em clients antigos/mocks.
         try:
-            fn = getattr(self.client, 'send_message_with_id', None)
+            fn = getattr(self.client, "send_message_with_id", None)
             if callable(fn):
-                status, payload = fn(
-                    self.from_address, self.to_address, self.subject, self.body, enc)
-                self._executed = status == 'success'
-                if status == 'success':
+                status, payload = fn(self.from_address, self.to_address, self.subject, self.body, enc)
+                self._executed = status == "success"
+                if status == "success":
                     # payload é message_id (int)
                     try:
                         self._message_id = int(payload) if payload is not None else None
@@ -63,24 +65,23 @@ class SendMessageCommand(Command):
                 return status, payload
         except Exception:
             pass
-        status, error = self.client.send_message(
-            self.from_address, self.to_address, self.subject, self.body, enc)
-        self._executed = status == 'success'
+        status, error = self.client.send_message(self.from_address, self.to_address, self.subject, self.body, enc)
+        self._executed = status == "success"
         self._result = (status, error)
-        if status != 'success':
+        if status != "success":
             self._error = error
         return status, error
 
     def undo(self):
         """Desfaz envio apagando a mensagem recém-criada (se ainda não enviada)."""
         if self._message_id is None:
-            return 'unsupported', 'mensagem não rastreável para undo'
+            return "unsupported", "mensagem não rastreável para undo"
         try:
             # Só desfaz se ainda está em estado pendente (não foi para sent)
             row = self.client.db.get_message(self._message_id)
-            if row and row['status'] in ('awaiting-pubkey', 'sending'):
+            if row and row["status"] in ("awaiting-pubkey", "sending"):
                 self.client.db.delete_message(self._message_id)
-                return 'success', None
-            return 'unsupported', 'mensagem já enviada (status=%s)' % (row['status'] if row else 'desconhecido')
+                return "success", None
+            return "unsupported", "mensagem já enviada (status=%s)" % (row["status"] if row else "desconhecido")
         except Exception as exc:
-            return 'error', str(exc)
+            return "error", str(exc)

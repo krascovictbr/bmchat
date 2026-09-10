@@ -3,6 +3,7 @@
 Encapsula ações da interface como objetos, permitindo
 desacoplamento, logging, validação e futuro Undo/Redo.
 """
+
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -27,7 +28,7 @@ class Command(ABC):
 
     def undo(self) -> tuple[str, Any]:
         """Desfaz o comando (opcional). Padrão: não suportado."""
-        return 'unsupported', 'undo não implementado para %s' % self.__class__.__name__
+        return "unsupported", "undo não implementado para %s" % self.__class__.__name__
 
     def can_execute(self) -> tuple[bool, str | None]:
         """Valida se comando pode ser executado. Retorna (ok, motivo)."""
@@ -46,7 +47,7 @@ class Command(ABC):
         return self._error
 
     def __repr__(self) -> str:
-        return '<%s executed=%s>' % (self.__class__.__name__, self._executed)
+        return "<%s executed=%s>" % (self.__class__.__name__, self._executed)
 
 
 class CommandHistory:
@@ -60,10 +61,10 @@ class CommandHistory:
     def execute(self, cmd: Command) -> tuple[str, Any]:
         ok, reason = cmd.can_execute()
         if not ok:
-            return 'invalid', reason
+            return "invalid", reason
         status, payload = cmd.execute()
         # Segurança: comandos sensíveis não permanecem em histórico com payload em claro
-        if getattr(cmd, 'sensitive', False):
+        if getattr(cmd, "sensitive", False):
             # Não armazena resultado sensível; limpa imediatamente
             try:
                 cmd._result = None  # type: ignore[attr-defined]
@@ -82,10 +83,10 @@ class CommandHistory:
 
     def undo(self) -> tuple[str, Any]:
         if not self._history:
-            return 'empty', 'nada para desfazer'
+            return "empty", "nada para desfazer"
         cmd = self._history.pop()
         status, payload = cmd.undo()
-        if status not in ('unsupported', 'error'):
+        if status not in ("unsupported", "error"):
             self._redo.append(cmd)
         else:
             # Se não suporta undo, devolve ao histórico
@@ -94,7 +95,7 @@ class CommandHistory:
 
     def redo(self) -> tuple[str, Any]:
         if not self._redo:
-            return 'empty', 'nada para refazer'
+            return "empty", "nada para refazer"
         cmd = self._redo.pop()
         return self.execute(cmd)
 

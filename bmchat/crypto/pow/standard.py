@@ -3,6 +3,7 @@
 Reutiliza a lógica paralela de ``PowExecutor`` (ProcessPoolExecutor
 com step 1<<20 e polling 0.4s) para resolver PoW em produção.
 """
+
 import hashlib
 import os
 import time
@@ -19,10 +20,10 @@ def _search_range(args):
     done = start
     end = start + budget
     while done < end:
-        buf[0:8] = done.to_bytes(8, 'big')
+        buf[0:8] = done.to_bytes(8, "big")
         m = hashlib.sha512(buf)
         h = hashlib.sha512(m.digest())
-        if int.from_bytes(h.digest()[:8], 'big') <= target:
+        if int.from_bytes(h.digest()[:8], "big") <= target:
             return done, done - start
         done += 1
     return None, budget
@@ -52,7 +53,7 @@ class StandardPoWStrategy(PoWStrategy):
         stop_event=None,
     ) -> int:
         if len(initial_hash) != 64:
-            raise ValueError('initial_hash deve ter 64 bytes')
+            raise ValueError("initial_hash deve ter 64 bytes")
         step = 1 << 20
         started = start_nonce
         futures: dict = {}
@@ -72,7 +73,7 @@ class StandardPoWStrategy(PoWStrategy):
             for remaining in list(futures):
                 remaining.cancel()
             pool.shutdown(wait=False, cancel_futures=True)
-        raise RuntimeError('proof of work não concluído')
+        raise RuntimeError("proof of work não concluído")
 
     def get_difficulty(self) -> int:
         return self.workers
@@ -87,6 +88,7 @@ class StandardPoWStrategy(PoWStrategy):
 
     def _poll_futures(self, pool, futures, initial_hash, target, step, begin, progress_cb, stop_event):
         import concurrent.futures
+
         done, _pending = concurrent.futures.wait(
             futures.keys(), timeout=0.4, return_when=concurrent.futures.FIRST_COMPLETED
         )

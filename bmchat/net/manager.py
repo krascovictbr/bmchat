@@ -28,13 +28,12 @@ DB_OBJECTS_MAX = 20000
 
 
 class NetworkManager:
-
     def __init__(self, data_dir, db, on_object=None, on_log=None):
         self.data_dir = data_dir
         self.db = db
         self.on_object = on_object
         self.on_log = on_log or (lambda *a, **k: None)
-        self.peers = PeerStore(os.path.join(data_dir, 'knownnodes.dat'))
+        self.peers = PeerStore(os.path.join(data_dir, "knownnodes.dat"))
         self.peers.load()
         self.proxy = self._load_proxy()
         self.inventory = {}
@@ -46,11 +45,11 @@ class NetworkManager:
         self.nonce = os.urandom(8)
         self.started_at = None
         self.stats = {
-            'objects_received': 0,
-            'objects_announced': 0,
-            'invs': 0,
-            'getdatas': 0,
-            'dial_attempts': 0,
+            "objects_received": 0,
+            "objects_announced": 0,
+            "invs": 0,
+            "getdatas": 0,
+            "dial_attempts": 0,
         }
         self._maintenance_thread = None
         # Re-download robusto (ver wipe_objects): hashes pedidos via
@@ -90,12 +89,12 @@ class NetworkManager:
         # Re-sync após wipe: pares derrubados por nós têm prioridade e
         # furam o cooldown até o re-download engrenar ou expirar.
         self.resync = {
-            'active': False,
-            'started_at': 0.0,
-            'last_progress': 0.0,
-            'removed': 0,
-            'received': 0,
-            'dropped': [],
+            "active": False,
+            "started_at": 0.0,
+            "last_progress": 0.0,
+            "removed": 0,
+            "received": 0,
+            "dropped": [],
         }
         # M3: geração evita threads de manutenção órfãs após restart.
         self._generation = 0
@@ -106,7 +105,8 @@ class NetworkManager:
 
     def _load_proxy(self):
         from ..net.proxy import ProxyProfile
-        data = self.db.get_json('proxy', {})
+
+        data = self.db.get_json("proxy", {})
         return ProxyProfile.from_dict(data)
 
     @property
@@ -130,21 +130,20 @@ class NetworkManager:
         self._load_known_hashes()
         self.streams = list(streams)
         self._maintenance_thread = threading.Thread(
-            target=self._maintenance, args=(generation,),
-            daemon=True, name='net-maintenance')
+            target=self._maintenance, args=(generation,), daemon=True, name="net-maintenance"
+        )
         self._maintenance_thread.start()
-        resolver = threading.Thread(
-            target=self._resolve_seeds, daemon=True, name='net-dnsseeds')
+        resolver = threading.Thread(target=self._resolve_seeds, daemon=True, name="net-dnsseeds")
         resolver.start()
 
     def _resolve_one_seed(self, host, port):
         """Resolve 1 hostname e mescla na loja (add dedupa por IP:porta)."""
         import socket as _socket
+
         try:
-            infos = _socket.getaddrinfo(host, port, _socket.AF_INET,
-                                        _socket.SOCK_STREAM)
+            infos = _socket.getaddrinfo(host, port, _socket.AF_INET, _socket.SOCK_STREAM)
         except Exception as exc:
-            self.on_log('network', 'semente DNS %s: %s' % (host, exc))
+            self.on_log("network", "semente DNS %s: %s" % (host, exc))
             return 0
         added = 0
         for info in infos:
@@ -153,8 +152,7 @@ class NetworkManager:
                 added += 1
             except Exception:
                 pass
-        self.on_log('network', 'semente DNS %s resolvida (%d par(es))'
-                    % (host, added))
+        self.on_log("network", "semente DNS %s resolvida (%d par(es))" % (host, added))
         return added
 
     def _resolve_timeout(self):
@@ -171,8 +169,8 @@ class NetworkManager:
                 break
             try:
                 thread = threading.Thread(
-                    target=self._resolve_one_seed, args=(host, port),
-                    daemon=True, name='net-dnsseed-%s' % host)
+                    target=self._resolve_one_seed, args=(host, port), daemon=True, name="net-dnsseed-%s" % host
+                )
                 thread.start()
             except Exception:
                 continue
@@ -198,8 +196,7 @@ class NetworkManager:
         duplicar); o join com timeout só limita a espera — worker lento
         mescla quando terminar (daemon, não trava o desligamento).
         """
-        self._join_seed_workers(
-            self._spawn_seed_workers(), self._resolve_timeout())
+        self._join_seed_workers(self._spawn_seed_workers(), self._resolve_timeout())
 
     def stop(self):
         self.running = False
@@ -209,7 +206,7 @@ class NetworkManager:
             connection.close()
         self.connections.clear()
         # M3: join da manutenção com timeout (sem travar o stop).
-        thread = getattr(self, '_maintenance_thread', None)
+        thread = getattr(self, "_maintenance_thread", None)
         if thread is not None and thread.is_alive():
             try:
                 thread.join(timeout=5)
@@ -220,7 +217,7 @@ class NetworkManager:
 
     def set_proxy(self, profile):
         self.proxy = profile
-        self.db.set_json('proxy', profile.to_dict())
+        self.db.set_json("proxy", profile.to_dict())
 
     def _maintenance(self, generation=None):
         if generation is None:
@@ -237,15 +234,15 @@ class NetworkManager:
                 self._update_resync()
                 self._maybe_periodic_refresh()
             except Exception as exc:
-                self.on_log('network', 'manutenção: %s' % exc)
+                self.on_log("network", "manutenção: %s" % exc)
             # A10: prune periódica (antes: só no startup).
             try:
                 self._prune_expired_objects()
                 self._evict_inventory_to_cap()
             except Exception as exc:
-                self.on_log('network', 'limpeza: %s' % exc)
+                self.on_log("network", "limpeza: %s" % exc)
             try:
-                interval = int(self.db.get_int('maintenance_interval', 5))
+                interval = int(self.db.get_int("maintenance_interval", 5))
             except (TypeError, ValueError):
                 interval = 5
             time.sleep(max(2, min(interval, 120)))
@@ -255,7 +252,7 @@ class NetworkManager:
         try:
             if self.inventory or self.known_hashes:
                 return False
-            return int(self.stats.get('invs', 0)) == 0
+            return int(self.stats.get("invs", 0)) == 0
         except Exception:
             return False
 
@@ -275,14 +272,11 @@ class NetworkManager:
             return
         self._last_dns_resolve = now
         try:
-            threading.Thread(
-                target=self._resolve_seeds, daemon=True,
-                name='net-dnsseeds-refresh').start()
+            threading.Thread(target=self._resolve_seeds, daemon=True, name="net-dnsseeds-refresh").start()
         except Exception:
             pass
         try:
-            self.on_log('network', 'procurando pares… (lista esgotada, '
-                        're-consultando sementes DNS)')
+            self.on_log("network", "procurando pares… (lista esgotada, re-consultando sementes DNS)")
         except Exception:
             pass
 
@@ -302,22 +296,19 @@ class NetworkManager:
             return
         self._last_periodic_dns = now
         try:
-            threading.Thread(
-                target=self._resolve_seeds, daemon=True,
-                name='net-dnsseeds-periodic').start()
+            threading.Thread(target=self._resolve_seeds, daemon=True, name="net-dnsseeds-periodic").start()
         except Exception:
             pass
         try:
-            self.on_log('network', 'atualizando lista de pares '
-                        '(re-consulta periódica às sementes DNS)…')
+            self.on_log("network", "atualizando lista de pares (re-consulta periódica às sementes DNS)…")
         except Exception:
             pass
 
     def _resync_candidates(self, current):
         with self.lock:
-            if not self.resync.get('active'):
+            if not self.resync.get("active"):
                 return []
-            dropped = list(self.resync.get('dropped') or [])
+            dropped = list(self.resync.get("dropped") or [])
         candidates = []
         for peer, _info in self.peers.prefer(dropped):
             if (peer.host, peer.port) not in current:
@@ -330,8 +321,7 @@ class NetworkManager:
             return False
         self.peers.record_attempt(peer.host, peer.port)
         try:
-            self.stats['dial_attempts'] = \
-                int(self.stats.get('dial_attempts', 0)) + 1
+            self.stats["dial_attempts"] = int(self.stats.get("dial_attempts", 0)) + 1
         except Exception:
             pass
         try:
@@ -343,8 +333,7 @@ class NetworkManager:
 
     def _max_connections(self):
         try:
-            return max(1, min(int(
-                self.db.get_int('max_connections', 8)), 50))
+            return max(1, min(int(self.db.get_int("max_connections", 8)), 50))
         except Exception:
             return 8
 
@@ -355,8 +344,7 @@ class NetworkManager:
         mortos, girar 1-a-1 por tick de 5s nunca acha o vivo)."""
         with self.lock:
             current = set(c.peer_key for c in self.connections.values())
-            established = sum(
-                1 for c in self.connections.values() if c.established)
+            established = sum(1 for c in self.connections.values() if c.established)
         need = max_connections - established
         if need <= 0:
             return current, 0
@@ -371,8 +359,7 @@ class NetworkManager:
 
     def _spawn_best(self, current, max_connections, goal, spawned):
         found = False
-        for peer, _info in self.peers.best(limit=max_connections * 4,
-                                           exclude=current):
+        for peer, _info in self.peers.best(limit=max_connections * 4, exclude=current):
             if spawned >= goal:
                 break
             found = True
@@ -395,16 +382,14 @@ class NetworkManager:
                 break
             if self._spawn_candidate(peer, current):
                 spawned += 1
-        spawned, found = self._spawn_best(
-            current, max_connections, goal, spawned)
+        spawned, found = self._spawn_best(current, max_connections, goal, spawned)
         if spawned == 0 and not found:
             # Giro esgotou a lista (só cooldown/mortos): re-DNS throttled.
             self._maybe_refresh_seeds()
 
     def _evict_connection(self, connection, reason):
         with self.lock:
-            if self.connections.get(
-                    connection.peer_key) is not connection:
+            if self.connections.get(connection.peer_key) is not connection:
                 return False
             self.connections.pop(connection.peer_key, None)
         try:
@@ -412,7 +397,7 @@ class NetworkManager:
         except Exception:
             pass
         try:
-            self.on_log('network', reason)
+            self.on_log("network", reason)
         except Exception:
             pass
         return True
@@ -422,7 +407,7 @@ class NetworkManager:
         if connection.established:
             return False
         try:
-            started = float(getattr(connection, 'started_at', now))
+            started = float(getattr(connection, "started_at", now))
         except Exception:
             return False
         try:
@@ -435,7 +420,7 @@ class NetworkManager:
         """Estabelecido que NUNCA mandou addr/inv/objeto além do limite?"""
         if not connection.established:
             return False
-        if getattr(connection, 'last_useful_at', None) is not None:
+        if getattr(connection, "last_useful_at", None) is not None:
             return False
         try:
             base = connection.connected_at or connection.started_at
@@ -452,7 +437,7 @@ class NetworkManager:
         """Progressivo: 30s já tenta outro (sem mute), 60s registra mute."""
         if not connection.established:
             return False
-        if getattr(connection, 'last_useful_at', None) is not None:
+        if getattr(connection, "last_useful_at", None) is not None:
             return False
         try:
             base = connection.connected_at or connection.started_at
@@ -482,9 +467,9 @@ class NetworkManager:
                 pass
             return self._evict_connection(
                 connection,
-                'par %s handshake sem resposta há %ds; '
-                'fechando para tentar outro…'
-                % (peer, int(now - connection.started_at)))
+                "par %s handshake sem resposta há %ds; "
+                "fechando para tentar outro…" % (peer, int(now - connection.started_at)),
+            )
         if self._established_mute(connection, now):
             try:
                 self.peers.record_mute(peer.host, peer.port)
@@ -493,14 +478,14 @@ class NetworkManager:
             base = connection.connected_at or connection.started_at
             return self._evict_connection(
                 connection,
-                'par %s silencioso há %ds (sem addr/inv/objeto); '
-                'desconectando para tentar outro…' % (peer, int(now - base)))
+                "par %s silencioso há %ds (sem addr/inv/objeto); "
+                "desconectando para tentar outro…" % (peer, int(now - base)),
+            )
         if self._established_silent_try(connection, now):
             base = connection.connected_at or connection.started_at
             return self._evict_connection(
-                connection,
-                'par %s silencioso há %ds (sem útil); '
-                'tentando outro par…' % (peer, int(now - base)))
+                connection, "par %s silencioso há %ds (sem útil); tentando outro par…" % (peer, int(now - base))
+            )
         return False
 
     def _prune_stalled(self, now):
@@ -519,12 +504,10 @@ class NetworkManager:
         if len(self.connections) <= cap:
             return
         with self.lock:
-            for connection in sorted(
-                    self.connections.values(), key=lambda c: c.started_at):
+            for connection in sorted(self.connections.values(), key=lambda c: c.started_at):
                 if len(self.connections) <= cap:
                     break
-                if self.connections.get(
-                        connection.peer_key) is not connection:
+                if self.connections.get(connection.peer_key) is not connection:
                     continue
                 self.connections.pop(connection.peer_key, None)
                 try:
@@ -541,8 +524,7 @@ class NetworkManager:
                 continue
             if not alive:
                 with self.lock:
-                    if self.connections.get(
-                            connection.peer_key) is not connection:
+                    if self.connections.get(connection.peer_key) is not connection:
                         continue
                     self.connections.pop(connection.peer_key, None)
         self._prune_stalled(time.time())
@@ -563,6 +545,7 @@ class NetworkManager:
             if key in self.connections:
                 return None
             from .peer import PeerConnection
+
             connection = PeerConnection(self, peer)
             self.connections[connection.peer_key] = connection
         connection.start()
@@ -572,7 +555,7 @@ class NetworkManager:
         self.peers.add(host, port, stream, services)
 
     def log(self, message):
-        self.on_log('network', message)
+        self.on_log("network", message)
 
     def _bump_stats(self, key):
         # M9: stats sob lock (leitores/escritores em threads distintas).
@@ -585,9 +568,9 @@ class NetworkManager:
     def _rate_limited(self, table, peer_key, limit, window):
         now = time.time()
         try:
-            key = tuple(peer_key) if peer_key is not None else ('?', 0)
+            key = tuple(peer_key) if peer_key is not None else ("?", 0)
         except Exception:
-            key = ('?', 0)
+            key = ("?", 0)
         hits = table.get(key)
         if hits is None:
             hits = []
@@ -628,8 +611,9 @@ class NetworkManager:
     @staticmethod
     def _raw_expires(raw):
         import struct as _struct
+
         try:
-            (expires,) = _struct.unpack('>Q', bytes(raw)[8:16])
+            (expires,) = _struct.unpack(">Q", bytes(raw)[8:16])
             return int(expires)
         except Exception:
             return 0
@@ -640,36 +624,34 @@ class NetworkManager:
         # e adicionava 1). Com `<`, len==MAX evicta antes de adicionar.
         if len(self.inventory) < INVENTORY_MAX:
             return
-        scored = [(self._raw_expires(raw), key)
-                  for key, raw in self.inventory.items()]
+        scored = [(self._raw_expires(raw), key) for key, raw in self.inventory.items()]
         scored.sort()
-        for _, key in scored[:max(1, count)]:
+        for _, key in scored[: max(1, count)]:
             self.inventory.pop(key, None)
 
     def _evict_inventory_to_cap(self):
         with self.lock:
             while len(self.inventory) > INVENTORY_MAX:
                 before = len(self.inventory)
-                self._evict_inventory_locked(
-                    len(self.inventory) - INVENTORY_MAX)
+                self._evict_inventory_locked(len(self.inventory) - INVENTORY_MAX)
                 if len(self.inventory) >= before:
                     break
 
     def _evict_db_to_cap(self):
         try:
-            rows = self.db.query('SELECT COUNT(*) AS n FROM objects')
-            total = int(rows[0]['n']) if rows else 0
+            rows = self.db.query("SELECT COUNT(*) AS n FROM objects")
+            total = int(rows[0]["n"]) if rows else 0
         except Exception:
             return
         if total <= DB_OBJECTS_MAX:
             return
         try:
             self.db.execute(
-                'DELETE FROM objects WHERE hash IN (SELECT hash FROM '
-                'objects ORDER BY expires ASC LIMIT ?)',
-                (total - DB_OBJECTS_MAX,))
+                "DELETE FROM objects WHERE hash IN (SELECT hash FROM objects ORDER BY expires ASC LIMIT ?)",
+                (total - DB_OBJECTS_MAX,),
+            )
         except Exception as exc:
-            self.on_log('network', 'limpeza: %s' % exc)
+            self.on_log("network", "limpeza: %s" % exc)
 
     def _parse_incoming_object(self, raw):
         try:
@@ -702,8 +684,8 @@ class NetworkManager:
         # A10: taxa de store por peer (antes: sem limite).
         source_key = self._source_key(source)
         if source_key is not None and self._rate_limited(
-                self._store_hits, source_key,
-                STORE_RATE_MAX, STORE_RATE_WINDOW):
+            self._store_hits, source_key, STORE_RATE_MAX, STORE_RATE_WINDOW
+        ):
             return None
         # HEAD: marca par como útil (evita evicção por SILENT_TIMEOUT) — holder que só recebe getdata precisa disto
         try:
@@ -717,28 +699,26 @@ class NetworkManager:
                 return obj_hash
             self.known_hashes.add(obj_hash)
         try:
-            self.db.store_object(obj_hash, raw, parsed.object_type,
-                                 parsed.version, parsed.stream,
-                                 parsed.expires)
+            self.db.store_object(obj_hash, raw, parsed.object_type, parsed.version, parsed.stream, parsed.expires)
         except Exception:
             pass
         self.store_object(raw)
-        self._bump_stats('objects_received')
+        self._bump_stats("objects_received")
         with self.lock:
             self.pending_getdata.pop(obj_hash, None)
-            if self.resync.get('active'):
-                self.resync['received'] = self.resync.get('received', 0) + 1
-                self.resync['last_progress'] = time.time()
+            if self.resync.get("active"):
+                self.resync["received"] = self.resync.get("received", 0) + 1
+                self.resync["last_progress"] = time.time()
         self._deliver_object(parsed, raw, source)
         return obj_hash
 
     @staticmethod
     def _source_key(source):
         try:
-            peer = getattr(source, 'peer', None)
+            peer = getattr(source, "peer", None)
             if peer is None:
                 return None
-            return (getattr(peer, 'host', '?'), getattr(peer, 'port', 0))
+            return (getattr(peer, "host", "?"), getattr(peer, "port", 0))
         except Exception:
             return None
 
@@ -755,18 +735,16 @@ class NetworkManager:
                 self.known_hashes.add(obj_hash)
             except Exception:
                 pass
-            return [c for c in self.connections.values()
-                    if c.established]
+            return [c for c in self.connections.values() if c.established]
 
     def announce_object(self, raw, source=None):
         # A5: passa por store_object (cap/evicção) e marca known_hashes
         # (antes furava o controle de duplicadas/inventário).
-        self._bump_stats('objects_announced')
+        self._bump_stats("objects_announced")
         obj_hash = self._store_announce_blob(raw)
         if obj_hash is None:
             return
-        targets = [c for c in self._remember_announce(obj_hash)
-                   if c is not source]
+        targets = [c for c in self._remember_announce(obj_hash) if c is not source]
         if not targets:
             return
         for connection in targets:
@@ -784,12 +762,10 @@ class NetworkManager:
 
     def _send_single_inv(self, connection, obj_hash):
         try:
-            connection.send_packet(
-                b'inv', packets.assemble_inventory([obj_hash]))
+            connection.send_packet(b"inv", packets.assemble_inventory([obj_hash]))
         except Exception as exc:
             try:
-                self.on_log('network', 'announce falhou p/ %s: %s' % (
-                    getattr(connection, 'peer', '?'), exc))
+                self.on_log("network", "announce falhou p/ %s: %s" % (getattr(connection, "peer", "?"), exc))
             except Exception:
                 pass
 
@@ -799,10 +775,9 @@ class NetworkManager:
         if not hashes:
             return
         for idx in range(0, len(hashes), 49999):
-            chunk = hashes[idx:idx + 49999]
+            chunk = hashes[idx: idx + 49999]
             try:
-                connection.send_packet(
-                    b'inv', packets.assemble_inventory(chunk))
+                connection.send_packet(b"inv", packets.assemble_inventory(chunk))
             except Exception:
                 break
 
@@ -822,23 +797,20 @@ class NetworkManager:
                         pass
             while len(self.pending_getdata) > self.MAX_PENDING:
                 try:
-                    oldest = min(self.pending_getdata.items(),
-                                 key=lambda kv: kv[1][0])[0]
+                    oldest = min(self.pending_getdata.items(), key=lambda kv: kv[1][0])[0]
                 except Exception:
                     break
                 self.pending_getdata.pop(oldest, None)
 
     def _send_getdata_chunks(self, connection, hashes):
         for i in range(0, len(hashes), 100):
-            connection.send_packet(b'getdata', packets.assemble_getdata(
-                hashes[i:i + 100]))
+            connection.send_packet(b"getdata", packets.assemble_getdata(hashes[i: i + 100]))
 
     def _collect_wanted(self, hashes):
         wanted = []
         for obj_hash in hashes:
             with self.lock:
-                known = (obj_hash in self.inventory or
-                         obj_hash in self.known_hashes)
+                known = obj_hash in self.inventory or obj_hash in self.known_hashes
             if known:
                 continue
             wanted.append(obj_hash)
@@ -848,11 +820,11 @@ class NetworkManager:
 
     def _should_delay_getdata(self, connection):
         try:
-            if getattr(connection, 'sock', None) is None:
+            if getattr(connection, "sock", None) is None:
                 return False
-            base = getattr(connection, 'connected_at', None)
+            base = getattr(connection, "connected_at", None)
             if base is None:
-                base = getattr(connection, 'started_at', None)
+                base = getattr(connection, "started_at", None)
             if base is None:
                 return False
             return time.time() - float(base) < 1.5
@@ -869,17 +841,18 @@ class NetworkManager:
                     cur = self.connections.get(connection.peer_key)
                     if cur is not connection or not cur.established:
                         return
-                    still = [h for h in hashes
-                             if h in self.pending_getdata
-                             and h not in self.inventory
-                             and h not in self.known_hashes]
+                    still = [
+                        h
+                        for h in hashes
+                        if h in self.pending_getdata and h not in self.inventory and h not in self.known_hashes
+                    ]
                 if still:
                     self._send_getdata_chunks(connection, still)
             except Exception:
                 pass
+
         try:
-            threading.Thread(target=_delayed, daemon=True,
-                             name='net-getdata-delay').start()
+            threading.Thread(target=_delayed, daemon=True, name="net-getdata-delay").start()
         except Exception:
             try:
                 self._send_getdata_chunks(connection, hashes)
@@ -887,11 +860,10 @@ class NetworkManager:
                 pass
 
     def on_inv(self, connection, payload):
-        self._bump_stats('invs')
+        self._bump_stats("invs")
         # A9: rate por peer + cap de wanted (~1000).
         peer_key = self._peer_key(connection)
-        if peer_key is not None and self._rate_limited(
-                self._inv_hits, peer_key, INV_RATE_MAX, INV_RATE_WINDOW):
+        if peer_key is not None and self._rate_limited(self._inv_hits, peer_key, INV_RATE_MAX, INV_RATE_WINDOW):
             return
         try:
             hashes = packets.parse_inventory(payload)
@@ -903,8 +875,7 @@ class NetworkManager:
         except Exception:
             pass
         try:
-            self.peers.record_inv(
-                connection.peer.host, connection.peer.port)
+            self.peers.record_inv(connection.peer.host, connection.peer.port)
         except Exception:
             pass
         wanted = self._collect_wanted(hashes)
@@ -946,13 +917,11 @@ class NetworkManager:
 
     def _resend_pending(self, stale, now):  # noqa: C901
         with self.lock:
-            targets = [c for c in self.connections.values()
-                       if c.established]
+            targets = [c for c in self.connections.values() if c.established]
         if not targets or not stale:
             return 0
         try:
-            tmap = {tuple(c.peer_key): c for c in targets
-                    if getattr(c, 'peer_key', None)}
+            tmap = {tuple(c.peer_key): c for c in targets if getattr(c, "peer_key", None)}
         except Exception:
             tmap = {}
         # Agrupa por source preferencial (P5) — fallback round-robin
@@ -979,10 +948,9 @@ class NetworkManager:
                 orphan.extend(hashes)
                 continue
             for idx in range(0, len(hashes), 100):
-                chunk = hashes[idx:idx + 100]
+                chunk = hashes[idx: idx + 100]
                 try:
-                    conn.send_packet(
-                        b'getdata', packets.assemble_getdata(chunk))
+                    conn.send_packet(b"getdata", packets.assemble_getdata(chunk))
                 except Exception:
                     continue
                 sent += len(chunk)
@@ -996,11 +964,10 @@ class NetworkManager:
                                 pass
         if orphan:
             for index in range(0, len(orphan), 100):
-                chunk = orphan[index:index + 100]
+                chunk = orphan[index: index + 100]
                 connection = targets[(index // 100) % len(targets)]
                 try:
-                    connection.send_packet(
-                        b'getdata', packets.assemble_getdata(chunk))
+                    connection.send_packet(b"getdata", packets.assemble_getdata(chunk))
                 except Exception:
                     continue
                 sent += len(chunk)
@@ -1026,24 +993,22 @@ class NetworkManager:
         sent = self._resend_pending(stale, now)
         if sent and now - self._last_retry_log > 60:
             self._last_retry_log = now
-            self.on_log('network', 're-sync: pedindo de novo %d '
-                        'objeto(s) que ainda não chegaram…' % sent)
+            self.on_log("network", "re-sync: pedindo de novo %d objeto(s) que ainda não chegaram…" % sent)
 
     def _update_resync(self):
         with self.lock:
-            if not self.resync.get('active'):
+            if not self.resync.get("active"):
                 return
-            started = self.resync.get('started_at', 0.0)
+            started = self.resync.get("started_at", 0.0)
             pending = len(self.pending_getdata)
         elapsed = time.time() - started
         done = pending == 0 and elapsed > 5
         if done or elapsed > self.RESYNC_TIMEOUT:
             with self.lock:
-                self.resync['active'] = False
-                received = self.resync.get('received', 0)
+                self.resync["active"] = False
+                received = self.resync.get("received", 0)
             if done:
-                self.on_log('network', 're-sync concluído: %d '
-                            'objeto(s) recuperado(s)' % received)
+                self.on_log("network", "re-sync concluído: %d objeto(s) recuperado(s)" % received)
 
     def _split_cached_objects(self, hashes):
         blobs = []
@@ -1061,7 +1026,7 @@ class NetworkManager:
         for obj_hash in missing[:50]:
             try:
                 row = self.db.get_object(obj_hash)
-                raw = row['raw'] if row else None
+                raw = row["raw"] if row else None
                 if raw is not None:
                     blobs.append(bytes(raw))
             except Exception:
@@ -1071,11 +1036,9 @@ class NetworkManager:
         blobs = []
         try:
             capped = list(missing[:GETDATA_HASHES_MAX])
-            placeholders = ','.join('?' for _ in capped)
-            rows = self.db.query(
-                'SELECT hash, raw FROM objects WHERE hash IN (%s)' % placeholders,
-                tuple(capped))
-            by_hash = {bytes(r['hash']): bytes(r['raw']) for r in rows}
+            placeholders = ",".join("?" for _ in capped)
+            rows = self.db.query("SELECT hash, raw FROM objects WHERE hash IN (%s)" % placeholders, tuple(capped))
+            by_hash = {bytes(r["hash"]): bytes(r["raw"]) for r in rows}
             for obj_hash in capped:
                 raw = by_hash.get(bytes(obj_hash))
                 if raw is not None:
@@ -1088,7 +1051,7 @@ class NetworkManager:
     def _cap_blobs(blobs):
         capped = []
         total = 0
-        for blob in blobs[:GETDATA_BLOBS_MAX * 2]:
+        for blob in blobs[: GETDATA_BLOBS_MAX * 2]:
             try:
                 size = len(blob)
             except Exception:
@@ -1102,12 +1065,12 @@ class NetworkManager:
         return capped
 
     def on_getdata(self, connection, payload):  # noqa: C901
-        self._bump_stats('getdatas')
+        self._bump_stats("getdatas")
         # A9: rate por peer + cap de hashes + cap de bytes (2-4MB).
         peer_key = self._peer_key(connection)
         if peer_key is not None and self._rate_limited(
-                self._getdata_hits, peer_key,
-                GETDATA_RATE_MAX, GETDATA_RATE_WINDOW):
+            self._getdata_hits, peer_key, GETDATA_RATE_MAX, GETDATA_RATE_WINDOW
+        ):
             return
         # getdata recebido prova par vivo (não é mudo): holder que só recebe getdata
         try:
@@ -1126,33 +1089,30 @@ class NetworkManager:
         capped = self._cap_blobs(blobs)
         if capped:
             try:
-                connection.send_packets(b'object', capped)
+                connection.send_packets(b"object", capped)
             except Exception:
                 pass
 
     def _prune_expired_objects(self):
         try:
-            self.db.execute(
-                'DELETE FROM objects WHERE expires < ?',
-                (int(time.time()) - 86400,))
+            self.db.execute("DELETE FROM objects WHERE expires < ?", (int(time.time()) - 86400,))
         except Exception as exc:
-            self.on_log('network', 'limpeza: %s' % exc)
+            self.on_log("network", "limpeza: %s" % exc)
 
     def _load_known_hashes(self):
         try:
-            rows = self.db.query('SELECT hash FROM objects')
+            rows = self.db.query("SELECT hash FROM objects")
         except Exception as exc:
-            self.on_log('network', 'inventário local: %s' % exc)
+            self.on_log("network", "inventário local: %s" % exc)
             return
         with self.lock:
             for row in rows:
                 try:
-                    self.known_hashes.add(bytes(row['hash']))
+                    self.known_hashes.add(bytes(row["hash"]))
                 except Exception:
                     pass
         if rows:
-            self.on_log('network', '%d objetos já conhecidos '
-                        '(sem rebaixar)' % len(rows))
+            self.on_log("network", "%d objetos já conhecidos (sem rebaixar)" % len(rows))
 
     def _drop_connections_for_resync(self):
         with self.lock:
@@ -1173,13 +1133,13 @@ class NetworkManager:
             return
         try:
             with self.lock:
-                active = bool(self.resync.get('active'))
+                active = bool(self.resync.get("active"))
             if delay and not active:
                 return
             self._ensure_connections()
         except Exception as exc:
             try:
-                self.on_log('network', 're-sync: %s' % exc)
+                self.on_log("network", "re-sync: %s" % exc)
             except Exception:
                 pass
 
@@ -1189,8 +1149,8 @@ class NetworkManager:
         for index, delay in enumerate((0, 10)):
             try:
                 threading.Thread(
-                    target=self._reconnect_once, args=(delay,),
-                    daemon=True, name='net-resync-%d' % index).start()
+                    target=self._reconnect_once, args=(delay,), daemon=True, name="net-resync-%d" % index
+                ).start()
             except Exception:
                 pass
 
@@ -1218,8 +1178,8 @@ class NetworkManager:
         # Limite honesto: só volta o que ainda não expirou e o que os
         # pares ainda guardam; o histórico completo leva minutos.
         try:
-            rows = self.db.query('SELECT COUNT(*) AS n FROM objects')
-            total = rows[0]['n'] if rows else 0
+            rows = self.db.query("SELECT COUNT(*) AS n FROM objects")
+            total = rows[0]["n"] if rows else 0
         except Exception:
             total = 0
         with self.lock:
@@ -1227,49 +1187,48 @@ class NetworkManager:
             self.known_hashes.clear()
             self.pending_getdata.clear()
         try:
-            self.db.execute('DELETE FROM objects')
+            self.db.execute("DELETE FROM objects")
         except Exception as exc:
-            self.on_log('network', 'limpeza: %s' % exc)
+            self.on_log("network", "limpeza: %s" % exc)
             return 0
         dropped = self._drop_connections_for_resync()
         now = time.time()
         with self.lock:
-            self.resync['active'] = True
-            self.resync['started_at'] = now
-            self.resync['last_progress'] = now
-            self.resync['removed'] = total
-            self.resync['received'] = 0
-            self.resync['dropped'] = list(dropped[:50])
+            self.resync["active"] = True
+            self.resync["started_at"] = now
+            self.resync["last_progress"] = now
+            self.resync["removed"] = total
+            self.resync["received"] = 0
+            self.resync["dropped"] = list(dropped[:50])
         self.on_log(
-            'network',
-            '%d objetos apagados. Baixando tudo de novo… '
-            'pode levar vários minutos (a rede reanuncia aos poucos).'
-            % total)
+            "network",
+            "%d objetos apagados. Baixando tudo de novo… "
+            "pode levar vários minutos (a rede reanuncia aos poucos)." % total,
+        )
         self._kick_reconnect()
         return total
 
-    def _describe_net_state(self, established, total, inventory_size,
-                            pending_size, stats):
+    def _describe_net_state(self, established, total, inventory_size, pending_size, stats):
         """Estado honesto da sincronização (sem prometer o impossível).
 
         Códigos estáveis para a GUI: parado | procurando-pares |
         negociando | aguardando-inv | sincronizando | conectado.
         """
         if not self.running:
-            return 'parado'
+            return "parado"
         if established == 0 and total == 0:
-            return 'procurando-pares'
+            return "procurando-pares"
         if established == 0:
-            return 'negociando'
+            return "negociando"
         try:
-            invs = int(stats.get('invs', 0))
+            invs = int(stats.get("invs", 0))
         except Exception:
             invs = 0
         if invs == 0 and not inventory_size:
-            return 'aguardando-inv'
+            return "aguardando-inv"
         if pending_size > 0:
-            return 'sincronizando'
-        return 'conectado'
+            return "sincronizando"
+        return "conectado"
 
     def _snapshot_backoff(self, now):
         try:
@@ -1279,13 +1238,13 @@ class NetworkManager:
 
     def _snapshot_connect_timeout(self):
         try:
-            return max(
-                5, min(int(self.db.get_int('connect_timeout', 10)), 300))
+            return max(5, min(int(self.db.get_int("connect_timeout", 10)), 300))
         except Exception:
             return 10
 
     def snapshot(self):
         import struct as _struct
+
         now = time.time()
         with self.lock:
             connections = list(self.connections.values())
@@ -1299,15 +1258,13 @@ class NetworkManager:
         rows = []
         for connection in connections:
             version = None
-            if connection.their_version and \
-                    len(connection.their_version) >= 4:
+            if connection.their_version and len(connection.their_version) >= 4:
                 try:
-                    version, = _struct.unpack(
-                        '>L', connection.their_version[0:4])
+                    (version,) = _struct.unpack(">L", connection.their_version[0:4])
                 except Exception:
                     version = None
             base = connection.connected_at or connection.started_at
-            last_useful = getattr(connection, 'last_useful_at', None)
+            last_useful = getattr(connection, "last_useful_at", None)
             if connection.established:
                 silent_base = last_useful or base
                 silent_for = max(0, int(now - silent_base))
@@ -1315,32 +1272,31 @@ class NetworkManager:
             else:
                 silent_for = None
                 try:
-                    handshake_for = max(
-                        0, int(now - float(connection.started_at)))
+                    handshake_for = max(0, int(now - float(connection.started_at)))
                 except Exception:
                     handshake_for = None
-            rows.append({
-                'host': connection.peer.host,
-                'port': connection.peer.port,
-                'established': connection.established,
-                'version': version,
-                'services': connection.their_services,
-                'streams': list(connection.their_streams),
-                'time_offset': connection.time_offset,
-                'rating': self.peers.entries.get(
-                    (connection.peer.host,
-                     connection.peer.port), {}).get('rating', 0),
-                'bytes_sent': connection.bytes_sent,
-                'bytes_received': connection.bytes_received,
-                'age': max(0, int(now - base)),
-                'silent_for': silent_for,
-                'handshake_for': handshake_for,
-                'has_useful': last_useful is not None,
-            })
-        proxy = self.proxy.describe() if self.proxy else 'Direto'
+            rows.append(
+                {
+                    "host": connection.peer.host,
+                    "port": connection.peer.port,
+                    "established": connection.established,
+                    "version": version,
+                    "services": connection.their_services,
+                    "streams": list(connection.their_streams),
+                    "time_offset": connection.time_offset,
+                    "rating": self.peers.entries.get((connection.peer.host, connection.peer.port), {}).get("rating", 0),
+                    "bytes_sent": connection.bytes_sent,
+                    "bytes_received": connection.bytes_received,
+                    "age": max(0, int(now - base)),
+                    "silent_for": silent_for,
+                    "handshake_for": handshake_for,
+                    "has_useful": last_useful is not None,
+                }
+            )
+        proxy = self.proxy.describe() if self.proxy else "Direto"
         try:
-            stored = self.db.query('SELECT COUNT(*) AS n FROM objects')
-            objects_stored = stored[0]['n'] if stored else 0
+            stored = self.db.query("SELECT COUNT(*) AS n FROM objects")
+            objects_stored = stored[0]["n"] if stored else 0
         except Exception:
             objects_stored = None
         uptime = int(now - self.started_at) if self.started_at else 0
@@ -1348,34 +1304,32 @@ class NetworkManager:
         peers_backoff = self._snapshot_backoff(now)
         connect_timeout = self._snapshot_connect_timeout()
         return {
-            'proxy': proxy,
-            'streams': list(self.streams),
-            'running': self.running,
-            'uptime': uptime,
-            'stats': stats_copy,
-            'net_state': self._describe_net_state(
-                established, len(connections), inventory_size,
-                pending_size, stats_copy),
-            'connection_count': len(connections),
-            'peers_stored': peers_stored,
-            'peers_backoff': peers_backoff,
-            'inventory': inventory_size,
-            'known_hashes': known_size,
-            'objects_stored': objects_stored,
-            'pending_getdata': pending_size,
-            'timeouts': {
-                'handshake': self.HANDSHAKE_TIMEOUT,
-                'silent': self.SILENT_TIMEOUT,
-                'connect': connect_timeout,
+            "proxy": proxy,
+            "streams": list(self.streams),
+            "running": self.running,
+            "uptime": uptime,
+            "stats": stats_copy,
+            "net_state": self._describe_net_state(
+                established, len(connections), inventory_size, pending_size, stats_copy
+            ),
+            "connection_count": len(connections),
+            "peers_stored": peers_stored,
+            "peers_backoff": peers_backoff,
+            "inventory": inventory_size,
+            "known_hashes": known_size,
+            "objects_stored": objects_stored,
+            "pending_getdata": pending_size,
+            "timeouts": {
+                "handshake": self.HANDSHAKE_TIMEOUT,
+                "silent": self.SILENT_TIMEOUT,
+                "connect": connect_timeout,
             },
-            'resync': {
-                'active': bool(resync_info.get('active')),
-                'elapsed': max(0, int(now - resync_info.get(
-                    'started_at', now))),
-                'pending': pending_size,
-                'received': int(resync_info.get('received', 0)),
-                'removed': int(resync_info.get('removed', 0)),
+            "resync": {
+                "active": bool(resync_info.get("active")),
+                "elapsed": max(0, int(now - resync_info.get("started_at", now))),
+                "pending": pending_size,
+                "received": int(resync_info.get("received", 0)),
+                "removed": int(resync_info.get("removed", 0)),
             },
-            'connections': sorted(
-                rows, key=lambda r: (r['host'], r['port'])),
+            "connections": sorted(rows, key=lambda r: (r["host"], r["port"])),
         }

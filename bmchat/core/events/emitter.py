@@ -13,6 +13,7 @@ Exemplo:
     queue = Queue()
     emitter = EventEmitter(queue=queue, legacy_bridge=True)
 """
+
 import threading
 from collections import defaultdict
 from typing import Any, Callable, Dict, List
@@ -53,19 +54,19 @@ class EventEmitter:
             wrappers = self._once_wrappers.get(event)
             if wrappers:
                 # wrappers são (original, wrapper)
-                self._once_wrappers[event] = [
-                    w for w in wrappers if w[0] is not callback and w[1] is not callback
-                ]
+                self._once_wrappers[event] = [w for w in wrappers if w[0] is not callback and w[1] is not callback]
                 if not self._once_wrappers[event]:
                     self._once_wrappers.pop(event, None)
 
     def once(self, event: str, callback: Callable) -> Callable:
         """Registra callback que dispara uma única vez."""
+
         def wrapper(data=None):
             try:
                 callback(data)
             finally:
                 self.off(event, wrapper)
+
         with self._lock:
             self._listeners[event].append(wrapper)
             self._once_wrappers.setdefault(event, []).append((callback, wrapper))
@@ -83,12 +84,12 @@ class EventEmitter:
 
     # -- emissão --
 
-    def emit(self, event: str, data: Any = None) -> int:
+    def emit(self, event: str, data: Any = None) -> int:  # noqa: C901
         """Emite evento para todos os listeners. Retorna nº de callbacks chamados."""
         with self._lock:
             callbacks = list(self._listeners.get(event, []))
             # wildcard listeners ('*') recebem (event, data)
-            wildcard = list(self._listeners.get('*', []))
+            wildcard = list(self._listeners.get("*", []))
         count = 0
         for cb in callbacks:
             try:

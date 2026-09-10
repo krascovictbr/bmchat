@@ -4,6 +4,7 @@ Cada estado encapsula comportamento específico (ícone, transições,
 ações). Facilita adicionar novos estados (Cancelled, Expired) sem
 alterar lógica condicional espalhada.
 """
+
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -14,10 +15,10 @@ if TYPE_CHECKING:
 class MessageState(ABC):
     """Interface State para mensagens."""
 
-    name: str = 'unknown'
-    display_icon: str = '❓'
+    name: str = "unknown"
+    display_icon: str = "❓"
 
-    def __init__(self, message: 'Message'):
+    def __init__(self, message: "Message"):
         self.message = message
 
     @abstractmethod
@@ -52,116 +53,116 @@ class MessageState(ABC):
 class PendingState(MessageState):
     """Aguardando pubkey ou PoW em andamento."""
 
-    name = 'pending'
-    display_icon = '🕐'  # relógio — ainda calculando / aguardando chave
+    name = "pending"
+    display_icon = "🕐"  # relógio — ainda calculando / aguardando chave
 
     def send(self):
         # Já está pendente; tenta reenviar via client
         try:
             return self.message.client.resend_message(self.message.id)
         except Exception as exc:
-            return 'error', str(exc)
+            return "error", str(exc)
 
     def allowed_transitions(self):
-        return {'published', 'failed', 'pending', 'awaiting-pubkey', 'sending', 'sent', 'ack-failed'}
+        return {"published", "failed", "pending", "awaiting-pubkey", "sending", "sent", "ack-failed"}
 
     def get_display_icon(self):
-        return '🕐'
+        return "🕐"
 
 
 class AwaitingPubkeyState(PendingState):
-    name = 'awaiting-pubkey'
-    display_icon = '🕐'
+    name = "awaiting-pubkey"
+    display_icon = "🕐"
 
 
 class SendingState(PendingState):
-    name = 'sending'
-    display_icon = '⏳'
+    name = "sending"
+    display_icon = "⏳"
 
 
 class PublishedState(MessageState):
     """Publicado na rede (sent), aguardando ACK."""
 
-    name = 'published'
+    name = "published"
     # No BT spec, 'sent' é cinza
-    display_icon = '✓✓'
+    display_icon = "✓✓"
 
     def send(self):
-        return 'already-sent', 'mensagem já publicada'
+        return "already-sent", "mensagem já publicada"
 
     def allowed_transitions(self):
-        return {'delivered', 'failed', 'ackreceived', 'ack-failed', 'read'}
+        return {"delivered", "failed", "ackreceived", "ack-failed", "read"}
 
     def get_display_icon(self):
         # Cinza — publicado
-        return '✓✓'
+        return "✓✓"
 
 
 class SentState(PublishedState):
-    name = 'sent'
+    name = "sent"
 
 
 class DeliveredState(MessageState):
     """Entregue — ACK recebido ou mensagem lida."""
 
-    name = 'delivered'
-    display_icon = '✓✓✓'  # azul na UI (cor via tema)
+    name = "delivered"
+    display_icon = "✓✓✓"  # azul na UI (cor via tema)
 
     def send(self):
-        return 'already-delivered', 'mensagem já entregue'
+        return "already-delivered", "mensagem já entregue"
 
     def allowed_transitions(self):
-        return {'read', 'received', 'ackreceived'}
+        return {"read", "received", "ackreceived"}
 
     def get_display_icon(self):
         # Azul — entregue
-        return '✓✓'
+        return "✓✓"
 
 
 class AckReceivedState(DeliveredState):
-    name = 'ackreceived'
+    name = "ackreceived"
 
 
 class ReceivedState(DeliveredState):
-    name = 'received'
+    name = "received"
 
 
 class ReadState(DeliveredState):
-    name = 'read'
+    name = "read"
 
 
 class FailedState(MessageState):
     """Falha — ack-failed ou erro de envio."""
 
-    name = 'failed'
-    display_icon = '❌'
+    name = "failed"
+    display_icon = "❌"
 
     def send(self):
         # Permite retry
         try:
             return self.message.client.resend_message(self.message.id)
         except Exception as exc:
-            return 'error', str(exc)
+            return "error", str(exc)
 
     def allowed_transitions(self):
-        return {'pending', 'awaiting-pubkey', 'sending', 'failed', 'ack-failed'}
+        return {"pending", "awaiting-pubkey", "sending", "failed", "ack-failed"}
 
     def get_display_icon(self):
-        return '❌'
+        return "❌"
 
 
 class AckFailedState(FailedState):
-    name = 'ack-failed'
+    name = "ack-failed"
 
 
 class CancelledState(MessageState):
     """Extensão futura: mensagem cancelada pelo usuário."""
 
-    name = 'cancelled'
-    display_icon = '🚫'
+    name = "cancelled"
+    display_icon = "🚫"
 
     def send(self):
-        return 'cancelled', 'mensagem cancelada não pode ser enviada'
+        return "cancelled", "mensagem cancelada não pode ser enviada"
 
     def allowed_transitions(self):
         return set()
@@ -170,11 +171,11 @@ class CancelledState(MessageState):
 class ExpiredState(MessageState):
     """Extensão futura: mensagem expirada (TTL)."""
 
-    name = 'expired'
-    display_icon = '⌛'
+    name = "expired"
+    display_icon = "⌛"
 
     def send(self):
-        return 'expired', 'mensagem expirada (TTL)'
+        return "expired", "mensagem expirada (TTL)"
 
     def allowed_transitions(self):
         return set()
@@ -182,19 +183,19 @@ class ExpiredState(MessageState):
 
 # Registro de todos os estados
 _STATE_MAP = {
-    'pending': PendingState,
-    'awaiting-pubkey': AwaitingPubkeyState,
-    'sending': SendingState,
-    'published': PublishedState,
-    'sent': SentState,
-    'delivered': DeliveredState,
-    'ackreceived': AckReceivedState,
-    'received': ReceivedState,
-    'read': ReadState,
-    'failed': FailedState,
-    'ack-failed': AckFailedState,
-    'cancelled': CancelledState,
-    'expired': ExpiredState,
+    "pending": PendingState,
+    "awaiting-pubkey": AwaitingPubkeyState,
+    "sending": SendingState,
+    "published": PublishedState,
+    "sent": SentState,
+    "delivered": DeliveredState,
+    "ackreceived": AckReceivedState,
+    "received": ReceivedState,
+    "read": ReadState,
+    "failed": FailedState,
+    "ack-failed": AckFailedState,
+    "cancelled": CancelledState,
+    "expired": ExpiredState,
 }
 
 

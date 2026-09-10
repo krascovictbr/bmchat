@@ -12,16 +12,16 @@ OBJECT_GETPUBKEY = 0
 OBJECT_PUBKEY = 1
 OBJECT_MSG = 2
 OBJECT_BROADCAST = 3
-OBJECT_ONIONPEER = 0x746f72
+OBJECT_ONIONPEER = 0x746F72
 OBJECT_ADDR = 0x61646472
 OBJECT_I2P = 0x493250
 
 MAX_ADDR_COUNT = 1000
 MAX_MESSAGE_SIZE = 1600100
-MAX_OBJECT_PAYLOAD_SIZE = 2 ** 18
+MAX_OBJECT_PAYLOAD_SIZE = 2**18
 MAX_OBJECT_COUNT = 50000
 MAX_TIME_OFFSET = 3600
-MAX_OBJECT_LENGTH = 2 ** 18
+MAX_OBJECT_LENGTH = 2**18
 
 # Teto único do corpo no wire (texto + marcador base64 de anexos).
 # Mantém o objeto final (após ECIES/assinatura) abaixo de
@@ -56,10 +56,10 @@ MSG_TTL_MIN = 3600
 MSG_TTL_MAX = 1814400
 
 MSG_TTL_PRESETS = (
-    (3600, '1 hora'),
-    (86400, '1 dia'),
-    (604800, '7 dias'),
-    (1814400, '21 dias'),
+    (3600, "1 hora"),
+    (86400, "1 dia"),
+    (604800, "7 dias"),
+    (1814400, "21 dias"),
 )
 
 
@@ -68,20 +68,20 @@ def format_ttl_pt(seconds):
     try:
         total = int(seconds)
     except (TypeError, ValueError):
-        return '—'
+        return "—"
     for value, label in MSG_TTL_PRESETS:
         if total == value:
             return label
     if total < 60:
-        return '%d s' % max(0, total)
+        return "%d s" % max(0, total)
     minutes = total // 60
     if minutes < 60:
-        return '1 min' if minutes == 1 else '%d min' % minutes
+        return "1 min" if minutes == 1 else "%d min" % minutes
     hours = total // 3600
     if hours < 24:
-        return '1 hora' if hours == 1 else '%d horas' % hours
+        return "1 hora" if hours == 1 else "%d horas" % hours
     days = total // 86400
-    return '1 dia' if days == 1 else '%d dias' % days
+    return "1 dia" if days == 1 else "%d dias" % days
 
 
-USER_AGENT = '/bmchat:%s/' % user_agent_version()
+USER_AGENT = "/bmchat:%s/" % user_agent_version()

@@ -5,10 +5,16 @@ import threading
 import time
 
 from ..crypto.keys import (
-    AddressKeys, chan_keys_from_name, generate_keys, wif_encode, wif_decode,
+    AddressKeys,
+    chan_keys_from_name,
+    generate_keys,
+    wif_encode,
+    wif_decode,
 )
 from ..crypto.pow import (
-    PowExecutor, calculate_target, initial_hash_of,
+    PowExecutor,
+    calculate_target,
+    initial_hash_of,
     is_proof_of_work_sufficient,
 )
 from ..crypto.pow.strategy import PoWStrategy
@@ -17,9 +23,16 @@ from ..protocol import address as addr_module
 from ..protocol import objects
 from ..protocol import packets
 from ..protocol.const import (
-    OBJECT_GETPUBKEY, OBJECT_PUBKEY, OBJECT_MSG, OBJECT_BROADCAST,
-    GETPUBKEY_TTL, PUBKEY_TTL,
-    MSG_TTL_DEFAULT, MSG_TTL_MIN, MSG_TTL_MAX, format_ttl_pt,
+    OBJECT_GETPUBKEY,
+    OBJECT_PUBKEY,
+    OBJECT_MSG,
+    OBJECT_BROADCAST,
+    GETPUBKEY_TTL,
+    PUBKEY_TTL,
+    MSG_TTL_DEFAULT,
+    MSG_TTL_MIN,
+    MSG_TTL_MAX,
+    format_ttl_pt,
     BITMESSAGE_ENCODING_TRIVIAL,
 )
 from ..util.hashing import double_sha512, sha512
@@ -33,10 +46,17 @@ from .repositories import MessageRepository, ContactRepository, PubkeyRepository
 
 
 class Client:
-
-    def __init__(self, data_dir, pow_strategy: PoWStrategy | None = None,
-                 network_manager=None, db=None, protocol_factory=None,
-                 message_repo=None, contact_repo=None, pubkey_repo=None):
+    def __init__(
+        self,
+        data_dir,
+        pow_strategy: PoWStrategy | None = None,
+        network_manager=None,
+        db=None,
+        protocol_factory=None,
+        message_repo=None,
+        contact_repo=None,
+        pubkey_repo=None,
+    ):
         """Client com Dependency Injection para PoW, NetworkManager, Factory e Repositories.
 
         Args:
@@ -62,7 +82,8 @@ class Client:
         self.contact_repo = contact_repo or ContactRepository(self.db)
         self.pubkey_repo = pubkey_repo or PubkeyRepository(self.db)
         import queue as _queue
-        self.ui_queue = _queue.Queue()
+
+        self.ui_queue = _queue.Queue()  # type: ignore[var-annotated]
         # Observer Pattern: EventEmitter para desacoplar Client da GUI
         self.events = EventEmitter()
         # Bridge: todo put na ui_queue também emite via EventEmitter
@@ -84,7 +105,7 @@ class Client:
                     if mapped != legacy:
                         self.events.emit(legacy, data)
                     # Evento genérico para listeners que querem tudo
-                    self.events.emit('*', item)
+                    self.events.emit("*", item)
             except Exception:
                 pass
             return result
@@ -92,25 +113,25 @@ class Client:
         self.ui_queue.put = _put_and_emit  # type: ignore[method-assign]
         # Compat: emite também mudança de conexão quando network tem peers
         self._event_queue_bridge = _put_and_emit
-        self.identities = {}
-        self.pubkeys = {}
-        self._pow_stops = {}
-        self._pow_meta = {}
+        self.identities = {}  # type: ignore[var-annotated]
+        self.pubkeys = {}  # type: ignore[var-annotated]
+        self._pow_stops = {}  # type: ignore[var-annotated]
+        self._pow_meta = {}  # type: ignore[var-annotated]
         self._pow_sequencer = 0
         # M1: watch guarda (message_id, registrado_em); varrido com TTL.
-        self._ack_watch = {}
-        self._ack_retry_counts = {}
-        self._msg_in_flight = set()
-        self._getpubkey_last = {}
-        self._threads = []
+        self._ack_watch = {}  # type: ignore[var-annotated]
+        self._ack_retry_counts = {}  # type: ignore[var-annotated]
+        self._msg_in_flight = set()  # type: ignore[var-annotated]
+        self._getpubkey_last = {}  # type: ignore[var-annotated]
+        self._threads = []  # type: ignore[var-annotated]
         # A2: workers de PoW/relay rastreados para join no stop().
-        self._workers = []
+        self._workers = []  # type: ignore[var-annotated]
         # A11: dedupe de ACKs recentes + pool limitado.
-        self._ack_seen = collections.OrderedDict()
+        self._ack_seen = collections.OrderedDict()  # type: ignore[var-annotated]
         self._ack_pool = None
         self._lock_path = None
         self._lock_owned = False
-        self._log_lines = collections.deque(maxlen=200)
+        self._log_lines = collections.deque(maxlen=200)  # type: ignore[var-annotated]
         self._lock = threading.RLock()
         if network_manager is not None:
             self.net = network_manager
@@ -119,8 +140,7 @@ class Client:
             self.net.on_log = self._log
             self.net.db = self.db
         else:
-            self.net = NetworkManager(
-                data_dir, self.db, on_object=self._on_object, on_log=self._log)
+            self.net = NetworkManager(data_dir, self.db, on_object=self._on_object, on_log=self._log)
         self.started = False
 
     # ------------------------------------------------------------------
@@ -129,6 +149,7 @@ class Client:
     def _lock_owner_alive(other, mine):
         import errno as _errno
         import os as _os
+
         if not other or not other.isdigit() or int(other) == int(mine):
             return False
         try:
@@ -138,7 +159,7 @@ class Client:
             # Existe, mas sem permissão para sinalizar → dono vivo.
             return True
         except OSError as exc:
-            if getattr(exc, 'errno', None) == _errno.ESRCH:
+            if getattr(exc, "errno", None) == _errno.ESRCH:
                 return False
             return True
         except Exception:
@@ -146,36 +167,36 @@ class Client:
 
     def _claim_stale_lock(self, mine):
         import os as _os
-        fd = _os.open(self._lock_path + '.tmp',
-                      _os.O_CREAT | _os.O_TRUNC | _os.O_WRONLY, 0o600)
+
+        fd = _os.open(self._lock_path + ".tmp", _os.O_CREAT | _os.O_TRUNC | _os.O_WRONLY, 0o600)
         try:
             _os.write(fd, mine.encode())
         finally:
             _os.close(fd)
-        _os.replace(self._lock_path + '.tmp', self._lock_path)
+        _os.replace(self._lock_path + ".tmp", self._lock_path)
         # ADV: replace não é atômico entre 2 reclamantes (TOCTOU): dois
         # processos podem ver stale e trocar em sequência, ambos achando
         # que são donos. Re-lê e só assume se o conteúdo for o nosso.
         try:
-            with open(self._lock_path, 'r') as handle:
+            with open(self._lock_path, "r") as handle:
                 current = handle.read().strip()
         except Exception:
             current = mine
         if current != mine:
             self._lock_owned = False
-            raise RuntimeError(
-                'outra instância assumiu o lock (%s)' % current)
+            raise RuntimeError("outra instância assumiu o lock (%s)" % current)
         self._lock_owned = True
 
     def _read_lock_owner(self):
         try:
-            with open(self._lock_path, 'r') as handle:
+            with open(self._lock_path, "r") as handle:
                 return handle.read().strip()
         except Exception:
-            return ''
+            return ""
 
     def _write_own_lock(self):
         import os as _os
+
         # ADV: makedirs sem mode criava 0755 quando o dir não existia
         # (testes/tmp). Força 0700 + chmod como run.py/database.py.
         _os.makedirs(self.data_dir, mode=0o700, exist_ok=True)
@@ -183,14 +204,13 @@ class Client:
             _os.chmod(self.data_dir, 0o700)
         except Exception:
             pass
-        self._lock_path = _os.path.join(self.data_dir, 'bmchat.lock')
+        self._lock_path = _os.path.join(self.data_dir, "bmchat.lock")
         mine = str(_os.getpid())
         if self._try_fresh_lock(mine):
             return
         other = self._read_lock_owner()
         if self._lock_owner_alive(other, mine):
-            raise RuntimeError(
-                'outra instância em execução (pid %s)' % other)
+            raise RuntimeError("outra instância em execução (pid %s)" % other)
         try:
             self._claim_stale_lock(mine)
         except RuntimeError:
@@ -203,9 +223,9 @@ class Client:
 
     def _try_fresh_lock(self, mine):
         import os as _os
+
         try:
-            fd = _os.open(self._lock_path,
-                          _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
+            fd = _os.open(self._lock_path, _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
         except FileExistsError:
             return False
         try:
@@ -222,17 +242,14 @@ class Client:
         streams = self._participating_streams()
         self.net.start(streams)
         self.started = True
-        self._threads = []
-        retry = threading.Thread(target=self._retry_loop, daemon=True,
-                                 name='client-retry')
+        self._threads = []  # type: ignore[var-annotated]
+        retry = threading.Thread(target=self._retry_loop, daemon=True, name="client-retry")
         retry.start()
         self._threads.append(retry)
-        reannounce = threading.Thread(target=self._reannounce_loop,
-                                      daemon=True, name='client-reannounce')
+        reannounce = threading.Thread(target=self._reannounce_loop, daemon=True, name="client-reannounce")
         reannounce.start()
         self._threads.append(reannounce)
-        scheduled = threading.Thread(target=self._scheduled_sender_loop,
-                                     daemon=True, name='client-scheduled')
+        scheduled = threading.Thread(target=self._scheduled_sender_loop, daemon=True, name="client-scheduled")
         scheduled.start()
         self._threads.append(scheduled)
 
@@ -250,23 +267,23 @@ class Client:
             self._workers.append(thread)
             # Evita crescimento sem limite.
             if len(self._workers) > 64:
-                self._workers = [t for t in self._workers if t.is_alive()][-32:]
+                self._workers = [t for t in self._workers if t.is_alive()][-32:]  # type: ignore[var-annotated]
 
     def _join_threads(self):
-        for thread in list(getattr(self, '_threads', [])):
+        for thread in list(getattr(self, "_threads", [])):
             try:
                 thread.join(timeout=5)
             except Exception:
                 pass
         # A2: workers de PoW/relay com join limitado.
-        for worker in list(getattr(self, '_workers', [])):
+        for worker in list(getattr(self, "_workers", [])):
             try:
                 worker.join(timeout=5)
             except Exception:
                 pass
         with self._lock:
-            self._workers = [t for t in self._workers if t.is_alive()]
-        pool = getattr(self, '_ack_pool', None)
+            self._workers = [t for t in self._workers if t.is_alive()]  # type: ignore[var-annotated]
+        pool = getattr(self, "_ack_pool", None)
         if pool is not None:
             try:
                 pool.shutdown(wait=False, cancel_futures=True)
@@ -276,8 +293,9 @@ class Client:
 
     def _own_lock_current(self):
         import os as _os2
+
         try:
-            with open(self._lock_path, 'r') as handle:
+            with open(self._lock_path, "r") as handle:
                 current = handle.read().strip()
         except Exception:
             return True
@@ -291,8 +309,8 @@ class Client:
         # A3: remove só o próprio lock; nunca o de outra instância.
         try:
             import os as _os2
-            if getattr(self, '_lock_path', None) and getattr(
-                    self, '_lock_owned', False):
+
+            if getattr(self, "_lock_path", None) and getattr(self, "_lock_owned", False):
                 if self._own_lock_current():
                     try:
                         _os2.unlink(self._lock_path)
@@ -327,16 +345,16 @@ class Client:
             try:
                 self._retry_awaiting()
             except Exception as exc:
-                self._log('rede', 'tentativa de reenvio: %r' % exc)
+                self._log("rede", "tentativa de reenvio: %r" % exc)
 
     def _awaiting_addresses(self):
         try:
             rows = self.db.query(
-                "SELECT DISTINCT to_address FROM messages WHERE "
-                "direction='out' AND status='awaiting-pubkey'")
+                "SELECT DISTINCT to_address FROM messages WHERE direction='out' AND status='awaiting-pubkey'"
+            )
         except Exception:
             return []
-        return [r['to_address'] for r in rows if r['to_address']]
+        return [r["to_address"] for r in rows if r["to_address"]]
 
     def _sweep_ack_watch(self, now=None):  # noqa: C901
         """M1: expira watches antigos (TTL) — unificado."""
@@ -368,12 +386,13 @@ class Client:
             self.db.execute(
                 "UPDATE messages SET status='awaiting-pubkey' WHERE "
                 "direction='out' AND status='sending' AND timestamp < ?",
-                (cutoff,))
+                (cutoff,),
+            )
         except Exception:
             pass
 
     def _retry_one_ack_failed(self, row):
-        message_id = row['id']
+        message_id = row["id"]
         try:
             full = self.db.get_message(message_id)
         except Exception:
@@ -382,21 +401,19 @@ class Client:
             # ADV: não consome slot para mensagem apagada (antes
             # incrementava e esgotava as 3 tentativas sem fazer nada).
             return
-        to_address = full['to_address']
+        to_address = full["to_address"]
         if to_address in self.pubkeys:
             # ADV: só conta quando vai queimar PoW de verdade; se a
             # identidade sumiu, _pow_and_publish retorna sem lançar e
             # não deve esgotar o limite.
-            if full['from_address'] not in self.identities:
+            if full["from_address"] not in self.identities:
                 return
             with self._lock:
                 tries = int(self._ack_retry_counts.get(message_id, 0))
                 if tries >= 3:
                     return
                 self._ack_retry_counts[message_id] = tries + 1
-            self._pow_and_publish_message(
-                message_id, full['from_address'], to_address,
-                full['body'], full['encoding'])
+            self._pow_and_publish_message(message_id, full["from_address"], to_address, full["body"], full["encoding"])
             return
         with self._lock:
             tries = int(self._ack_retry_counts.get(message_id, 0))
@@ -404,7 +421,7 @@ class Client:
                 return
             self._ack_retry_counts[message_id] = tries + 1
         try:
-            self.db.set_message_status(message_id, 'awaiting-pubkey')
+            self.db.set_message_status(message_id, "awaiting-pubkey")
         except Exception:
             pass
 
@@ -417,8 +434,8 @@ class Client:
             pass
         try:
             rows = self.db.query(
-                "SELECT id, to_address FROM messages WHERE "
-                "direction='out' AND status='ack-failed' LIMIT 5")
+                "SELECT id, to_address FROM messages WHERE direction='out' AND status='ack-failed' LIMIT 5"
+            )
         except Exception:
             return 0
         for row in rows:
@@ -460,18 +477,17 @@ class Client:
             if address in self.pubkeys:
                 self._send_queued(address)
                 continue
-            self._log('rede', 'republicando pedido de chave para %s' %
-                      address[:18])
+            self._log("rede", "republicando pedido de chave para %s" % address[:18])
             try:
                 self.request_pubkey(address)
             except Exception:
                 continue
 
     def _log(self, level, message):
-        line = '[%s] %s' % (time.strftime('%H:%M:%S'), message)
+        line = "[%s] %s" % (time.strftime("%H:%M:%S"), message)
         with self._lock:
             self._log_lines.append(line)
-        self.ui_queue.put(('log', level, str(message)))
+        self.ui_queue.put(("log", level, str(message)))
 
     def recent_logs(self, limit=200):
         with self._lock:
@@ -486,18 +502,16 @@ class Client:
     def _participating_streams(self):
         streams = set()
         for row in self.db.all_identities(enabled_only=True):
-            streams.add(row['stream'])
+            streams.add(row["stream"])
         for contact in self.db.all_contacts():
             try:
-                _, _, contact_stream, _ = addr_module.decode_address(
-                    contact['address'])
+                _, _, contact_stream, _ = addr_module.decode_address(contact["address"])
                 streams.add(contact_stream)
             except Exception:
                 pass
         for subscription in self.db.all_subscriptions():
             try:
-                _, _, stream, _ = addr_module.decode_address(
-                    subscription['address'])
+                _, _, stream, _ = addr_module.decode_address(subscription["address"])
                 streams.add(stream)
             except Exception:
                 pass
@@ -507,14 +521,12 @@ class Client:
     # ---------- identidades ----------
 
     def _load_identities(self):
-        self.identities = {}
+        self.identities = {}  # type: ignore[var-annotated]
         for row in self.db.all_identities(enabled_only=True):
-            keys = AddressKeys.from_private_keys(
-                row['priv_signing'], row['priv_encryption'],
-                stream=row['stream'])
-            keys.nonce_trials_per_byte = row['noncetrials']
-            keys.payload_length_extra_bytes = row['extrabytes']
-            self.identities[row['address']] = keys
+            keys = AddressKeys.from_private_keys(row["priv_signing"], row["priv_encryption"], stream=row["stream"])
+            keys.nonce_trials_per_byte = row["noncetrials"]
+            keys.payload_length_extra_bytes = row["extrabytes"]
+            self.identities[row["address"]] = keys
         # Mantém self-pubkeys sincronizados após recarregar identidades
         try:
             self._ensure_self_pubkeys()
@@ -525,13 +537,13 @@ class Client:
         """M7: retenta objetos guardados que não tinham identidade na chegada."""
         try:
             rows = self.db.query(
-                'SELECT raw FROM objects WHERE type IN (2, 3) '
-                'ORDER BY received DESC LIMIT ?', (int(limit),))
+                "SELECT raw FROM objects WHERE type IN (2, 3) ORDER BY received DESC LIMIT ?", (int(limit),)
+            )
         except Exception:
             return
         for row in rows:
             try:
-                raw = bytes(row['raw'])
+                raw = bytes(row["raw"])
             except Exception:
                 continue
             try:
@@ -546,9 +558,14 @@ class Client:
     def create_identity(self, label, stream=1):
         keys = generate_keys(stream=stream)
         self.db.add_identity(
-            keys.address, label or keys.address, stream,
-            keys.signing_private, keys.encryption_private,
-            noncetrials=1000, extrabytes=1000)
+            keys.address,
+            label or keys.address,
+            stream,
+            keys.signing_private,
+            keys.encryption_private,
+            noncetrials=1000,
+            extrabytes=1000,
+        )
         keys.nonce_trials_per_byte = 1000
         keys.payload_length_extra_bytes = 1000
         with self._lock:
@@ -558,56 +575,52 @@ class Client:
         except Exception:
             pass
         self._refresh_streams()
-        self.ui_queue.put(('identity-created', keys.address, label))
+        self.ui_queue.put(("identity-created", keys.address, label))
         self._reparse_orphans()
         return keys.address
 
     def rename_identity(self, address, label):
-        label = (label or '').strip()
+        label = (label or "").strip()
         if not label:
-            return 'invalid', 'rótulo vazio'
+            return "invalid", "rótulo vazio"
         if self.db.get_identity(address) is None:
-            return 'not-found', 'identidade não encontrada'
+            return "not-found", "identidade não encontrada"
         self.db.set_identity_label(address, label)
-        self.ui_queue.put(('identity-updated', address, label))
-        return 'success', None
+        self.ui_queue.put(("identity-updated", address, label))
+        return "success", None
 
     def set_identity_enabled(self, address, enabled):
         if self.db.get_identity(address) is None:
-            return 'not-found', 'identidade não encontrada'
+            return "not-found", "identidade não encontrada"
         if not enabled:
             enabled_rows = self.db.all_identities(enabled_only=True)
-            addrs = [r['address'] for r in enabled_rows]
+            addrs = [r["address"] for r in enabled_rows]
             if len(addrs) <= 1 and address in addrs:
-                return 'last-active', (
-                    'não é possível desabilitar a última identidade ativa; '
-                    'crie outra antes')
+                return "last-active", ("não é possível desabilitar a última identidade ativa; crie outra antes")
         self.db.set_identity_enabled(address, enabled)
         self._load_identities()
         self._refresh_streams()
-        self.ui_queue.put(('identity-updated', address, ''))
-        return 'success', None
+        self.ui_queue.put(("identity-updated", address, ""))
+        return "success", None
 
     def delete_identity(self, address):
         if self.db.get_identity(address) is None:
-            return 'not-found', 'identidade não encontrada'
+            return "not-found", "identidade não encontrada"
         enabled = self.db.all_identities(enabled_only=True)
-        addrs = [r['address'] for r in enabled]
+        addrs = [r["address"] for r in enabled]
         if len(addrs) <= 1 and address in addrs:
-            return 'last-active', (
-                'não é possível excluir a última identidade ativa; '
-                'crie outra antes')
+            return "last-active", ("não é possível excluir a última identidade ativa; crie outra antes")
         self.db.delete_identity(address)
         with self._lock:
             self.identities.pop(address, None)
         self._refresh_streams()
-        self.ui_queue.put(('identity-removed', address, ''))
-        return 'success', None
+        self.ui_queue.put(("identity-removed", address, ""))
+        return "success", None
 
     def create_channel(self, name, stream=1, label=None):
-        name = (name or '').strip()
+        name = (name or "").strip()
         if not name:
-            return 'invalid', 'nome do canal vazio'
+            return "invalid", "nome do canal vazio"
         try:
             stream = int(stream)
         except (TypeError, ValueError):
@@ -616,18 +629,24 @@ class Client:
             stream = 1
         keys = chan_keys_from_name(name, stream)
         self.db.add_identity(
-            keys.address, label or name, stream,
-            keys.signing_private, keys.encryption_private,
-            noncetrials=1000, extrabytes=1000, chan=1,
-            chan_label=label or name)
+            keys.address,
+            label or name,
+            stream,
+            keys.signing_private,
+            keys.encryption_private,
+            noncetrials=1000,
+            extrabytes=1000,
+            chan=1,
+            chan_label=label or name,
+        )
         keys.nonce_trials_per_byte = 1000
         keys.payload_length_extra_bytes = 1000
         with self._lock:
             self.identities[keys.address] = keys
         self._refresh_streams()
-        self.ui_queue.put(('channel-created', keys.address, label))
+        self.ui_queue.put(("channel-created", keys.address, label))
         self._reparse_orphans()
-        return 'success', keys.address
+        return "success", keys.address
 
     def export_identity(self, address):
         keys = self.identities.get(address)
@@ -635,11 +654,11 @@ class Client:
             return None
         row = self.db.get_identity(address)
         return {
-            'address': address,
-            'label': (row['label'] if row else '') or address,
-            'stream': keys.stream,
-            'signing_wif': wif_encode(keys.signing_private),
-            'encryption_wif': wif_encode(keys.encryption_private),
+            "address": address,
+            "label": (row["label"] if row else "") or address,
+            "stream": keys.stream,
+            "signing_wif": wif_encode(keys.signing_private),
+            "encryption_wif": wif_encode(keys.encryption_private),
         }
 
     def import_identity(self, signing_wif, encryption_wif, label, stream=1):
@@ -648,98 +667,97 @@ class Client:
         except (TypeError, ValueError):
             stream = 1
         try:
-            signing_private = wif_decode((signing_wif or '').strip())
-            encryption_private = wif_decode((encryption_wif or '').strip())
+            signing_private = wif_decode((signing_wif or "").strip())
+            encryption_private = wif_decode((encryption_wif or "").strip())
         except Exception:
-            return 'invalid', 'chave WIF inválida ou com checksum errado'
+            return "invalid", "chave WIF inválida ou com checksum errado"
         try:
-            keys = AddressKeys.from_private_keys(
-                signing_private, encryption_private, stream)
+            keys = AddressKeys.from_private_keys(signing_private, encryption_private, stream)
         except Exception:
-            return 'invalid', 'não foi possível derivar o endereço'
+            return "invalid", "não foi possível derivar o endereço"
         if keys.address in self.identities:
-            return 'exists', 'esta identidade já existe neste dispositivo'
+            return "exists", "esta identidade já existe neste dispositivo"
         self.db.add_identity(
-            keys.address, label or keys.address, stream,
-            signing_private, encryption_private,
-            noncetrials=1000, extrabytes=1000)
+            keys.address,
+            label or keys.address,
+            stream,
+            signing_private,
+            encryption_private,
+            noncetrials=1000,
+            extrabytes=1000,
+        )
         keys.nonce_trials_per_byte = 1000
         keys.payload_length_extra_bytes = 1000
         with self._lock:
             self.identities[keys.address] = keys
         self._refresh_streams()
-        self.ui_queue.put(('identity-created', keys.address, label))
+        self.ui_queue.put(("identity-created", keys.address, label))
         self._reparse_orphans()
-        return 'success', keys.address
+        return "success", keys.address
 
     def export_keys_dat(self):
         blocks = []
         for row in self.db.all_identities(enabled_only=False):
-            keys = self.identities.get(row['address'])
+            keys = self.identities.get(row["address"])
             if keys is None or keys.signing_private is None:
                 continue
             lines = [
-                '[%s]' % row['address'],
-                'label = %s' % (row['label'] or row['address']),
-                'enabled = %s' % ('true' if row['enabled'] else 'false'),
-                'noncetrialsperbyte = %s' % keys.nonce_trials_per_byte,
-                'payloadlengthextrabytes = %s'
-                % keys.payload_length_extra_bytes,
-                'privsigningkey = %s' % keys.signing_private.hex(),
-                'privencryptionkey = %s' % keys.encryption_private.hex(),
+                "[%s]" % row["address"],
+                "label = %s" % (row["label"] or row["address"]),
+                "enabled = %s" % ("true" if row["enabled"] else "false"),
+                "noncetrialsperbyte = %s" % keys.nonce_trials_per_byte,
+                "payloadlengthextrabytes = %s" % keys.payload_length_extra_bytes,
+                "privsigningkey = %s" % keys.signing_private.hex(),
+                "privencryptionkey = %s" % keys.encryption_private.hex(),
             ]
-            if row['chan']:
-                lines.append('chan = true')
-                lines.append('chan_label = %s' % (
-                    row['chan_label'] or row['label'] or ''))
-            blocks.append('\n'.join(lines))
-        return '\n\n'.join(blocks) + ('\n' if blocks else '')
+            if row["chan"]:
+                lines.append("chan = true")
+                lines.append("chan_label = %s" % (row["chan_label"] or row["label"] or ""))
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks) + ("\n" if blocks else "")
 
     def _import_keys_dat_section(self, parser, section, result):
         try:
             expected = AddressKeys.from_address(section)
-            signing_private = bytes.fromhex(
-                parser.get(section, 'privsigningkey').strip())
-            encryption_private = bytes.fromhex(
-                parser.get(section, 'privencryptionkey').strip())
-            keys = AddressKeys.from_private_keys(
-                signing_private, encryption_private, expected.stream)
+            signing_private = bytes.fromhex(parser.get(section, "privsigningkey").strip())
+            encryption_private = bytes.fromhex(parser.get(section, "privencryptionkey").strip())
+            keys = AddressKeys.from_private_keys(signing_private, encryption_private, expected.stream)
         except Exception:
-            result['errors'] += 1
+            result["errors"] += 1
             return
         if keys.address != section:
-            result['errors'] += 1
+            result["errors"] += 1
             return
         if keys.address in self.identities:
-            result['skipped'] += 1
+            result["skipped"] += 1
             return
-        label = parser.get(
-            section, 'label', fallback=keys.address).strip() or \
-            keys.address
-        chan = parser.get(
-            section, 'chan', fallback='false').strip().lower() == 'true'
-        chan_label = parser.get(section, 'chan_label', fallback='').strip()
+        label = parser.get(section, "label", fallback=keys.address).strip() or keys.address
+        chan = parser.get(section, "chan", fallback="false").strip().lower() == "true"
+        chan_label = parser.get(section, "chan_label", fallback="").strip()
         noncetrials, extrabytes = self._keys_dat_pow_params(parser, section)
         self.db.add_identity(
-            keys.address, label, expected.stream,
-            signing_private, encryption_private,
-            noncetrials=noncetrials, extrabytes=extrabytes,
+            keys.address,
+            label,
+            expected.stream,
+            signing_private,
+            encryption_private,
+            noncetrials=noncetrials,
+            extrabytes=extrabytes,
             chan=1 if chan else 0,
-            chan_label=chan_label or (label if chan else ''))
+            chan_label=chan_label or (label if chan else ""),
+        )
         keys.nonce_trials_per_byte = noncetrials
         keys.payload_length_extra_bytes = extrabytes
         with self._lock:
             self.identities[keys.address] = keys
-        result['imported'] += 1
-        result['addresses'].append(keys.address)
+        result["imported"] += 1
+        result["addresses"].append(keys.address)
 
     @staticmethod
     def _keys_dat_pow_params(parser, section):
         try:
-            noncetrials = int(parser.get(
-                section, 'noncetrialsperbyte', fallback='1000'))
-            extrabytes = int(parser.get(
-                section, 'payloadlengthextrabytes', fallback='1000'))
+            noncetrials = int(parser.get(section, "noncetrialsperbyte", fallback="1000"))
+            extrabytes = int(parser.get(section, "payloadlengthextrabytes", fallback="1000"))
         except ValueError:
             noncetrials, extrabytes = 1000, 1000
         return noncetrials, extrabytes
@@ -748,28 +766,28 @@ class Client:
         parser = configparser.ConfigParser()
         parser.optionxform = str
         try:
-            parser.read_string(text or '')
+            parser.read_string(text or "")
         except Exception:
-            return {'imported': 0, 'skipped': 0, 'errors': 1, 'addresses': []}
-        result = {'imported': 0, 'skipped': 0, 'errors': 0, 'addresses': []}
+            return {"imported": 0, "skipped": 0, "errors": 1, "addresses": []}
+        result = {"imported": 0, "skipped": 0, "errors": 0, "addresses": []}
         for section in parser.sections():
-            if not section.startswith('BM-'):
+            if not section.startswith("BM-"):
                 continue
             self._import_keys_dat_section(parser, section, result)
-        if result['imported']:
+        if result["imported"]:
             self._refresh_streams()
-            self.ui_queue.put(('identity-created', '', ''))
+            self.ui_queue.put(("identity-created", "", ""))
             self._reparse_orphans()
         return result
 
     def _load_pubkeys(self):
         # Repository Pattern: usa pubkey_repo em vez de SQL direto
         for row in self.pubkey_repo.all():
-            self.pubkeys[row['address']] = {
-                'signing_public': row['signing_public'],
-                'encryption_public': row['encryption_public'],
-                'nonce_trials_per_byte': row['noncetrials'],
-                'payload_length_extra_bytes': row['extrabytes'],
+            self.pubkeys[row["address"]] = {
+                "signing_public": row["signing_public"],
+                "encryption_public": row["encryption_public"],
+                "nonce_trials_per_byte": row["noncetrials"],
+                "payload_length_extra_bytes": row["extrabytes"],
             }
         # Self-pubkeys: chaves próprias sempre conhecidas (sem rede).
         # Evita que self-chat (contato == identidade) trave em awaiting-pubkey.
@@ -780,13 +798,13 @@ class Client:
         try:
             for addr, keys in list((self.identities or {}).items()):
                 try:
-                    if getattr(keys, 'signing_public', None) is None:
+                    if getattr(keys, "signing_public", None) is None:
                         continue
                     self.pubkeys[addr] = {
-                        'signing_public': keys.signing_public,
-                        'encryption_public': keys.encryption_public,
-                        'nonce_trials_per_byte': getattr(keys, 'nonce_trials_per_byte', 1000) or 1000,
-                        'payload_length_extra_bytes': getattr(keys, 'payload_length_extra_bytes', 1000) or 1000,
+                        "signing_public": keys.signing_public,
+                        "encryption_public": keys.encryption_public,
+                        "nonce_trials_per_byte": getattr(keys, "nonce_trials_per_byte", 1000) or 1000,
+                        "payload_length_extra_bytes": getattr(keys, "payload_length_extra_bytes", 1000) or 1000,
                     }
                 except Exception:
                     continue
@@ -800,12 +818,12 @@ class Client:
             return pub
         try:
             keys = (self.identities or {}).get(address)
-            if keys is not None and getattr(keys, 'signing_public', None) is not None:
+            if keys is not None and getattr(keys, "signing_public", None) is not None:
                 entry = {
-                    'signing_public': keys.signing_public,
-                    'encryption_public': keys.encryption_public,
-                    'nonce_trials_per_byte': getattr(keys, 'nonce_trials_per_byte', 1000) or 1000,
-                    'payload_length_extra_bytes': getattr(keys, 'payload_length_extra_bytes', 1000) or 1000,
+                    "signing_public": keys.signing_public,
+                    "encryption_public": keys.encryption_public,
+                    "nonce_trials_per_byte": getattr(keys, "nonce_trials_per_byte", 1000) or 1000,
+                    "payload_length_extra_bytes": getattr(keys, "payload_length_extra_bytes", 1000) or 1000,
                 }
                 self.pubkeys[address] = entry
                 return entry
@@ -827,18 +845,16 @@ class Client:
     # ---------- contatos / canais ----------
 
     def add_contact(self, address_text, label=None):
-        status, version, stream, ripe = addr_module.decode_address(
-            address_text)
-        if status != 'success':
+        status, version, stream, ripe = addr_module.decode_address(address_text)
+        if status != "success":
             return status, version
         if version < 3:
-            return 'unsupported', version
+            return "unsupported", version
         # Repository Pattern: delega ao ContactRepository
-        self.contact_repo.add(address_text, label or address_text,
-                            stream=stream)
+        self.contact_repo.add(address_text, label or address_text, stream=stream)
         self._refresh_streams()
-        self.ui_queue.put(('contact-added', address_text, label))
-        return 'success', version
+        self.ui_queue.put(("contact-added", address_text, label))
+        return "success", version
 
     def remove_contact(self, address_text):
         # Repository Pattern: remove via repositórios
@@ -854,34 +870,32 @@ class Client:
         except Exception:
             self.message_repo.delete_conversation(address_text)
         self._refresh_streams()
-        self.ui_queue.put(('contact-removed', address_text, ''))
+        self.ui_queue.put(("contact-removed", address_text, ""))
 
     def subscribe(self, name_or_address, label=None, stream=1):
-        status, _version, _stream, _ripe = addr_module.decode_address(
-            name_or_address)
-        if status == 'success':
-            self.db.add_subscription(name_or_address,
-                                     label or name_or_address)
+        status, _version, _stream, _ripe = addr_module.decode_address(name_or_address)
+        if status == "success":
+            self.db.add_subscription(name_or_address, label or name_or_address)
             self._refresh_streams()
-            self.ui_queue.put(('subscribed', name_or_address, label))
-            return 'success', _version
-        name = (name_or_address or '').strip()
+            self.ui_queue.put(("subscribed", name_or_address, label))
+            return "success", _version
+        name = (name_or_address or "").strip()
         if not name:
             return status, None
         try:
             keys = chan_keys_from_name(name, stream)
         except Exception:
-            return 'invalid', None
+            return "invalid", None
         self.db.add_subscription(keys.address, label or name, name)
         self._refresh_streams()
-        self.ui_queue.put(('subscribed', keys.address, label or name))
-        return 'success', 4
+        self.ui_queue.put(("subscribed", keys.address, label or name))
+        return "success", 4
 
     def unsubscribe(self, address_text):
         self.db.remove_subscription(address_text)
         self.db.delete_conversation(address_text)
         self._refresh_streams()
-        self.ui_queue.put(('subscribed', address_text, ''))
+        self.ui_queue.put(("subscribed", address_text, ""))
 
     # ---------- objetos recebidos ----------
 
@@ -897,7 +911,7 @@ class Client:
             elif parsed.object_type == OBJECT_BROADCAST:
                 self._on_broadcast(parsed, raw)
         except Exception as exc:
-            self._log('process', 'erro ao processar objeto: %r' % exc)
+            self._log("process", "erro ao processar objeto: %r" % exc)
 
     def _identities_snapshot(self):
         """M7: snapshot de identities sob lock (iteração segura)."""
@@ -920,7 +934,7 @@ class Client:
             try:
                 # A2: DB pode estar fechado no stop(); nunca levantar aqui.
                 # Repository Pattern: usa MessageRepository
-                self.message_repo.set_status(message_id, 'ackreceived')
+                self.message_repo.set_status(message_id, "ackreceived")
             except Exception:
                 return
             try:
@@ -928,8 +942,8 @@ class Client:
                     self._ack_retry_counts.pop(message_id, None)
             except Exception:
                 pass
-            self._log('rede', 'confirmação (ACK) recebida: mensagem entregue')
-            self.ui_queue.put(('ack', message_id))
+            self._log("rede", "confirmação (ACK) recebida: mensagem entregue")
+            self.ui_queue.put(("ack", message_id))
 
     def _on_getpubkey(self, parsed):
         tag = parsed.data[:32]
@@ -948,8 +962,7 @@ class Client:
                     self._getpubkey_last[bytes(tag)] = now
                 except Exception:
                     pass
-                self._log('rede', 'pedido de chave pública recebido para %s; '
-                          'publicando pubkey…' % address[:18])
+                self._log("rede", "pedido de chave pública recebido para %s; publicando pubkey…" % address[:18])
                 self._publish_pubkey(keys, parsed.stream)
                 return
 
@@ -958,7 +971,7 @@ class Client:
         # Repository Pattern: busca contatos via ContactRepository
         for contact in self.contact_repo.all():
             try:
-                contact_keys = AddressKeys.from_address(contact['address'])
+                contact_keys = AddressKeys.from_address(contact["address"])
             except Exception:
                 continue
             if contact_keys.tag != tag:
@@ -968,21 +981,21 @@ class Client:
                 continue
             # Repository Pattern: persiste via PubkeyRepository
             self.pubkey_repo.store(
-                contact['address'], incoming.signing_public,
+                contact["address"],
+                incoming.signing_public,
                 incoming.encryption_public,
                 incoming.nonce_trials_per_byte,
-                incoming.payload_length_extra_bytes)
-            self.pubkeys[contact['address']] = {
-                'signing_public': incoming.signing_public,
-                'encryption_public': incoming.encryption_public,
-                'nonce_trials_per_byte': incoming.nonce_trials_per_byte,
-                'payload_length_extra_bytes':
-                    incoming.payload_length_extra_bytes,
+                incoming.payload_length_extra_bytes,
+            )
+            self.pubkeys[contact["address"]] = {
+                "signing_public": incoming.signing_public,
+                "encryption_public": incoming.encryption_public,
+                "nonce_trials_per_byte": incoming.nonce_trials_per_byte,
+                "payload_length_extra_bytes": incoming.payload_length_extra_bytes,
             }
-            self._log('rede', 'chave pública recebida e válida de %s' %
-                      contact['address'][:18])
-            self.ui_queue.put(('pubkey', contact['address']))
-            self._send_queued(contact['address'])
+            self._log("rede", "chave pública recebida e válida de %s" % contact["address"][:18])
+            self.ui_queue.put(("pubkey", contact["address"]))
+            self._send_queued(contact["address"])
             return
 
     def _on_msg(self, parsed, raw):
@@ -994,14 +1007,19 @@ class Client:
             return
         body = _decode_body(incoming.encoding, incoming.message)
         self.db.add_message(
-            incoming.inventory_hash, incoming.sender_address,
-            incoming.to_identity.address, '', body,
-            incoming.encoding, int(time.time()), 'in', 'received',
-            expires=parsed.expires)
-        self._log('rede', 'mensagem recebida de %s' %
-                  incoming.sender_address[:18])
-        self.ui_queue.put(('message', incoming.sender_address,
-                           incoming.to_identity.address, body, parsed.expires))
+            incoming.inventory_hash,
+            incoming.sender_address,
+            incoming.to_identity.address,
+            "",
+            body,
+            incoming.encoding,
+            int(time.time()),
+            "in",
+            "received",
+            expires=parsed.expires,
+        )
+        self._log("rede", "mensagem recebida de %s" % incoming.sender_address[:18])
+        self.ui_queue.put(("message", incoming.sender_address, incoming.to_identity.address, body, parsed.expires))
         if incoming.ack_data:
             self._relay_ack(incoming.ack_data)
 
@@ -1022,10 +1040,9 @@ class Client:
         try:
             if len(packet) < 24:
                 return
-            magic, command, length, checksum = packets.parse_header(
-                packet[:24])
+            magic, command, length, checksum = packets.parse_header(packet[:24])
             obj = packet[24:]
-            if magic != packets.MAGIC or command != 'object':
+            if magic != packets.MAGIC or command != "object":
                 return
             if len(obj) != length:
                 return
@@ -1048,14 +1065,14 @@ class Client:
             with self._lock:
                 if self._ack_pool is None:
                     from concurrent.futures import ThreadPoolExecutor
-                    self._ack_pool = ThreadPoolExecutor(
-                        max_workers=3, thread_name_prefix='ack-relay')
+
+                    self._ack_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ack-relay")
                 pool = self._ack_pool
             pool.submit(self._relay_ack_sync, bytes(packet))
         except Exception:
-            thread = threading.Thread(target=self._relay_ack_sync,
-                                      args=(bytes(packet),), daemon=True,
-                                      name='ack-relay-fallback')
+            thread = threading.Thread(
+                target=self._relay_ack_sync, args=(bytes(packet),), daemon=True, name="ack-relay-fallback"
+            )
             thread.start()
             self._track_worker(thread)
 
@@ -1064,19 +1081,19 @@ class Client:
         reverse = {}
         for subscription in self.db.all_subscriptions():
             try:
-                keys = AddressKeys.from_address(subscription['address'])
+                keys = AddressKeys.from_address(subscription["address"])
             except Exception:
                 continue
             subscriptions[keys.tag] = keys
-            reverse[keys.tag] = subscription['address']
+            reverse[keys.tag] = subscription["address"]
         for channel in self.db.all_identities(enabled_only=False):
-            if channel['chan'] and channel['enabled']:
+            if channel["chan"] and channel["enabled"]:
                 try:
-                    keys = AddressKeys.from_address(channel['address'])
+                    keys = AddressKeys.from_address(channel["address"])
                 except Exception:
                     continue
                 subscriptions.setdefault(keys.tag, keys)
-                reverse.setdefault(keys.tag, channel['address'])
+                reverse.setdefault(keys.tag, channel["address"])
         return subscriptions, reverse
 
     def _store_incoming_broadcast(self, parsed, incoming, reverse):
@@ -1087,13 +1104,19 @@ class Client:
             return
         body = _decode_body(incoming.encoding, incoming.message)
         self.db.add_message(
-            incoming.inventory_hash, incoming.address, channel_address,
-            '', body, incoming.encoding, int(time.time()), 'in', 'received',
-            expires=parsed.expires)
-        self._log('rede', 'postagem recebida no canal %s' %
-                  str(channel_address)[:18])
-        self.ui_queue.put(('broadcast', channel_address, incoming.address,
-                           body, parsed.expires))
+            incoming.inventory_hash,
+            incoming.address,
+            channel_address,
+            "",
+            body,
+            incoming.encoding,
+            int(time.time()),
+            "in",
+            "received",
+            expires=parsed.expires,
+        )
+        self._log("rede", "postagem recebida no canal %s" % str(channel_address)[:18])
+        self.ui_queue.put(("broadcast", channel_address, incoming.address, body, parsed.expires))
 
     def _on_broadcast(self, parsed, raw):
         subscriptions, reverse = self._collect_broadcast_keys()
@@ -1117,7 +1140,7 @@ class Client:
     def get_msg_ttl(self):
         """TTL vigente (s) para as próximas mensagens; sempre dentro da faixa."""
         try:
-            raw = self.db.get_setting('msg_ttl_seconds', MSG_TTL_DEFAULT)
+            raw = self.db.get_setting("msg_ttl_seconds", MSG_TTL_DEFAULT)
         except Exception:
             return MSG_TTL_DEFAULT
         return self._clamp_ttl(raw)
@@ -1134,14 +1157,13 @@ class Client:
         else:
             effective = self._clamp_ttl(number)
             clamped = effective != number
-        self.db.set_setting('msg_ttl_seconds', str(effective))
+        self.db.set_setting("msg_ttl_seconds", str(effective))
         if clamped:
-            hint = ('TTL das mensagens fora da faixa; usando %s '
-                    '(a rede só aceita de 1 hora a 21 dias).')
-            self._log('rede', hint % format_ttl_pt(effective))
+            hint = "TTL das mensagens fora da faixa; usando %s (a rede só aceita de 1 hora a 21 dias)."
+            self._log("rede", hint % format_ttl_pt(effective))
         return effective, clamped
 
-    def _send_self_loopback(self, identity_address, subject, body, encoding):
+    def _send_self_loopback(self, identity_address, subject, body, encoding):  # noqa: C901
         """Entrega local para self-chat (sem PoW/rede).
 
         Cria outbound (ackreceived) + inbound (received) e emite eventos,
@@ -1153,42 +1175,61 @@ class Client:
         expires = now + ttl
         try:
             out_id = self.message_repo.add(
-                None, identity_address, identity_address, subject, body,
-                encoding, now, 'out', 'ackreceived', ttl=ttl, expires=expires)
+                None,
+                identity_address,
+                identity_address,
+                subject,
+                body,
+                encoding,
+                now,
+                "out",
+                "ackreceived",
+                ttl=ttl,
+                expires=expires,
+            )
         except TypeError:
             out_id = self.db.add_message(
-                None, identity_address, identity_address, subject, body,
-                encoding, now, 'out', 'ackreceived', ttl=ttl)
+                None, identity_address, identity_address, subject, body, encoding, now, "out", "ackreceived", ttl=ttl
+            )
             try:
                 self.db.set_message_expiry(out_id, expires)
             except Exception:
                 pass
         try:
             self.message_repo.add(
-                None, identity_address, identity_address, subject, body,
-                encoding, now, 'in', 'received', ttl=ttl, expires=expires)
+                None,
+                identity_address,
+                identity_address,
+                subject,
+                body,
+                encoding,
+                now,
+                "in",
+                "received",
+                ttl=ttl,
+                expires=expires,
+            )
         except TypeError:
             try:
                 self.db.add_message(
-                    None, identity_address, identity_address, subject, body,
-                    encoding, now, 'in', 'received', ttl=ttl)
+                    None, identity_address, identity_address, subject, body, encoding, now, "in", "received", ttl=ttl
+                )
             except Exception:
                 pass
         try:
-            self.ui_queue.put(('status', out_id, 'ackreceived'))
-            self.ui_queue.put(('message', identity_address, identity_address, body, expires))
+            self.ui_queue.put(("status", out_id, "ackreceived"))
+            self.ui_queue.put(("message", identity_address, identity_address, body, expires))
         except Exception:
             pass
-        return 'success', out_id
+        return "success", out_id
 
     def _resolve_message_ttl(self, message_id, ttl=None):
         # Retry usa o TTL guardado na linha; linhas legadas usam o vigente.
         if ttl is not None:
             return self._clamp_ttl(ttl)
         try:
-            rows = self.db.query('SELECT ttl FROM messages WHERE id=?',
-                                 (message_id,))
-            stored = rows[0].get('ttl') if rows else None
+            rows = self.db.query("SELECT ttl FROM messages WHERE id=?", (message_id,))
+            stored = rows[0].get("ttl") if rows else None
         except Exception:
             stored = None
         if stored:
@@ -1213,11 +1254,10 @@ class Client:
                 self._ack_watch.pop(key, None)
         for _key, message_id in expired:
             try:
-                rows = self.db.query(
-                    'SELECT status FROM messages WHERE id=?', (message_id,))
-                if rows and rows[0]['status'] == 'sent':
-                    self.db.set_message_status(message_id, 'ack-failed')
-                    self.ui_queue.put(('status', message_id, 'ack-failed'))
+                rows = self.db.query("SELECT status FROM messages WHERE id=?", (message_id,))
+                if rows and rows[0]["status"] == "sent":
+                    self.db.set_message_status(message_id, "ack-failed")
+                    self.ui_queue.put(("status", message_id, "ack-failed"))
             except Exception:
                 pass
         return len(expired)
@@ -1238,33 +1278,32 @@ class Client:
     # ---------- envio ----------  # noqa: E303
 
     def request_pubkey(self, address_text):  # noqa: E301
-        status, version, stream, ripe = addr_module.decode_address(
-            address_text)
-        if status != 'success':
+        status, version, stream, ripe = addr_module.decode_address(address_text)
+        if status != "success":
             return status
         if version != 4:
-            return 'unsupported'
+            return "unsupported"
         try:
             keys = AddressKeys.from_address(address_text)
         except Exception:
-            return 'invalid'
+            return "invalid"
         # Factory Pattern: cria via factory (validação não é silenciada)
         try:
-            unsigned = self.protocol_factory.create_getpubkey(
-                int(time.time()) + GETPUBKEY_TTL, stream, keys.tag)
+            unsigned = self.protocol_factory.create_getpubkey(int(time.time()) + GETPUBKEY_TTL, stream, keys.tag)
         except ValueError:
             raise
         except Exception:
-            unsigned = objects.build_getpubkey_unsigned(
-                int(time.time()) + GETPUBKEY_TTL, stream, 4, keys.tag)
-        target = calculate_target(1000, 1000, len(unsigned) + 8,
-                                  GETPUBKEY_TTL)
+            unsigned = objects.build_getpubkey_unsigned(int(time.time()) + GETPUBKEY_TTL, stream, 4, keys.tag)
+        target = calculate_target(1000, 1000, len(unsigned) + 8, GETPUBKEY_TTL)
         self._pow_and_publish(
-            unsigned, target,
+            unsigned,
+            target,
             done_cb=lambda complete, nonce: self.net.announce_object(complete),
-            dest=address_text, preview='pedido de chave pública',
-            kind='getpubkey')
-        return 'success'
+            dest=address_text,
+            preview="pedido de chave pública",
+            kind="getpubkey",
+        )
+        return "success"
 
     def _send_queued(self, to_address):
         # A12: cap por ciclo (~5) + pular se sem peers quando há muitos pendentes
@@ -1274,8 +1313,8 @@ class Client:
         # quanto o de TTL.
         try:
             rows = self.db.query(
-                "SELECT * FROM messages WHERE to_address=? "
-                "AND status='awaiting-pubkey' LIMIT 5", (to_address,))
+                "SELECT * FROM messages WHERE to_address=? AND status='awaiting-pubkey' LIMIT 5", (to_address,)
+            )
         except Exception:
             return
         if not rows:
@@ -1287,96 +1326,105 @@ class Client:
             pass
         for row in rows:
             self._pow_and_publish_message(
-                row['id'], row['from_address'], to_address,
-                row['body'], row['encoding'], ttl=row.get('ttl'))
+                row["id"], row["from_address"], to_address, row["body"], row["encoding"], ttl=row.get("ttl")
+            )
 
     @staticmethod
     def _wire_too_large(wire_body):
         from ..protocol.const import MAX_WIRE_BODY_BYTES
+
         try:
-            return len(wire_body.encode('utf-8')) > MAX_WIRE_BODY_BYTES
+            return len(wire_body.encode("utf-8")) > MAX_WIRE_BODY_BYTES
         except Exception:
             return True
 
-    def send_message(self, identity_address, to_address, subject, body,
-                     encoding=BITMESSAGE_ENCODING_TRIVIAL):
+    def send_message(self, identity_address, to_address, subject, body, encoding=BITMESSAGE_ENCODING_TRIVIAL):
         """Envia DM. Compat: retorna (status, error_ou_None).
 
         Para obter o message_id sem race, use send_message_with_id().
         """
-        status, payload = self.send_message_with_id(
-            identity_address, to_address, subject, body, encoding)
-        if status != 'success':
+        status, payload = self.send_message_with_id(identity_address, to_address, subject, body, encoding)
+        if status != "success":
             return status, payload
-        return 'success', None
+        return "success", None
 
-    def send_message_with_id(self, identity_address, to_address, subject, body,
-                             encoding=BITMESSAGE_ENCODING_TRIVIAL):
+    def send_message_with_id(  # noqa: C901, E501
+        self, identity_address, to_address, subject, body, encoding=BITMESSAGE_ENCODING_TRIVIAL
+    ):
         """Envia DM e retorna (status, message_id_ou_erro).
 
         Corrige race do Command que fazia SELECT ... ORDER BY id DESC
         (podia capturar mensagem de outra conversa).
         """
         status, version, stream, ripe = addr_module.decode_address(to_address)
-        if status != 'success':
-            return status, 'endereço inválido'
+        if status != "success":
+            return status, "endereço inválido"
         if version != 4:
-            return 'unsupported', 'somente endereços versão 4 são suportados'
+            return "unsupported", "somente endereços versão 4 são suportados"
         try:
             contact_keys = AddressKeys.from_address(to_address)
         except Exception:
-            return 'invalid', 'endereço inválido'
-        body = body or ''
+            return "invalid", "endereço inválido"
+        body = body or ""
         # B2: subject nunca trafegava no wire — prefixa para não haver perda silenciosa
-        wire_body = ('Subject: %s\n\n%s' % (subject, body)) if (subject or '').strip() else body
+        wire_body = ("Subject: %s\n\n%s" % (subject, body)) if (subject or "").strip() else body
         # C3: teto único no wire (b64+overhead ≤ 200k) ANTES do PoW.
         try:
             if self._wire_too_large(wire_body):
-                return 'too-large', 'mensagem grande demais para um objeto'
+                return "too-large", "mensagem grande demais para um objeto"
         except Exception:
-            return 'invalid', 'corpo de mensagem inválido'
+            return "invalid", "corpo de mensagem inválido"
         # Self-send (contato == identidade): entrega local instantânea,
         # sem PoW/rede. Corrige "envio não funciona" no self-chat (teste).
         if to_address == identity_address and identity_address in (self.identities or {}):
             try:
-                return self._send_self_loopback(
-                    identity_address, subject or '', body, encoding)
+                return self._send_self_loopback(identity_address, subject or "", body, encoding)
             except Exception as exc:
-                return 'error', str(exc)
+                return "error", str(exc)
         ttl = self.get_msg_ttl()
         message_id = self.message_repo.add(
-            None, identity_address, to_address, subject or '', body,
-            encoding, int(time.time()), 'out', 'awaiting-pubkey', ttl=ttl)
-        self.ui_queue.put(('status', message_id, 'sending'))
+            None,
+            identity_address,
+            to_address,
+            subject or "",
+            body,
+            encoding,
+            int(time.time()),
+            "out",
+            "awaiting-pubkey",
+            ttl=ttl,
+        )
+        self.ui_queue.put(("status", message_id, "sending"))
         # Pubkey própria ou conhecida envia direto; senão pede chave via rede
         if self._pub_entry_for(to_address) is not None:
-            self._pow_and_publish_message(message_id, identity_address,
-                                          to_address, body, encoding, ttl=ttl)
-            return 'success', message_id
+            self._pow_and_publish_message(message_id, identity_address, to_address, body, encoding, ttl=ttl)
+            return "success", message_id
         # Factory Pattern: cria getpubkey via factory (validação não silenciada)
         try:
             unsigned = self.protocol_factory.create_getpubkey(
-                int(time.time()) + GETPUBKEY_TTL, stream, contact_keys.tag)
+                int(time.time()) + GETPUBKEY_TTL, stream, contact_keys.tag
+            )
         except ValueError:
             raise
         except Exception:
-            unsigned = objects.build_getpubkey_unsigned(
-                int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
-        target = calculate_target(1000, 1000, len(unsigned) + 8,
-                                  GETPUBKEY_TTL)
+            unsigned = objects.build_getpubkey_unsigned(int(time.time()) + GETPUBKEY_TTL, stream, 4, contact_keys.tag)
+        target = calculate_target(1000, 1000, len(unsigned) + 8, GETPUBKEY_TTL)
         # A1: antes o PoW era descartado (sem done_cb) — agora anuncia
         self._pow_and_publish(
-            unsigned, target,
+            unsigned,
+            target,
             done_cb=lambda complete, nonce: self.net.announce_object(complete),
-            dest=to_address, preview='pedido de chave pública',
-            kind='getpubkey')
-        return 'success', message_id
+            dest=to_address,
+            preview="pedido de chave pública",
+            kind="getpubkey",
+        )
+        return "success", message_id
 
     def _fail_message_no_ack(self, message_id):
         # B3: sem ACK não envia degradado silencioso
         try:
-            self.db.set_message_status(message_id, 'ack-failed')
-            self.ui_queue.put(('status', message_id, 'ack-failed'))
+            self.db.set_message_status(message_id, "ack-failed")
+            self.ui_queue.put(("status", message_id, "ack-failed"))
         finally:
             with self._lock:
                 self._msg_in_flight.discard(message_id)
@@ -1384,14 +1432,13 @@ class Client:
     def _message_wire_body(self, message_id, body):
         # B2: inclui subject no wire (retry lê do DB via _send_queued)
         try:
-            rows = self.db.query(
-                "SELECT subject FROM messages WHERE id=?", (message_id,))
-            subj = (rows[0]['subject'] if rows else '') or ''
+            rows = self.db.query("SELECT subject FROM messages WHERE id=?", (message_id,))
+            subj = (rows[0]["subject"] if rows else "") or ""
         except Exception:
-            subj = ''
-        wire = ('Subject: %s\n\n%s' % (subj, body)) if subj.strip() else (body or '')
+            subj = ""
+        wire = ("Subject: %s\n\n%s" % (subj, body)) if subj.strip() else (body or "")
         try:
-            return wire.encode('utf-8')
+            return wire.encode("utf-8")
         except Exception:
             with self._lock:
                 self._msg_in_flight.discard(message_id)
@@ -1400,10 +1447,8 @@ class Client:
     def _finish_message_send(self, message_id, complete):
         # B1: revalida antes de anunciar (conversa pode ter sido apagada)
         try:
-            rows = self.db.query(
-                "SELECT status FROM messages WHERE id=?", (message_id,))
-            if not rows or rows[0]['status'] not in (
-                    'sending', 'awaiting-pubkey'):
+            rows = self.db.query("SELECT status FROM messages WHERE id=?", (message_id,))
+            if not rows or rows[0]["status"] not in ("sending", "awaiting-pubkey"):
                 return
         except Exception:
             pass
@@ -1417,23 +1462,34 @@ class Client:
         except Exception:
             pass
         try:
-            self.db.set_message_status(message_id, 'sent')
+            self.db.set_message_status(message_id, "sent")
         except Exception:
             return
-        self.ui_queue.put(('status', message_id, 'sent'))
+        self.ui_queue.put(("status", message_id, "sent"))
 
     def _drop_oversize_wire(self, message_id, watch):
         try:
-            self.db.set_message_status(message_id, 'ack-failed')
+            self.db.set_message_status(message_id, "ack-failed")
         except Exception:
             pass
         with self._lock:
             self._msg_in_flight.discard(message_id)
             self._ack_watch.pop(watch, None)
-        self.ui_queue.put(('status', message_id, 'ack-failed'))
+        self.ui_queue.put(("status", message_id, "ack-failed"))
 
-    def _send_message_worker(self, message_id, stream, keys, pub,  # noqa: C901
-                             to_address, body, encoding, expires, ripe, ttl):
+    def _send_message_worker(  # noqa: C901
+        self,
+        message_id,
+        stream,
+        keys,
+        pub,
+        to_address,
+        body,
+        encoding,
+        expires,
+        ripe,
+        ttl,
+    ):
         ack_packet, watch = self._build_ack_packet(stream, expires=expires)
         if not watch:
             self._fail_message_no_ack(message_id)
@@ -1451,6 +1507,7 @@ class Client:
         # C3: revalida o teto único antes do PoW (texto pode ter crescido).
         try:
             from ..protocol.const import MAX_WIRE_BODY_BYTES
+
             oversize = len(wire_bytes) > MAX_WIRE_BODY_BYTES
         except Exception:
             oversize = False
@@ -1458,12 +1515,11 @@ class Client:
             self._drop_oversize_wire(message_id, watch)
             return
         unsigned = objects.build_msg_unsigned(
-            expires, stream, keys, pub['encryption_public'], ripe,
-            wire_bytes, encoding, ack_packet)
+            expires, stream, keys, pub["encryption_public"], ripe, wire_bytes, encoding, ack_packet
+        )
         target = calculate_target(
-            pub['nonce_trials_per_byte'],
-            pub['payload_length_extra_bytes'],
-            len(unsigned) + 8, ttl)
+            pub["nonce_trials_per_byte"], pub["payload_length_extra_bytes"], len(unsigned) + 8, ttl
+        )
 
         def done(complete, nonce):
             self._finish_message_send(message_id, complete)
@@ -1472,13 +1528,13 @@ class Client:
             self._pow_sequencer += 1
             token = self._pow_sequencer
             stop_event = threading.Event()
-        self._track_pow(token, stop_event, message_id=message_id,
-                        dest=to_address, preview=self._pow_preview(body),
-                        kind='msg')
+        self._track_pow(
+            token, stop_event, message_id=message_id, dest=to_address, preview=self._pow_preview(body), kind="msg"
+        )
         try:
             self._run_pow_and_done(
-                unsigned, target, message_id=message_id, done_cb=done,
-                token=token, stop_event=stop_event)
+                unsigned, target, message_id=message_id, done_cb=done, token=token, stop_event=stop_event
+            )
         except Exception:
             with self._lock:
                 self._msg_in_flight.discard(message_id)
@@ -1515,86 +1571,93 @@ class Client:
 
     def _resend_without_pubkey(self, message_id, to_address):
         try:
-            self.db.set_message_status(message_id, 'awaiting-pubkey')
+            self.db.set_message_status(message_id, "awaiting-pubkey")
         except Exception:
             pass
         try:
             self.request_pubkey(to_address)
         except Exception:
             pass
-        return 'success', None
+        return "success", None
 
-    def resend_message(self, message_id):
+    def resend_message(self, message_id):  # noqa: C901
         """M5: reenvio manual de mensagem 'ack-failed'/'sending'."""
         try:
             row = self.db.get_message(message_id)
         except Exception:
-            return 'error', 'mensagem não encontrada'
-        if not row or row['direction'] != 'out':
-            return 'error', 'mensagem não encontrada'
-        if row['status'] not in ('ack-failed', 'sending', 'awaiting-pubkey'):
-            return 'error', 'estado não permite reenvio (%s)' % row['status']
-        to_address = row['to_address']
+            return "error", "mensagem não encontrada"
+        if not row or row["direction"] != "out":
+            return "error", "mensagem não encontrada"
+        if row["status"] not in ("ack-failed", "sending", "awaiting-pubkey"):
+            return "error", "estado não permite reenvio (%s)" % row["status"]
+        to_address = row["to_address"]
         # Self-send travado: entrega local imediata (sem gastar slot de retry)
         try:
-            if (to_address == row.get('from_address')
-                    and to_address in (self.identities or {})):
+            if to_address == row.get("from_address") and to_address in (self.identities or {}):
                 return self._resend_self_loopback(message_id, row)
         except Exception:
             pass
         if self._pub_entry_for(to_address) is None:
             if not self._claim_resend_slot(message_id):
-                return 'error', 'limite de reenvios atingido'
+                return "error", "limite de reenvios atingido"
             return self._resend_without_pubkey(message_id, to_address)
         # ADV: não consome slot se a identidade sumiu (pow retornaria
         # sem lançar e esgotaria o limite sem queimar PoW).
-        if row['from_address'] not in self.identities:
-            return 'error', 'identidade de origem ausente'
+        if row["from_address"] not in self.identities:
+            return "error", "identidade de origem ausente"
         if not self._claim_resend_slot(message_id):
-            return 'error', 'limite de reenvios atingido'
-        self._pow_and_publish_message(message_id, row['from_address'],
-                                      to_address, row['body'], row['encoding'])
-        return 'success', None
+            return "error", "limite de reenvios atingido"
+        self._pow_and_publish_message(message_id, row["from_address"], to_address, row["body"], row["encoding"])
+        return "success", None
 
     def _resend_self_loopback(self, message_id, row):
         """Converte mensagem self travada em entregue local."""
         try:
-            self.message_repo.set_status(message_id, 'ackreceived')
+            self.message_repo.set_status(message_id, "ackreceived")
         except Exception:
             try:
-                self.db.set_message_status(message_id, 'ackreceived')
+                self.db.set_message_status(message_id, "ackreceived")
             except Exception:
                 pass
         try:
-            self.ui_queue.put(('status', message_id, 'ackreceived'))
+            self.ui_queue.put(("status", message_id, "ackreceived"))
         except Exception:
             pass
         # Garante inbound correspondente para o chat mostrar
         try:
-            body = row.get('body') or ''
+            body = row.get("body") or ""
             exists = self.db.query(
-                'SELECT id FROM messages WHERE direction=? AND from_address=? '
-                'AND to_address=? AND body=? ORDER BY id DESC LIMIT 1',
-                ('in', row.get('from_address'), row.get('to_address'), body))
+                "SELECT id FROM messages WHERE direction=? AND from_address=? "
+                "AND to_address=? AND body=? ORDER BY id DESC LIMIT 1",
+                ("in", row.get("from_address"), row.get("to_address"), body),
+            )
             if not exists:
                 now = int(time.time())
-                ttl = self._clamp_ttl(row.get('ttl') or self.get_msg_ttl())
+                ttl = self._clamp_ttl(row.get("ttl") or self.get_msg_ttl())
                 self.message_repo.add(
-                    None, row.get('from_address'), row.get('to_address'),
-                    row.get('subject') or '', body, row.get('encoding') or 1,
-                    now, 'in', 'received', ttl=ttl, expires=now + ttl)
-                self.ui_queue.put(('message', row.get('from_address'),
-                                   row.get('to_address'), body, now + ttl))
+                    None,
+                    row.get("from_address"),
+                    row.get("to_address"),
+                    row.get("subject") or "",
+                    body,
+                    row.get("encoding") or 1,
+                    now,
+                    "in",
+                    "received",
+                    ttl=ttl,
+                    expires=now + ttl,
+                )
+                self.ui_queue.put(("message", row.get("from_address"), row.get("to_address"), body, now + ttl))
         except Exception:
             pass
-        return 'success', None
+        return "success", None
 
-    def _pow_and_publish_message(self, message_id, identity_address,
-                                 to_address, body, encoding, ttl=None):
+    def _pow_and_publish_message(  # noqa: C901, E501
+        self, message_id, identity_address, to_address, body, encoding, ttl=None
+    ):
         # Self-send antigo travado: resolve via loopback, sem PoW
         try:
-            if (to_address == identity_address
-                    and to_address in (self.identities or {})):
+            if to_address == identity_address and to_address in (self.identities or {}):
                 row = None
                 try:
                     row = self.db.get_message(message_id)
@@ -1612,14 +1675,14 @@ class Client:
         if keys is None:
             return
         status, version, stream, ripe = addr_module.decode_address(to_address)
-        if status != 'success':
+        if status != "success":
             return
         with self._lock:
             if message_id in self._msg_in_flight:
                 return
             self._msg_in_flight.add(message_id)
         try:
-            self.db.set_message_status(message_id, 'sending')
+            self.db.set_message_status(message_id, "sending")
         except Exception:
             pass
         ttl = self._resolve_message_ttl(message_id, ttl)
@@ -1628,11 +1691,12 @@ class Client:
             self.db.set_message_expiry(message_id, expires)
         except Exception:
             pass
-        worker = threading.Thread(target=self._send_message_worker,
-                                  args=(message_id, stream, keys, pub, to_address,
-                                        body, encoding, expires, ripe, ttl),
-                                  daemon=True,
-                                  name='msg-pow-%s' % message_id)
+        worker = threading.Thread(
+            target=self._send_message_worker,
+            args=(message_id, stream, keys, pub, to_address, body, encoding, expires, ripe, ttl),
+            daemon=True,
+            name="msg-pow-%s" % message_id,
+        )
         worker.start()
         # A2: registra para join no stop().
         self._track_worker(worker)
@@ -1641,8 +1705,7 @@ class Client:
         # O ACK acompanha a vida do objeto: expira junto, nunca além dele.
         now = int(time.time())
         if expires is None:
-            ttl = self._clamp_ttl(
-                ttl if ttl is not None else self.get_msg_ttl())
+            ttl = self._clamp_ttl(ttl if ttl is not None else self.get_msg_ttl())
             expires = now + ttl
         else:
             expires = int(expires)
@@ -1660,47 +1723,40 @@ class Client:
         try:
             nonce = self._quick_pow(unsigned, target)
         except Exception:
-            return b'', None
+            return b"", None
         try:
             ack_object = self.protocol_factory.complete(unsigned, nonce)
         except ValueError:
             raise
         except Exception:
             ack_object = objects.complete_object(unsigned, nonce)
-        return packets.create_packet('object', ack_object), \
-            objects.ack_watch_key(ack_object)
+        return packets.create_packet("object", ack_object), objects.ack_watch_key(ack_object)
 
     def _quick_pow(self, unsigned, target):
         # Strategy Pattern: delega a PoWStrategy injetada (qualquer implementação)
         initial = initial_hash_of(unsigned)
-        strat = getattr(self, 'pow_strategy', None)
-        if strat is not None and hasattr(strat, 'solve'):
+        strat = getattr(self, "pow_strategy", None)
+        if strat is not None and hasattr(strat, "solve"):
             # Usa estratégia injetada (Mock ou custom Standard)
             try:
                 return strat.solve(initial, target, stop_event=threading.Event())
             except NotImplementedError:
                 pass
-        return PowExecutor(
-            workers=1, progress_cb=None,
-            stop_event=threading.Event()
-        ).run(initial, target)
+        return PowExecutor(workers=1, progress_cb=None, stop_event=threading.Event()).run(initial, target)
 
-    def _pow_and_publish(self, unsigned, target, message_id=None,
-                         done_cb=None, dest=None, preview=None, kind=None):
+    def _pow_and_publish(self, unsigned, target, message_id=None, done_cb=None, dest=None, preview=None, kind=None):
         with self._lock:
             self._pow_sequencer += 1
             token = self._pow_sequencer
             stop_event = threading.Event()
-        self._track_pow(token, stop_event, message_id=message_id,
-                        dest=dest, preview=preview, kind=kind)
+        self._track_pow(token, stop_event, message_id=message_id, dest=dest, preview=preview, kind=kind)
 
         def worker():
             self._run_pow_and_done(
-                unsigned, target, message_id=message_id, done_cb=done_cb,
-                token=token, stop_event=stop_event)
+                unsigned, target, message_id=message_id, done_cb=done_cb, token=token, stop_event=stop_event
+            )
 
-        thread = threading.Thread(target=worker, daemon=True,
-                                  name='pow-%d' % token)
+        thread = threading.Thread(target=worker, daemon=True, name="pow-%d" % token)
         thread.start()
         self._track_worker(thread)
         return token
@@ -1711,34 +1767,35 @@ class Client:
             meta = self._pow_meta.get(token)
             if meta is None:
                 self._pow_meta[token] = {
-                    'token': token,
-                    'message_id': message_id,
-                    'dest': None,
-                    'preview': '',
-                    'kind': '',
-                    'started': time.time(),
-                    'tried': 0,
-                    'rate': 0.0,
+                    "token": token,
+                    "message_id": message_id,
+                    "dest": None,
+                    "preview": "",
+                    "kind": "",
+                    "started": time.time(),
+                    "tried": 0,
+                    "rate": 0.0,
                 }
-            elif message_id is not None and meta.get('message_id') is None:
-                meta['message_id'] = message_id
+            elif message_id is not None and meta.get("message_id") is None:
+                meta["message_id"] = message_id
 
     def _fail_pow(self, token, message_id):
-        self.ui_queue.put(('pow-cancelled', token))
+        self.ui_queue.put(("pow-cancelled", token))
         if message_id is not None:
             with self._lock:
                 self._msg_in_flight.discard(message_id)
         else:
             with self._lock:
                 meta = self._pow_meta.get(token)
-                pending = meta.get('message_id') if meta else None
+                pending = meta.get("message_id") if meta else None
             if pending is not None:
                 with self._lock:
                     self._msg_in_flight.discard(pending)
         self._untrack_pow(token)
 
-    def _run_pow_and_done(self, unsigned, target, message_id=None,
-                          done_cb=None, token=None, stop_event=None):
+    def _run_pow_and_done(  # noqa: C901, E501
+        self, unsigned, target, message_id=None, done_cb=None, token=None, stop_event=None
+    ):
         with self._lock:
             if token is None:
                 self._pow_sequencer += 1
@@ -1747,25 +1804,26 @@ class Client:
                 stop_event = threading.Event()
         self._ensure_pow_entry(token, stop_event, message_id)
         # Strategy Pattern: usa PoWStrategy injetada se disponível
-        strat = getattr(self, 'pow_strategy', None)
-        if strat is not None and hasattr(strat, 'solve') and not isinstance(strat, type):
+        strat = getattr(self, "pow_strategy", None)
+        if strat is not None and hasattr(strat, "solve") and not isinstance(strat, type):
             # Tenta usar estratégia injetada; se for Standard, respeita workers do DB
             # via criação de instância temporária com workers dinâmicos
             try:
                 # Se strat é StandardPoWStrategy, recria com workers atuais para refletir config
                 from ..crypto.pow.standard import StandardPoWStrategy
+
                 if isinstance(strat, StandardPoWStrategy):
-                    workers = max(1, self.db.get_int('pow_workers', 0) or 0) or max(1, __import__('os').cpu_count() or 2)
+                    workers = max(1, self.db.get_int("pow_workers", 0) or 0) or max(
+                        1, __import__("os").cpu_count() or 2
+                    )
                     tmp = StandardPoWStrategy(workers=workers)
                     nonce = tmp.solve(
-                        initial_hash_of(unsigned), target,
-                        progress_cb=self._pow_progress(token),
-                        stop_event=stop_event)
+                        initial_hash_of(unsigned), target, progress_cb=self._pow_progress(token), stop_event=stop_event
+                    )
                 else:
                     nonce = strat.solve(
-                        initial_hash_of(unsigned), target,
-                        progress_cb=self._pow_progress(token),
-                        stop_event=stop_event)
+                        initial_hash_of(unsigned), target, progress_cb=self._pow_progress(token), stop_event=stop_event
+                    )
                 # Sucesso via strategy
                 complete = objects.complete_object(unsigned, nonce)
                 self._untrack_pow(token)
@@ -1780,10 +1838,10 @@ class Client:
         # Fallback legado: PowExecutor
         try:
             executor = PowExecutor(
-                workers=max(1, self.db.get_int('pow_workers', 0) or 0) or
-                max(1, __import__('os').cpu_count() or 2),
+                workers=max(1, self.db.get_int("pow_workers", 0) or 0) or max(1, __import__("os").cpu_count() or 2),
                 progress_cb=self._pow_progress(token),
-                stop_event=stop_event)
+                stop_event=stop_event,
+            )
             try:
                 nonce = executor.run(initial_hash_of(unsigned), target)
             except Exception:
@@ -1801,7 +1859,8 @@ class Client:
     def _pow_progress(self, token):
         def progress(tried, rate):
             self._note_pow_progress(token, tried, rate)
-            self.ui_queue.put(('pow-progress', token, tried, rate))
+            self.ui_queue.put(("pow-progress", token, tried, rate))
+
         return progress
 
     def cancel_pow(self, token):
@@ -1813,40 +1872,39 @@ class Client:
     @staticmethod
     def _pow_preview(body, limit=40):
         try:
-            text = str(body or '').replace('\n', ' ').strip()
+            text = str(body or "").replace("\n", " ").strip()
         except Exception:
-            return ''
+            return ""
         if len(text) <= limit:
             return text
         if limit <= 1:
-            return '…'
-        return text[:limit - 1] + '…'
+            return "…"
+        return text[: limit - 1] + "…"
 
-    def _track_pow(self, token, stop_event, message_id=None,
-                   dest=None, preview=None, kind=None):
+    def _track_pow(self, token, stop_event, message_id=None, dest=None, preview=None, kind=None):
         with self._lock:
             self._pow_stops[token] = stop_event
             current = self._pow_meta.get(token)
             if current is None:
                 self._pow_meta[token] = {
-                    'token': token,
-                    'message_id': message_id,
-                    'dest': dest,
-                    'preview': preview or '',
-                    'kind': kind or '',
-                    'started': time.time(),
-                    'tried': 0,
-                    'rate': 0.0,
+                    "token": token,
+                    "message_id": message_id,
+                    "dest": dest,
+                    "preview": preview or "",
+                    "kind": kind or "",
+                    "started": time.time(),
+                    "tried": 0,
+                    "rate": 0.0,
                 }
                 return
             if message_id is not None:
-                current['message_id'] = message_id
+                current["message_id"] = message_id
             if dest is not None:
-                current['dest'] = dest
+                current["dest"] = dest
             if preview:
-                current['preview'] = preview
+                current["preview"] = preview
             if kind:
-                current['kind'] = kind
+                current["kind"] = kind
 
     def _untrack_pow(self, token):
         with self._lock:
@@ -1857,8 +1915,8 @@ class Client:
         with self._lock:
             meta = self._pow_meta.get(token)
             if meta is not None:
-                meta['tried'] = tried
-                meta['rate'] = rate
+                meta["tried"] = tried
+                meta["rate"] = rate
 
     def cancel_all_pow(self):
         with self._lock:
@@ -1877,62 +1935,67 @@ class Client:
         tasks = []
         for meta in items:
             tasks.append(self._describe_pow_task(meta, stops, now))
-        tasks.sort(key=lambda item: item['token'] or 0)
+        tasks.sort(key=lambda item: item["token"] or 0)
         return tasks
 
     @staticmethod
     def _describe_pow_task(meta, stops, now):
-        token = meta.get('token')
+        token = meta.get("token")
         event = stops.get(token)
         try:
             cancelling = bool(event is not None and event.is_set())
         except Exception:
             cancelling = False
-        started = meta.get('started') or now
+        started = meta.get("started") or now
         return {
-            'token': token,
-            'message_id': meta.get('message_id'),
-            'dest': meta.get('dest'),
-            'preview': meta.get('preview') or '',
-            'kind': meta.get('kind') or '',
-            'started': started,
-            'elapsed': max(0.0, now - started),
-            'tried': meta.get('tried') or 0,
-            'rate': meta.get('rate') or 0.0,
-            'cancelling': cancelling,
+            "token": token,
+            "message_id": meta.get("message_id"),
+            "dest": meta.get("dest"),
+            "preview": meta.get("preview") or "",
+            "kind": meta.get("kind") or "",
+            "started": started,
+            "elapsed": max(0.0, now - started),
+            "tried": meta.get("tried") or 0,
+            "rate": meta.get("rate") or 0.0,
+            "cancelling": cancelling,
         }
 
-    def broadcast(self, identity_address, body,
-                  encoding=BITMESSAGE_ENCODING_TRIVIAL):
+    def broadcast(self, identity_address, body, encoding=BITMESSAGE_ENCODING_TRIVIAL):
         keys = self.identities.get(identity_address)
         if keys is None:
-            return 'error'
+            return "error"
         try:
-            if self._wire_too_large(body or ''):
-                return 'too-large'
+            if self._wire_too_large(body or ""):
+                return "too-large"
         except Exception:
-            return 'error'
+            return "error"
         ttl = self.get_msg_ttl()
         expires = int(time.time()) + ttl
-        unsigned = objects.build_broadcast_unsigned(
-            expires, keys.stream, keys, body.encode('utf-8'), encoding)
-        target = calculate_target(
-            keys.nonce_trials_per_byte,
-            keys.payload_length_extra_bytes,
-            len(unsigned) + 8, ttl)
+        unsigned = objects.build_broadcast_unsigned(expires, keys.stream, keys, body.encode("utf-8"), encoding)
+        target = calculate_target(keys.nonce_trials_per_byte, keys.payload_length_extra_bytes, len(unsigned) + 8, ttl)
 
         def done(complete, nonce):
             self.net.announce_object(complete)
             self.db.add_message(
-                None, identity_address, identity_address, '', body, encoding,
-                int(time.time()), 'out', 'sent', keys.stream,
-                ttl=ttl, expires=expires)
-            self.ui_queue.put(('broadcast-sent', identity_address))
+                None,
+                identity_address,
+                identity_address,
+                "",
+                body,
+                encoding,
+                int(time.time()),
+                "out",
+                "sent",
+                keys.stream,
+                ttl=ttl,
+                expires=expires,
+            )
+            self.ui_queue.put(("broadcast-sent", identity_address))
 
         self._pow_and_publish(
-            unsigned, target, done_cb=done, dest=identity_address,
-            preview=self._pow_preview(body), kind='broadcast')
-        return 'success'
+            unsigned, target, done_cb=done, dest=identity_address, preview=self._pow_preview(body), kind="broadcast"
+        )
+        return "success"
 
     def _derive_chan_keys(self, address, name, stream):
         try:
@@ -1946,86 +2009,91 @@ class Client:
         if keys is not None:
             return keys
         status, _version, stream, _ripe = addr_module.decode_address(address)
-        if status != 'success':
+        if status != "success":
             return None
         if name is not None:
-            candidate = (name or '').strip()
+            candidate = (name or "").strip()
             if not candidate:
                 return None
             return self._derive_chan_keys(address, candidate, stream)
         row = self.db.get_subscription(address)
-        stored = (row.get('name') if row else '') or ''
+        stored = (row.get("name") if row else "") or ""
         if not stored.strip():
             return None
         return self._derive_chan_keys(address, stored.strip(), stream)
 
-    def broadcast_chan(self, address, body,
-                       encoding=BITMESSAGE_ENCODING_TRIVIAL, name=None):
+    def broadcast_chan(self, address, body, encoding=BITMESSAGE_ENCODING_TRIVIAL, name=None):
         try:
-            if self._wire_too_large(body or ''):
-                return 'too-large', 'mensagem grande demais para um objeto'
+            if self._wire_too_large(body or ""):
+                return "too-large", "mensagem grande demais para um objeto"
         except Exception:
-            return 'error', 'corpo inválido'
+            return "error", "corpo inválido"
         explicit = name is not None
         keys = self._chan_posting_keys(address, name)
         if keys is None:
             if explicit:
-                return 'mismatch', ('esse nome não gera este canal; '
-                                    'confira a digitação')
-            return 'noname', ('para publicar é preciso o nome do canal; '
-                              'só quem tem o nome pode postar')
+                return "mismatch", ("esse nome não gera este canal; confira a digitação")
+            return "noname", ("para publicar é preciso o nome do canal; só quem tem o nome pode postar")
         if explicit:
             try:
-                self.db.set_subscription_name(address, (name or '').strip())
+                self.db.set_subscription_name(address, (name or "").strip())
             except Exception:
                 pass
         ttl = self.get_msg_ttl()
         expires = int(time.time()) + ttl
-        unsigned = objects.build_broadcast_unsigned(
-            expires, keys.stream, keys, body.encode('utf-8'), encoding)
-        target = calculate_target(
-            keys.nonce_trials_per_byte,
-            keys.payload_length_extra_bytes,
-            len(unsigned) + 8, ttl)
+        unsigned = objects.build_broadcast_unsigned(expires, keys.stream, keys, body.encode("utf-8"), encoding)
+        target = calculate_target(keys.nonce_trials_per_byte, keys.payload_length_extra_bytes, len(unsigned) + 8, ttl)
 
         def done(complete, nonce):
             self.net.announce_object(complete)
             self.db.add_message(
-                None, address, address, '', body, encoding,
-                int(time.time()), 'out', 'sent', keys.stream,
-                ttl=ttl, expires=expires)
-            self.ui_queue.put(('broadcast-sent', address))
+                None,
+                address,
+                address,
+                "",
+                body,
+                encoding,
+                int(time.time()),
+                "out",
+                "sent",
+                keys.stream,
+                ttl=ttl,
+                expires=expires,
+            )
+            self.ui_queue.put(("broadcast-sent", address))
 
         self._pow_and_publish(
-            unsigned, target, done_cb=done, dest=address,
-            preview=self._pow_preview(body), kind='chan')
-        return 'success', None
+            unsigned, target, done_cb=done, dest=address, preview=self._pow_preview(body), kind="chan"
+        )
+        return "success", None
 
     # ---------- publicação de chave pública ----------
 
     def _publish_pubkey(self, keys, stream=None, force=False):
         now = int(time.time())
-        unsigned = objects.build_pubkey_unsigned(
-            now + PUBKEY_TTL, stream or keys.stream, keys)
+        unsigned = objects.build_pubkey_unsigned(now + PUBKEY_TTL, stream or keys.stream, keys)
         target = calculate_target(
-            keys.nonce_trials_per_byte,
-            keys.payload_length_extra_bytes,
-            len(unsigned) + 8, PUBKEY_TTL)
+            keys.nonce_trials_per_byte, keys.payload_length_extra_bytes, len(unsigned) + 8, PUBKEY_TTL
+        )
 
         def done(complete, nonce):
             self.net.announce_object(complete)
             try:
                 self.db.store_object(
-                    double_sha512(complete)[:32], complete,
-                    OBJECT_PUBKEY, 4, stream or keys.stream,
-                    now + PUBKEY_TTL)
+                    double_sha512(complete)[:32], complete, OBJECT_PUBKEY, 4, stream or keys.stream, now + PUBKEY_TTL
+                )
             except Exception:
                 pass
-            self._log('rede', 'pubkey publicada na rede')
+            self._log("rede", "pubkey publicada na rede")
 
         self._pow_and_publish(
-            unsigned, target, done_cb=done, dest=getattr(keys, 'address', None),
-            preview='publicação de chave pública', kind='pubkey')
+            unsigned,
+            target,
+            done_cb=done,
+            dest=getattr(keys, "address", None),
+            preview="publicação de chave pública",
+            kind="pubkey",
+        )
 
     def _reannounce_loop(self):
         self._reannounce_pubkeys_once()
@@ -2039,12 +2107,12 @@ class Client:
             try:
                 self._reannounce_pubkeys_once()
             except Exception as exc:
-                self._log('rede', 'reannounce: %r' % exc)
+                self._log("rede", "reannounce: %r" % exc)
 
     def _scan_pubkey_rows(self, rows, keys, address):
         for row in rows:
             try:
-                raw = bytes(row['raw'])
+                raw = bytes(row["raw"])
             except Exception:
                 continue
             try:
@@ -2057,20 +2125,20 @@ class Client:
                 self.net.announce_object(raw)
             except Exception:
                 pass
-            self._log('rede', 'pubkey de %s reanunciada' % address[:18])
+            self._log("rede", "pubkey de %s reanunciada" % address[:18])
             break
 
     def _maybe_reannounce_identity(self, identity, now):
-        address = identity['address']
+        address = identity["address"]
         try:
             keys = AddressKeys.from_address(address)
         except Exception:
             return
         try:
             rows = self.db.query(
-                'SELECT raw FROM objects WHERE type=1 AND version=4 AND '
-                'expires > ? ORDER BY expires DESC LIMIT 5',
-                (now,))
+                "SELECT raw FROM objects WHERE type=1 AND version=4 AND expires > ? ORDER BY expires DESC LIMIT 5",
+                (now,),
+            )
         except Exception:
             return
         self._scan_pubkey_rows(rows, keys, address)
@@ -2094,7 +2162,7 @@ class Client:
             try:
                 self._send_one_scheduled(msg)
             except Exception as exc:
-                self._log('agendada', f'erro ao enviar: {exc}')
+                self._log("agendada", f"erro ao enviar: {exc}")
 
     def _drop_scheduled(self, msg_id):
         try:
@@ -2105,35 +2173,30 @@ class Client:
     def _deliver_scheduled(self, msg, is_channel, identity, to_addr, body):
         try:
             if is_channel:
-                status, error = self.broadcast_chan(to_addr, body or '')
+                status, error = self.broadcast_chan(to_addr, body or "")
             else:
-                status, error = self.send_message(
-                    identity, to_addr, '', body or '')
+                status, error = self.send_message(identity, to_addr, "", body or "")
         except Exception as exc:
-            self._log('agendada', 'erro ao enviar: %s' % exc)
+            self._log("agendada", "erro ao enviar: %s" % exc)
             return
-        if status == 'success':
-            self._drop_scheduled(msg['id'])
-            self._log('agendada', 'mensagem para %s enviada'
-                      % str(to_addr)[:18])
+        if status == "success":
+            self._drop_scheduled(msg["id"])
+            self._log("agendada", "mensagem para %s enviada" % str(to_addr)[:18])
             return
-        self._log('agendada', 'falha (%s): %s'
-                  % (status, error or 'erro'))
-        if status in ('too-large', 'invalid', 'unsupported', 'mismatch',
-                      'noname', 'error'):
-            self._drop_scheduled(msg['id'])
+        self._log("agendada", "falha (%s): %s" % (status, error or "erro"))
+        if status in ("too-large", "invalid", "unsupported", "mismatch", "noname", "error"):
+            self._drop_scheduled(msg["id"])
 
     def _send_one_scheduled(self, msg):
         # A4: só marca sent em success; identidade ausente → erro+log
         # (descarta para não virar pendente eterno); canal via
         # broadcast_chan (antes virava DM via send_message).
-        identity = msg['identity_address']
-        to_addr = msg['to_address']
-        body = msg['body']
+        identity = msg["identity_address"]
+        to_addr = msg["to_address"]
+        body = msg["body"]
         if identity not in self.identities:
-            self._log('agendada', 'identidade ausente; descartando '
-                      'agendada %s' % msg['id'])
-            self._drop_scheduled(msg['id'])
+            self._log("agendada", "identidade ausente; descartando agendada %s" % msg["id"])
+            self._drop_scheduled(msg["id"])
             return
         try:
             is_channel = self.db.get_subscription(to_addr) is not None
@@ -2147,7 +2210,7 @@ class Client:
             try:
                 self._send_due_scheduled()
             except Exception as exc:
-                self._log('agendada', f'erro no loop: {exc}')
+                self._log("agendada", f"erro no loop: {exc}")
             # Check every 30 seconds
             for _ in range(30):
                 if not self.started:
@@ -2157,7 +2220,7 @@ class Client:
 
 def _decode_body(encoding, message):
     if encoding == 0:
-        return ''
+        return ""
     if isinstance(message, bytes):
-        return message.decode('utf-8', 'replace')
+        return message.decode("utf-8", "replace")
     return message
