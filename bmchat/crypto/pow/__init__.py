@@ -44,11 +44,27 @@ def pow_value(object_bytes):
     return int.from_bytes(hashlib.sha512(hashlib.sha512(object_bytes[:8] + inner).digest()).digest()[:8], "big")
 
 
-def is_proof_of_work_sufficient(object_bytes, nonce_trials_per_byte=0, payload_length_extra_bytes=0, recv_time=0):
+def is_proof_of_work_sufficient(
+    object_bytes, nonce_trials_per_byte=0, payload_length_extra_bytes=0, recv_time=0, original_ttl=None
+):
+    """Verifica PoW. Defaults 0,0 mapeiam para 1000/1000 (mínimo) — relay permissivo.
+
+    P-MÉDIO-01: documentado como permissivo; mitigado por rate-limit em
+    NetworkManager (STORE_RATE_MAX). P-ALTO-04: se original_ttl fornecido,
+    valida com TTL original em vez de deslizante (expires - now).
+    """
     (end_of_life,) = struct.unpack(">Q", object_bytes[8:16])
-    ttl = end_of_life - (int(recv_time) if recv_time else int(time.time()))
+    # P-ALTO-04: usa TTL original quando disponível para evitar facilitação por deslizamento
+    if original_ttl is not None:
+        try:
+            ttl = int(original_ttl)
+        except Exception:
+            ttl = end_of_life - (int(recv_time) if recv_time else int(time.time()))
+    else:
+        ttl = end_of_life - (int(recv_time) if recv_time else int(time.time()))
     if ttl < MIN_TTL:
         ttl = MIN_TTL
+    # Rate-limit é aplicado no chamador (manager.store_object); aqui só valida
     return pow_value(object_bytes) <= calculate_target(
         nonce_trials_per_byte, payload_length_extra_bytes, len(object_bytes), ttl
     )
@@ -107,7 +123,11 @@ class PowExecutor:
 
 
 def find_nonce_single_threaded(initial_hash, target, start=0, stop_event=None):
-    nonce = start
+    # P-ALTO-03: wrap em 64 bits para não estourar to_bytes(8)
+    mask = (1 << 64) - 1
+    nonce = start & mask
+    tried = 0
+    # Evita loop infinito se target impossível: limita a 2**64 tentativas implícito via wrap
     while True:
         if stop_event is not None and stop_event.is_set():
             raise RuntimeError("proof of work interrompido")
@@ -117,7 +137,11 @@ def find_nonce_single_threaded(initial_hash, target, start=0, stop_event=None):
         h = hashlib.sha512(m.digest())
         if int.from_bytes(h.digest()[:8], "big") <= target:
             return nonce
-        nonce += 1
+        nonce = (nonce + 1) & mask
+        tried += 1
+        # Se deu volta completa sem achar, levanta (evita hang infinito)
+        if tried >= (1 << 64):
+            raise RuntimeError("proof of work não concluído (wrap completo)")
 
 
 __all__ = [
