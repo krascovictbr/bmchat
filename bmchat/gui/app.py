@@ -58,6 +58,7 @@ HEADER_DIM = _c("header_dim")
 PANEL_BG = _c("panel_bg")
 ROW_HOVER = _c("row_hover")
 ROW_SELECTED = _c("row_selected")
+ROW_SELECTED_FG = _c("row_selected_fg")
 LINE = _c("divider")
 TEXT_INK = _c("text_primary")
 TEXT_GRAY = _c("text_secondary")
@@ -68,15 +69,40 @@ BUBBLE_IN = _c("bubble_in")
 BUBBLE_OUT = _c("bubble_out")
 BADGE_BG = _c("unread_badge")
 FAB_BG = _c("accent")
-READ_BLUE = _c("info")
-DATE_BG = _c("border")
+READ_BLUE = _c("tick_read")
+DATE_BG = _c("date_bg")
+DATE_FG = _c("date_fg")
 INPUT_ICON = _c("text_muted")
+ONLINE_DOT = _c("online_dot")
+BUBBLE_SHADOW = _c("bubble_shadow")
+BUBBLE_IN_SHADOW = _c("bubble_in_shadow")
+BUBBLE_OUT_SHADOW = _c("bubble_out_shadow")
+TICK_SENT = _c("tick_sent")
+TICK_READ = _c("tick_read")
+REPLY_BAR_IN = _c("reply_bar_in")
+REPLY_BAR_OUT = _c("reply_bar_out")
+FILE_THUMB_BLUE = _c("file_thumb_blue")
+FILE_THUMB_GREEN = _c("file_thumb_green")
+FILE_THUMB_RED = _c("file_thumb_red")
+FILE_THUMB_YELLOW = _c("file_thumb_yellow")
 
 SENDER_COLORS = _theme.sender_colors
 
-ROW_H = 68
-AVATAR_R = 22
+ROW_H = 62
+AVATAR_R = 23
 PAD_X = 12
+DIALOG_LEFT = 10
+DIALOG_TOP = 8
+DIALOG_RIGHT = 10
+AVATAR_D = 46
+UNREAD_H = 19
+UNREAD_PAD_X = 5
+ONLINE_DOT_R = 5
+ONLINE_STROKE = 2
+INPUT_PILL_H = 35
+INPUT_PILL_RADIUS = 18
+BUBBLE_RADIUS = 12
+BUBBLE_SHADOW_OFFSET = 1
 
 SPACING_XS = 4
 SPACING_SM = 8
@@ -977,14 +1003,15 @@ class App(tk.Tk):
         self._build_widgets_right()
 
     def _build_widgets_left(self):
-        self.name_font = tkfont.Font(family="TkDefaultFont", size=11, weight="bold")
-        self.preview_font = tkfont.Font(family="TkDefaultFont", size=10)
-        self.small_font = tkfont.Font(family="TkDefaultFont", size=9)
-        self.msg_font = tkfont.Font(family="TkDefaultFont", size=11)
-        self.sender_font = tkfont.Font(family="TkDefaultFont", size=10, weight="bold")
-        self.avatar_font = tkfont.Font(family="TkDefaultFont", size=12, weight="bold")
-        self.title_font = tkfont.Font(family="TkDefaultFont", size=13, weight="bold")
-        self.welcome_title_font = tkfont.Font(family="TkDefaultFont", size=14, weight="bold")
+        fam = _theme.font_family
+        self.name_font = tkfont.Font(family=fam, size=10, weight="bold")
+        self.preview_font = tkfont.Font(family=fam, size=9)
+        self.small_font = tkfont.Font(family=fam, size=8)
+        self.msg_font = tkfont.Font(family=fam, size=10)
+        self.sender_font = tkfont.Font(family=fam, size=9, weight="bold")
+        self.avatar_font = tkfont.Font(family=fam, size=11, weight="bold")
+        self.title_font = tkfont.Font(family=fam, size=12, weight="bold")
+        self.welcome_title_font = tkfont.Font(family=fam, size=13, weight="bold")
 
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
@@ -1048,7 +1075,18 @@ class App(tk.Tk):
 
         # ---- conversation list ----
         self.conv_canvas = tk.Canvas(self.left, bg=PANEL_BG, highlightthickness=0, bd=0)
-        self.conv_scroll = tk.Scrollbar(self.left, orient="vertical", command=self.conv_canvas.yview)
+        self.conv_scroll = tk.Scrollbar(
+            self.left,
+            orient="vertical",
+            command=self.conv_canvas.yview,
+            width=6,
+            troughcolor=_c("scrollbar_bg"),
+            bg=_c("scrollbar_thumb"),
+            activebackground=_c("scrollbar_thumb_hover"),
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+        )
         self.conv_canvas.configure(yscrollcommand=self.conv_scroll.set)
         self.conv_scroll.pack(side="right", fill="y")
         self.conv_canvas.pack(side="left", fill="both", expand=True)
@@ -1210,7 +1248,18 @@ class App(tk.Tk):
         self.triage_banner.grid_remove()
         self.chat_canvas = tk.Canvas(self.chat_frame, bg=CHAT_BG, highlightthickness=0, bd=0)
         self.chat_canvas.grid(row=1, column=0, sticky="nsew")
-        self.chat_scroll = tk.Scrollbar(self.chat_frame, orient="vertical", command=self._chat_yview)
+        self.chat_scroll = tk.Scrollbar(
+            self.chat_frame,
+            orient="vertical",
+            command=self._chat_yview,
+            width=6,
+            troughcolor=_c("scrollbar_bg"),
+            bg=_c("scrollbar_thumb"),
+            activebackground=_c("scrollbar_thumb_hover"),
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+        )
         self.chat_scroll.grid(row=1, column=1, sticky="ns")
         self.chat_canvas.configure(yscrollcommand=self._chat_yscroll)
         self._bind_wheel(self.chat_canvas)
@@ -1231,6 +1280,21 @@ class App(tk.Tk):
         )
         self.jump_btn.place_forget()
         ToolTip(self.jump_btn, "Ir para mensagens mais recentes")
+
+        # Typing indicator 3 dots (simulated if no hook)
+        self._typing_frame = tk.Frame(self.chat_frame, bg=CHAT_BG)
+        self._typing_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self._typing_frame.grid_remove()
+        tk.Label(
+            self._typing_frame, text="digitand", bg=CHAT_BG, fg=TEXT_GRAY, font=self.small_font
+        ).pack(side="left", padx=(12, 2), pady=2)
+        self._typing_dots_label = tk.Label(
+            self._typing_frame, text="", bg=CHAT_BG, fg=TEXT_GRAY, font=self.small_font, width=4, anchor="w"
+        )
+        self._typing_dots_label.pack(side="left", pady=2)
+        self._typing_after = None
+        self._typing_step = 0
+        self._typing_visible = False
 
         self.welcome_copy_btn = tk.Button(
             self.chat_frame,
@@ -1284,14 +1348,17 @@ class App(tk.Tk):
         self.emoji_btn.grid(row=1, column=1, padx=(2, 2), pady=8)
         ToolTip(self.emoji_btn, "Emojis")
         self.input_var = tk.StringVar()
-        self.field_box = tk.Frame(
+        # Telegram pill input: rounded rect 35px height, radius 18, subtle shadow
+        self.field_box = tk.Canvas(
             self.input_frame,
-            bg=_c("input_bg"),
-            highlightthickness=1,
-            highlightbackground=_c("input_border"),
-            highlightcolor=_c("input_border"),
+            bg=PANEL_BG,
+            highlightthickness=0,
+            bd=0,
+            height=INPUT_PILL_H,
         )
         self.field_box.grid(row=1, column=2, sticky="nsew", padx=4, pady=6)
+        self.field_box.bind("<Configure>", lambda _e: self._draw_input_pill())
+        # Entry inside pill canvas
         self.input_entry = tk.Entry(
             self.field_box,
             textvariable=self.input_var,
@@ -1306,12 +1373,20 @@ class App(tk.Tk):
             disabledforeground=_c("input_placeholder"),
             readonlybackground=_c("input_bg"),
         )
-        self.input_entry.pack(fill="x", expand=True, padx=10, pady=7)
+        # Place entry via window item for precise control
+        self._input_entry_win = self.field_box.create_window(
+            14, INPUT_PILL_H // 2, anchor="w", window=self.input_entry, height=22
+        )
         self.input_entry.bind("<Return>", lambda _e: self._send())
-        self.input_entry.bind("<FocusIn>", self._clear_placeholder)
-        self.input_entry.bind("<FocusOut>", self._restore_placeholder)
+        self.input_entry.bind("<FocusIn>", self._on_input_focus_in)
+        self.input_entry.bind("<FocusOut>", self._on_input_focus_out)
         self._placeholder_on = True
         self._set_placeholder()
+        # Draw pill background after entry creation
+        try:
+            self.field_box.after_idle(self._draw_input_pill)
+        except Exception:
+            pass
         self.send_btn = tk.Canvas(self.input_frame, width=36, height=36, highlightthickness=0, bd=0, bg=PANEL_BG)
         self.send_btn.grid(row=1, column=3, padx=(2, 4), pady=6)
         self._send_oval = self.send_btn.create_oval(2, 2, 34, 34, fill=FAB_BG, outline=FAB_BG)
@@ -1347,6 +1422,188 @@ class App(tk.Tk):
             font=self.small_font,
         )
         self.statusbar.grid(row=1, column=0, sticky="ew")
+
+    def _draw_input_pill(self):  # noqa: C901
+        """Render pill background: shadow + rounded rect 18 radius, 35px height."""
+        canvas = getattr(self, "field_box", None)
+        if canvas is None:
+            return
+        try:
+            if not canvas.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            w = canvas.winfo_width() or 300
+            h = INPUT_PILL_H
+            r = INPUT_PILL_RADIUS
+            # need width at least 2*r
+            if w < 2 * r + 4:
+                w = 2 * r + 4
+            canvas.delete("pill")
+            # shadow subtle 1px offset, light gray
+            shadow_color = BUBBLE_SHADOW if BUBBLE_SHADOW else "#e6ecf0"
+            # shadow: same rounded rect offset 1px down
+            self._pill_rounded_rect(
+                canvas, 1, 1, w - 1, h, r, fill=shadow_color, outline=shadow_color, tags=("pill",)
+            )
+            # main pill
+            bg = _c("input_bg")
+            border = _c("input_border")
+            # focused border slightly darker
+            is_focused = False
+            try:
+                is_focused = canvas.focus_displayof() is not None or self.input_entry is canvas.focus_get()
+            except Exception:
+                try:
+                    is_focused = self.input_entry == self.focus_get()
+                except Exception:
+                    is_focused = False
+            if is_focused:
+                border = _c("border_focus") if _c("border_focus") != border else border
+            self._pill_rounded_rect(canvas, 1, 0, w - 1, h - 1, r, fill=bg, outline=border, tags=("pill",))
+            # ensure entry window width matches
+            try:
+                entry_w = max(40, w - 28)
+                canvas.itemconfig(self._input_entry_win, width=entry_w)
+                canvas.coords(self._input_entry_win, 14, h // 2)
+            except Exception:
+                pass
+            canvas.tag_lower("pill")
+        except Exception:
+            pass
+
+    def _pill_rounded_rect(self, canvas, x0, y0, x1, y1, r, **kwargs):
+        """Draw rounded rectangle on canvas (pill)."""
+        # Clamp radius
+        r = min(r, (x1 - x0) / 2, (y1 - y0) / 2)
+        tags = kwargs.pop("tags", ())
+        fill = kwargs.get("fill", "")
+        outline = kwargs.get("outline", "")
+        # Center rects
+        canvas.create_rectangle(x0 + r, y0, x1 - r, y1, fill=fill, outline=fill, tags=tags)
+        canvas.create_rectangle(x0, y0 + r, x1, y1 - r, fill=fill, outline=fill, tags=tags)
+        # Corners
+        canvas.create_oval(x0, y0, x0 + 2 * r, y0 + 2 * r, fill=fill, outline=fill, tags=tags)
+        canvas.create_oval(x1 - 2 * r, y0, x1, y0 + 2 * r, fill=fill, outline=fill, tags=tags)
+        canvas.create_oval(x0, y1 - 2 * r, x0 + 2 * r, y1, fill=fill, outline=fill, tags=tags)
+        canvas.create_oval(x1 - 2 * r, y1 - 2 * r, x1, y1, fill=fill, outline=fill, tags=tags)
+        # Outline stroke if needed (outline diff from fill)
+        if outline and outline != fill:
+            # Top/Bottom lines
+            canvas.create_line(x0 + r, y0, x1 - r, y0, fill=outline, tags=tags)
+            canvas.create_line(x0 + r, y1, x1 - r, y1, fill=outline, tags=tags)
+            canvas.create_line(x0, y0 + r, x0, y1 - r, fill=outline, tags=tags)
+            canvas.create_line(x1, y0 + r, x1, y1 - r, fill=outline, tags=tags)
+            # Arc corners for outline
+            canvas.create_arc(
+                x0, y0, x0 + 2 * r, y0 + 2 * r, start=90, extent=90, style="arc", outline=outline, tags=tags
+            )
+            canvas.create_arc(
+                x1 - 2 * r, y0, x1, y0 + 2 * r, start=0, extent=90, style="arc", outline=outline, tags=tags
+            )
+            canvas.create_arc(
+                x0, y1 - 2 * r, x0 + 2 * r, y1, start=180, extent=90, style="arc", outline=outline, tags=tags
+            )
+            canvas.create_arc(
+                x1 - 2 * r, y1 - 2 * r, x1, y1, start=270, extent=90, style="arc", outline=outline, tags=tags
+            )
+
+    def _on_input_focus_in(self, _event=None):
+        try:
+            self._clear_placeholder()
+        except Exception:
+            pass
+        try:
+            self._draw_input_pill()
+        except Exception:
+            pass
+
+    def _on_input_focus_out(self, _event=None):
+        try:
+            self._restore_placeholder()
+        except Exception:
+            pass
+        try:
+            self._draw_input_pill()
+        except Exception:
+            pass
+
+    def _style_scrollbars(self):
+        """Thin 6px custom scrollbar styling with hover."""
+        width = getattr(_theme, "scrollbar_width", 6)
+        for name in ("conv_scroll", "chat_scroll"):
+            sb = getattr(self, name, None)
+            if sb is None:
+                continue
+            try:
+                if not sb.winfo_exists():
+                    continue
+            except Exception:
+                continue
+            try:
+                sb.configure(
+                    width=width,
+                    troughcolor=_c("scrollbar_bg"),
+                    bg=_c("scrollbar_thumb"),
+                    activebackground=_c("scrollbar_thumb_hover"),
+                    highlightthickness=0,
+                    bd=0,
+                    relief="flat",
+                    elementborderwidth=0,
+                )
+            except Exception:
+                pass
+
+    def _show_typing(self):
+        try:
+            if getattr(self, "_typing_visible", False):
+                return
+            self._typing_visible = True
+            self._typing_step = 0
+            self._typing_frame.grid()
+            self._typing_frame.lift()
+            self._animate_typing()
+        except Exception:
+            pass
+
+    def _hide_typing(self):
+        try:
+            self._typing_visible = False
+            if getattr(self, "_typing_after", None):
+                try:
+                    self.after_cancel(self._typing_after)
+                except Exception:
+                    pass
+                self._typing_after = None
+            self._typing_frame.grid_remove()
+            self._typing_dots_label.config(text="")
+        except Exception:
+            pass
+
+    def _animate_typing(self):
+        if getattr(self, "_closed", False) or not getattr(self, "_typing_visible", False):
+            return
+        try:
+            dots = "." * ((self._typing_step % 3) + 1)
+            self._typing_dots_label.config(text=dots)
+            self._typing_step += 1
+            self._typing_after = self.after(400, self._animate_typing)
+        except Exception:
+            pass
+
+    def _trigger_typing_simulation(self, duration=2500):
+        """Simulate typing 3 dots if no real hook is present."""
+        try:
+            self._show_typing()
+            if getattr(self, "_typing_hide_after", None):
+                try:
+                    self.after_cancel(self._typing_hide_after)
+                except Exception:
+                    pass
+            self._typing_hide_after = self.after(duration, self._hide_typing)
+        except Exception:
+            pass
 
     def _bind_wheel(self, canvas):
         canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
@@ -1484,10 +1741,15 @@ class App(tk.Tk):
     def _refresh_theme_colors(self):
         """Refresh all theme-dependent colors."""
         global HEADER_BG, HEADER_BG_DARK, HEADER_FG, HEADER_DIM
-        global PANEL_BG, ROW_HOVER, ROW_SELECTED, LINE
+        global PANEL_BG, ROW_HOVER, ROW_SELECTED, ROW_SELECTED_FG, LINE
         global TEXT_INK, TEXT_GRAY, TIME_GRAY, CHAT_BG, DOODLE
         global BUBBLE_IN, BUBBLE_OUT, BADGE_BG, FAB_BG, READ_BLUE
-        global DATE_BG, INPUT_ICON, SENDER_COLORS
+        global DATE_BG, DATE_FG, INPUT_ICON, SENDER_COLORS
+        global ONLINE_DOT, BUBBLE_SHADOW, BUBBLE_IN_SHADOW
+        global BUBBLE_OUT_SHADOW, TICK_SENT, TICK_READ
+        global REPLY_BAR_IN, REPLY_BAR_OUT
+        global FILE_THUMB_BLUE, FILE_THUMB_GREEN
+        global FILE_THUMB_RED, FILE_THUMB_YELLOW
 
         HEADER_BG = _c("header_bg")
         HEADER_BG_DARK = _c("header_bg_hover")
@@ -1496,6 +1758,7 @@ class App(tk.Tk):
         PANEL_BG = _c("panel_bg")
         ROW_HOVER = _c("row_hover")
         ROW_SELECTED = _c("row_selected")
+        ROW_SELECTED_FG = _c("row_selected_fg")
         LINE = _c("divider")
         TEXT_INK = _c("text_primary")
         TEXT_GRAY = _c("text_secondary")
@@ -1506,9 +1769,22 @@ class App(tk.Tk):
         BUBBLE_OUT = _c("bubble_out")
         BADGE_BG = _c("unread_badge")
         FAB_BG = _c("accent")
-        READ_BLUE = _c("info")
-        DATE_BG = _c("border")
+        READ_BLUE = _c("tick_read")
+        DATE_BG = _c("date_bg")
+        DATE_FG = _c("date_fg")
         INPUT_ICON = _c("text_muted")
+        ONLINE_DOT = _c("online_dot")
+        BUBBLE_SHADOW = _c("bubble_shadow")
+        BUBBLE_IN_SHADOW = _c("bubble_in_shadow")
+        BUBBLE_OUT_SHADOW = _c("bubble_out_shadow")
+        TICK_SENT = _c("tick_sent")
+        TICK_READ = _c("tick_read")
+        REPLY_BAR_IN = _c("reply_bar_in")
+        REPLY_BAR_OUT = _c("reply_bar_out")
+        FILE_THUMB_BLUE = _c("file_thumb_blue")
+        FILE_THUMB_GREEN = _c("file_thumb_green")
+        FILE_THUMB_RED = _c("file_thumb_red")
+        FILE_THUMB_YELLOW = _c("file_thumb_yellow")
         SENDER_COLORS = _theme.sender_colors
 
         # Update widget backgrounds if widgets exist
@@ -1567,7 +1843,7 @@ class App(tk.Tk):
             if isinstance(btn, tk.Button):
                 btn.configure(bg=HEADER_BG, activebackground=HEADER_BG_DARK, fg=HEADER_FG)
 
-    def _recolor_widgets(self):
+    def _recolor_widgets(self):  # noqa: C901
         self._recolor_frames()
         widget = self._live_widget("welcome_copy_btn")
         if widget is not None:
@@ -1580,11 +1856,21 @@ class App(tk.Tk):
             widget.configure(bg=PANEL_BG)
         widget = self._live_widget("field_box")
         if widget is not None:
-            widget.configure(
-                bg=_c("input_bg"), highlightbackground=_c("input_border"), highlightcolor=_c("input_border")
-            )
+            try:
+                widget.configure(bg=PANEL_BG)
+            except Exception:
+                pass
+            try:
+                self._draw_input_pill()
+            except Exception:
+                pass
         self._recolor_input_entry()
         self._recolor_header_buttons()
+        # Scrollbars thin styling
+        try:
+            self._style_scrollbars()
+        except Exception:
+            pass
 
     def _compose_menu(self):
         self._new_contact()
@@ -3071,6 +3357,137 @@ class App(tk.Tk):
         needle = self._conv_filter
         return [i for i, label in enumerate(self._conv_labels) if needle in label.lower()]
 
+    def _row_bg(self, selected, hover):
+        if selected:
+            return ROW_SELECTED
+        if hover:
+            return ROW_HOVER
+        return PANEL_BG
+
+    def _row_fg(self, selected, muted=False):
+        if selected:
+            return ROW_SELECTED_FG
+        if muted:
+            return TIME_GRAY
+        return TEXT_INK
+
+    def _draw_avatar_for_row(self, canvas, y, kind, address, label, bg):
+        x0 = DIALOG_LEFT
+        y0 = y + DIALOG_TOP
+        x1 = x0 + AVATAR_D
+        y1 = y0 + AVATAR_D
+        color = _avatar_color(address)
+        cx = x0 + AVATAR_R
+        cy = y0 + AVATAR_R
+        is_channel = kind == "channel"
+        canvas.create_oval(x0, y0, x1, y1, fill=color, outline=color)
+        txt = "#" if is_channel else _initials(label)
+        canvas.create_text(cx, cy, text=txt, fill="white", font=self.avatar_font)
+        # online dot for contacts with pubkey
+        if not is_channel:
+            try:
+                has_key = self.client.has_pubkey(address)
+            except Exception:
+                has_key = False
+            if has_key:
+                r = ONLINE_DOT_R
+                stroke = ONLINE_STROKE
+                dcx = x1 - r - 1
+                dcy = y1 - r - 1
+                # stroke color = row bg
+                canvas.create_oval(
+                    dcx - r - stroke,
+                    dcy - r - stroke,
+                    dcx + r + stroke,
+                    dcy + r + stroke,
+                    fill=bg,
+                    outline=bg,
+                )
+                canvas.create_oval(dcx - r, dcy - r, dcx + r, dcy + r, fill=ONLINE_DOT, outline=ONLINE_DOT)
+
+    def _draw_unread_badge(self, canvas, y, width, unread, selected):
+        if not unread:
+            return 0
+        badge = str(unread) if unread < 100 else "99+"
+        try:
+            txt_w = self.small_font.measure(badge)
+        except Exception:
+            txt_w = len(badge) * 7
+        bw = max(UNREAD_H, txt_w + 2 * UNREAD_PAD_X)
+        bh = UNREAD_H
+        x1 = width - DIALOG_RIGHT
+        x0 = x1 - bw
+        y1 = y + ROW_H - DIALOG_TOP
+        y0 = y1 - bh
+        if selected:
+            bg = "#ffffff"
+            fg = ROW_SELECTED
+        else:
+            bg = BADGE_BG
+            fg = "white"
+        # pill shape: rounded rect height 19
+        r = bh // 2
+        # Use rect + ovals for pill
+        canvas.create_rectangle(x0 + r, y0, x1 - r, y1, fill=bg, outline=bg)
+        canvas.create_rectangle(x0, y0 + r, x1, y1 - r, fill=bg, outline=bg)
+        canvas.create_oval(x0, y0, x0 + 2 * r, y1, fill=bg, outline=bg)
+        canvas.create_oval(x1 - 2 * r, y0, x1, y1, fill=bg, outline=bg)
+        canvas.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=badge, fill=fg, font=self.small_font)
+        return bw
+
+    def _draw_section_rows(self, canvas, y, width, section_items, preview_map, unread_map, fit):
+        for index, (kind, address), label in section_items:
+            self._row_tops.append((y, index))
+            preview, clock = preview_map.get(address, ("", ""))
+            unread = unread_map.get(address, 0)
+            selected = index == self._conv_selected
+            hover = index == getattr(self, "_conv_hover_index", None)
+            bg = self._row_bg(selected, hover)
+            canvas.create_rectangle(0, y, width, y + ROW_H, fill=bg, outline=bg)
+            # Avatar 46px with 10,8 margins
+            self._draw_avatar_for_row(canvas, y, kind, address, label, bg)
+            # Text positions: left 64 (10+46+8), right margin 10
+            text_x = DIALOG_LEFT + AVATAR_D + 8
+            clock_w = self.small_font.measure(clock) if clock else 0
+            name_w = width - text_x - DIALOG_RIGHT - clock_w - 8
+            if name_w < 20:
+                name_w = 20
+            name_fg = ROW_SELECTED_FG if selected else TEXT_INK
+            canvas.create_text(
+                text_x, y + 10, anchor="nw", text=fit(self.name_font, label, name_w), fill=name_fg, font=self.name_font
+            )
+            if clock:
+                clock_fg = ROW_SELECTED_FG if selected else TIME_GRAY
+                canvas.create_text(
+                    width - DIALOG_RIGHT, y + 10, anchor="ne", text=clock, fill=clock_fg, font=self.small_font
+                )
+            # Unread badge width for preview calc
+            badge_w = 0
+            if unread:
+                try:
+                    tb = str(unread) if unread < 100 else "99+"
+                    badge_w = max(UNREAD_H, self.small_font.measure(tb) + 2 * UNREAD_PAD_X) + 8
+                except Exception:
+                    badge_w = 34
+            prev_w = width - text_x - DIALOG_RIGHT - badge_w
+            if prev_w < 20:
+                prev_w = 20
+            preview_fg = ROW_SELECTED_FG if selected else TEXT_GRAY
+            # Slight mute for preview when selected (80% opacity)
+            if selected:
+                preview_fg = "#e6f0fa" if _theme.name == "light" else "#d9e6f3"
+            canvas.create_text(
+                text_x,
+                y + 34,
+                anchor="nw",
+                text=fit(self.preview_font, preview or "", prev_w),
+                fill=preview_fg,
+                font=self.preview_font,
+            )
+            self._draw_unread_badge(canvas, y, width, unread, selected)
+            y += ROW_H
+        return y
+
     def _draw_conversations(self):
         canvas = self.conv_canvas
         canvas.delete("all")
@@ -3081,8 +3498,6 @@ class App(tk.Tk):
         fit = self._fit_cached
         y = 0
         self._row_tops = []
-
-        # Group by kind: contacts first, then channels
         contacts = [(i, self._conv_meta[i], self._conv_labels[i]) for i in rows if self._conv_meta[i][0] == "contact"]
         channels = [(i, self._conv_meta[i], self._conv_labels[i]) for i in rows if self._conv_meta[i][0] == "channel"]
 
@@ -3090,82 +3505,19 @@ class App(tk.Tk):
             nonlocal y
             if not section_items:
                 return
-            # Section header
             canvas.create_rectangle(0, y, width, y + 24, fill=PANEL_BG, outline=PANEL_BG)
             canvas.create_text(16, y + 12, anchor="w", text=section_title, fill=TEXT_GRAY, font=self.small_font)
             y += 24
-            for index, (kind, address), label in section_items:
-                self._row_tops.append((y, index))
-                preview, clock = preview_map.get(address, ("", ""))
-                unread = unread_map.get(address, 0)
-                selected = index == self._conv_selected
-                hover = index == getattr(self, "_conv_hover_index", None)
-                bg = ROW_SELECTED if selected else (ROW_HOVER if hover else PANEL_BG)
-                canvas.create_rectangle(0, y, width, y + ROW_H, fill=bg, outline=bg)
-                # Avatar with different style for channels
-                color = _avatar_color(address)
-                is_channel = kind == "channel"
-                if is_channel:
-                    # Channel: square-ish avatar with # symbol
-                    x0 = 12
-                    y0 = y + ROW_H / 2 - AVATAR_R
-                    x1 = 12 + AVATAR_R * 2
-                    y1 = y + ROW_H / 2 + AVATAR_R
-                    canvas.create_oval(x0, y0, x1, y1, fill=color, outline=color)
-                    canvas.create_text(12 + AVATAR_R, y + ROW_H / 2, text="#", fill="white", font=self.avatar_font)
-                else:
-                    # Contact: round avatar with initials
-                    canvas.create_oval(
-                        12,
-                        y + ROW_H / 2 - AVATAR_R,
-                        12 + AVATAR_R * 2,
-                        y + ROW_H / 2 + AVATAR_R,
-                        fill=color,
-                        outline=color,
-                    )
-                    canvas.create_text(
-                        12 + AVATAR_R, y + ROW_H / 2, text=_initials(label), fill="white", font=self.avatar_font
-                    )
-                clock_w = self.small_font.measure(clock) if clock else 0
-                name_w = width - 70 - clock_w - 16
-                canvas.create_text(
-                    66, y + 10, anchor="nw", text=fit(self.name_font, label, name_w), fill=TEXT_INK, font=self.name_font
-                )
-                if clock:
-                    canvas.create_text(
-                        width - 10, y + 10, anchor="ne", text=clock, fill=TIME_GRAY, font=self.small_font
-                    )
-                # Show preview with sender indicator for incoming
-                prev_w = width - 76 - (34 if unread else 0)
-                preview_text = preview
-                preview_color = TEXT_GRAY
-                if preview and not is_channel:
-                    # Try to determine if last message was incoming
-                    pass
-                canvas.create_text(
-                    66,
-                    y + 34,
-                    anchor="nw",
-                    text=fit(self.preview_font, preview_text, prev_w),
-                    fill=preview_color,
-                    font=self.preview_font,
-                )
-                if unread:
-                    badge = str(unread) if unread < 100 else "99+"
-                    bw = max(22, self.small_font.measure(badge) + 12)
-                    canvas.create_oval(
-                        width - 12 - bw, y + ROW_H - 30, width - 12, y + ROW_H - 8, fill=BADGE_BG, outline=BADGE_BG
-                    )
-                    canvas.create_text(
-                        width - 12 - bw / 2, y + ROW_H - 19, text=badge, fill="white", font=self.small_font
-                    )
-                y += ROW_H
+            y = self._draw_section_rows(canvas, y, width, section_items, preview_map, unread_map, fit)
 
         draw_section(contacts, "Contatos")
         draw_section(channels, "Canais")
-
         canvas.create_line(0, 0, 0, max(y, 1), fill=LINE)
         canvas.configure(scrollregion=(0, 0, width, y))
+        try:
+            self._style_scrollbars()
+        except Exception:
+            pass
 
     def _conv_index_at(self, y):
         canvas_y = self.conv_canvas.canvasy(y)
@@ -3174,10 +3526,50 @@ class App(tk.Tk):
                 return index
         return None
 
+    def _ripple_row(self, y, width):  # noqa: C901
+        """Ripple effect: expanding translucent circle on row click."""
+        try:
+            canvas = self.conv_canvas
+            if not canvas.winfo_exists():
+                return
+            cx = width / 2
+            cy = y + ROW_H / 2
+            oval = canvas.create_oval(cx - 10, cy - 10, cx + 10, cy + 10, fill="#419fd9", outline="", stipple="gray50")
+            canvas.tag_raise(oval)
+
+            def expand(step=0):
+                try:
+                    if not canvas.winfo_exists() or getattr(self, "_closed", False):
+                        return
+                    if step > 5:
+                        try:
+                            canvas.delete(oval)
+                        except Exception:
+                            pass
+                        return
+                    r = 10 + step * 18
+                    canvas.coords(oval, cx - r, cy - r, cx + r, cy + r)
+                    # fade by changing stipple not reliable; just delete after
+                    canvas.after(30, lambda: expand(step + 1))
+                except Exception:
+                    pass
+
+            canvas.after(10, lambda: expand(0))
+        except Exception:
+            pass
+
     def _conv_click(self, event):
         index = self._conv_index_at(event.y)
         if index is None:
             return
+        # ripple animation on click
+        try:
+            for top, idx in getattr(self, "_row_tops", []):
+                if idx == index:
+                    self._ripple_row(top, self.conv_canvas.winfo_width() or 300)
+                    break
+        except Exception:
+            pass
         self._conv_selected = index
         self._draw_conversations()
         callback = self.conv_list._bindings.get("<<ListboxSelect>>")
@@ -3454,6 +3846,13 @@ class App(tk.Tk):
             self.input_entry.focus_set()
         except Exception:
             pass
+        # Simulated typing 3 dots if no real presence hook
+        try:
+            if kind == "contact":
+                # show typing briefly to demonstrate animation
+                self.after(800, lambda: self._trigger_typing_simulation(2200))
+        except Exception:
+            pass
 
     def _update_triage_banner(self):
         try:
@@ -3589,8 +3988,15 @@ class App(tk.Tk):
         lines.append(
             ("Copie o endereço e envie por qualquer meio: e-mail, mensagem, papel.", self.preview_font, TEXT_GRAY)
         )
-        connected = self.client.net.connection_count
-        proxy = self.client.net.proxy.describe() if self.client.net.proxy else "Direto"
+        try:
+            connected = self.client.net.connection_count
+        except Exception:
+            connected = 0
+        try:
+            proxy_obj = getattr(self.client.net, "proxy", None)
+            proxy = proxy_obj.describe() if proxy_obj else "Direto"
+        except Exception:
+            proxy = "Direto"
         lines.append(("Rede: %d conexões | Proxy: %s" % (connected, proxy), self.small_font, TEXT_GRAY))
         line_h = self.preview_font.metrics("linespace")
         title_h = title_font.metrics("linespace")
@@ -3841,9 +4247,9 @@ class App(tk.Tk):
     def _ticks(self, row):
         status = row["status"]
         if status == "ackreceived":
-            return "✓✓", READ_BLUE
+            return "✓✓", TICK_READ
         if status == "sent":
-            return "✓✓", TIME_GRAY
+            return "✓✓", TICK_SENT
         # M5: ack-failed com ícone próprio (antes caía no relógio).
         if status == "ack-failed":
             return "⚠", "#c0392b"
@@ -4049,6 +4455,28 @@ class App(tk.Tk):
         except Exception:
             return None  # Fall back to file icon
 
+    def _file_thumb_color(self, filename, mime):
+        """4 cores por extensão: azul/verde/vermelho/amarelo."""
+        name = (filename or "").lower()
+        ext = name.rsplit(".", 1)[-1] if "." in name else ""
+        if ext in ("pdf", "doc", "docx", "ppt", "pptx"):
+            return FILE_THUMB_RED
+        if ext in ("zip", "rar", "7z", "tar", "gz", "bz2", "mp3", "wav", "mp4", "avi", "mov"):
+            return FILE_THUMB_YELLOW
+        if ext in ("jpg", "jpeg", "png", "gif", "bmp", "webp", "svg"):
+            return FILE_THUMB_GREEN
+        if mime.startswith("image/"):
+            return FILE_THUMB_GREEN
+        if mime.startswith("video/") or mime.startswith("audio/"):
+            return FILE_THUMB_YELLOW
+        if mime.startswith("text/"):
+            return FILE_THUMB_BLUE
+        if ext in ("txt", "csv", "json", "xml", "py", "js", "html"):
+            return FILE_THUMB_BLUE
+        if ext in ("exe", "bin"):
+            return FILE_THUMB_RED
+        return FILE_THUMB_BLUE
+
     def _render_attachment(self, canvas, x, y, attachment, max_width, out):
         """Render an attachment inline in the chat bubble."""
         filename = attachment["filename"]
@@ -4074,17 +4502,24 @@ class App(tk.Tk):
         if height is not None:
             return height
 
-        # File icon fallback
+        # File icon fallback with 4-color thumb
         icon = self._attachment_icon(mime)
+        thumb_color = self._file_thumb_color(filename, mime)
 
-        # Draw file preview box
-        box_h = 40
-        canvas.create_rectangle(
-            x, y, x + max_width, y + box_h, fill=BUBBLE_IN if not out else BUBBLE_OUT, outline=DATE_BG
-        )
-        canvas.create_text(
-            x + 10, y + box_h // 2, anchor="w", text=f"{icon} {filename}", fill=TEXT_INK, font=self.msg_font
-        )
+        # Draw file preview box with colored bar left
+        box_h = 44
+        # bubble bg for box
+        bg = BUBBLE_IN if not out else BUBBLE_OUT
+        canvas.create_rectangle(x, y, x + max_width, y + box_h, fill=bg, outline=DATE_BG)
+        # colored thumb left
+        canvas.create_rectangle(x, y, x + 44, y + box_h, fill=thumb_color, outline=thumb_color)
+        canvas.create_text(x + 22, y + box_h // 2, anchor="center", text=icon, fill="white", font=("", 16))
+        canvas.create_text(x + 54, y + 8, anchor="nw", text=filename, fill=TEXT_INK, font=self.msg_font)
+        try:
+            size_text = mime.split("/")[-1] if "/" in mime else mime
+            canvas.create_text(x + 54, y + 24, anchor="nw", text=size_text, fill=TEXT_GRAY, font=self.small_font)
+        except Exception:
+            pass
         return box_h + 8
 
     def _collect_chat_items(self):
@@ -4219,16 +4654,30 @@ class App(tk.Tk):
     def _draw_more_pill(self, canvas, layout, width):
         _kind, top, _h, label = layout
         x0, y0, x1, y1 = self._chat_pill
+        # shadow subtle
+        try:
+            canvas.create_oval(x0 + 1, y0 + 1, x1 + 1, y1 + 1, fill=BUBBLE_SHADOW, outline=BUBBLE_SHADOW)
+        except Exception:
+            pass
         canvas.create_oval(x0, y0, x1, y1, fill=DATE_BG, outline=DATE_BG)
-        canvas.create_text(width / 2, top + 11, text=label, fill="white", font=self.small_font)
+        canvas.create_text(width / 2, top + 11, text=label, fill=DATE_FG, font=self.small_font)
 
     def _draw_day_pill(self, canvas, layout, width):
         _kind, top, _h, label = layout
         pill_w = self.small_font.measure(label) + 26
-        canvas.create_oval(width / 2 - pill_w / 2, top, width / 2 + pill_w / 2, top + 22, fill=DATE_BG, outline=DATE_BG)
-        canvas.create_text(width / 2, top + 11, text=label, fill="white", font=self.small_font)
+        x0 = width / 2 - pill_w / 2
+        x1 = width / 2 + pill_w / 2
+        y0 = top
+        y1 = top + 22
+        try:
+            canvas.create_oval(x0 + 1, y0 + 1, x1 + 1, y1 + 1, fill=BUBBLE_SHADOW, outline=BUBBLE_SHADOW)
+        except Exception:
+            pass
+        # pill centered with DATE_BG
+        canvas.create_oval(x0, y0, x1, y1, fill=DATE_BG, outline=DATE_BG)
+        canvas.create_text(width / 2, top + 11, text=label, fill=DATE_FG, font=self.small_font)
 
-    def _draw_message_layout(self, canvas, layout, width, line_h, small_h):
+    def _draw_message_layout(self, canvas, layout, width, line_h, small_h):  # noqa: C901
         (_, top, height, row, sender, lines, stamp_text, out, bubble_w, _extra_row, pending, _msg_idx, attachments) = (
             layout
         )
@@ -4239,6 +4688,32 @@ class App(tk.Tk):
             x0 = 12
             x1 = x0 + bubble_w
         self._bubble(canvas, x0, top, x1, top + height, BUBBLE_OUT if out else BUBBLE_IN, out)
+        # Reply vertical bar colorida se houver citação/encaminhada
+        try:
+            body_raw = row.get("body", "") if hasattr(row, "get") else ""
+            starts_quote = body_raw.lstrip().startswith(">")
+            has_enc = "[Encaminhada]" in body_raw
+            has_nl_quote = "\n> " in body_raw
+            has_any_quote = any(ln.lstrip().startswith(">") for ln in lines)
+            has_reply = has_enc or starts_quote or has_nl_quote or has_any_quote
+            if has_reply:
+                bar_color = REPLY_BAR_OUT if out else REPLY_BAR_IN
+                bar_x0 = x0 + 6
+                bar_x1 = bar_x0 + 3
+                bar_y0 = top + 8
+                if sender:
+                    bar_y0 += small_h + 4
+                # altura cobre linhas de citação
+                quote_lines = [ln for ln in lines if ln.lstrip().startswith(">")]
+                if not quote_lines and has_enc:
+                    quote_lines = lines[:1]
+                bar_h = max(12, len(quote_lines) * line_h + 4) if quote_lines else line_h
+                bar_y1 = bar_y0 + bar_h
+                if bar_y1 > top + height - 8:
+                    bar_y1 = top + height - 8
+                canvas.create_rectangle(bar_x0, bar_y0, bar_x1, bar_y1, fill=bar_color, outline=bar_color)
+        except Exception:
+            pass
         cy = top + 8
         if sender:
             canvas.create_text(
@@ -4318,7 +4793,57 @@ class App(tk.Tk):
             canvas.yview_moveto(1.0)
 
     def _bubble(self, canvas, x0, y0, x1, y1, fill, out, tail=True):
-        radius = 10
+        radius = BUBBLE_RADIUS
+        # shadow 1px offset subtle
+        try:
+            shadow = BUBBLE_OUT_SHADOW if out else BUBBLE_IN_SHADOW
+            if shadow and shadow != fill:
+                off = BUBBLE_SHADOW_OFFSET
+                canvas.create_rectangle(
+                    x0 + radius + off, y0 + off, x1 - radius + off, y1 + off, fill=shadow, outline=shadow
+                )
+                canvas.create_rectangle(
+                    x0 + off, y0 + radius + off, x1 + off, y1 - radius + off, fill=shadow, outline=shadow
+                )
+                for cx, cy in (
+                    (x0 + radius, y0 + radius),
+                    (x1 - radius, y0 + radius),
+                    (x0 + radius, y1 - radius),
+                    (x1 - radius, y1 - radius),
+                ):
+                    canvas.create_oval(
+                        cx - radius + off,
+                        cy - radius + off,
+                        cx + radius + off,
+                        cy + radius + off,
+                        fill=shadow,
+                        outline=shadow,
+                    )
+                if tail:
+                    if out:
+                        canvas.create_polygon(
+                            x1 - 2 + off,
+                            y0 + 4 + off,
+                            x1 + 9 + off,
+                            y0 + 10 + off,
+                            x1 - 2 + off,
+                            y0 + 18 + off,
+                            fill=shadow,
+                            outline=shadow,
+                        )
+                    else:
+                        canvas.create_polygon(
+                            x0 + 2 + off,
+                            y0 + 4 + off,
+                            x0 - 9 + off,
+                            y0 + 10 + off,
+                            x0 + 2 + off,
+                            y0 + 18 + off,
+                            fill=shadow,
+                            outline=shadow,
+                        )
+        except Exception:
+            pass
         canvas.create_rectangle(x0 + radius, y0, x1 - radius, y1, fill=fill, outline=fill)
         canvas.create_rectangle(x0, y0 + radius, x1, y1 - radius, fill=fill, outline=fill)
         for corner_x, corner_y in (
