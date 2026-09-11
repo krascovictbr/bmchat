@@ -1,44 +1,43 @@
-> **Language:** [English](branch.md) | [Português (BR)](branch.pt-BR.md)
+> **Idioma:** [Português (BR)](branch.pt-BR.md) | [English](branch.md)
 
-# branch.md — unified changelog and audits
+# branch.md — changelog e auditorias unificadas
 
-> Single file for branch/audit documentation. Unified on 2026-09-07 in branch `analysis/complete-audit-20260907`.
-> Sources: `branch.md` (ui-optimization) + `docs-AUDIT-anti-hallucination.md` + `EXECUTIVE_SUMMARY.md` + `ANALYSIS_REPORT.md`.
-> *Note:* This is the English main version. Technical changelog details below are preserved in Portuguese for full fidelity; headings and introductions are translated. See [Português (BR)](branch.pt-BR.md) for the original.*
-> `README.md` and `LICENSE` remain separate (not part of this unification).
+> Arquivo único de documentação de branches/auditorias. Unificado em 2026-09-07 na branch `analysis/complete-audit-20260907`.
+> Origens: `branch.md` (ui-optimization) + `docs-AUDIT-anti-hallucination.md` + `EXECUTIVE_SUMMARY.md` + `ANALYSIS_REPORT.md`.
+> `README.md` e `LICENSE` permanecem separados (não fazem parte desta unificação).
 
-## Table of Contents
+## Índice
 
 - [ui-optimization (2026-09-07)](#ui-optimization--2026-09-07)
-- [audit/anti-hallucination-20260907](#anti-hallucination-audit--auditanti-hallucination-20260907)
-- [analysis/complete-audit-20260907 — executive summary](#analysiscomplete-audit-20260907--executive-summary)
-- [analysis/complete-audit-20260907 — full report](#bmchat--complete-audit-report-analysis_reportmd)
-- [Fixes applied (2026-09-07, with approval — ALL)](#fixes-applied-2026-09-07-with-approval--all)
+- [audit/anti-hallucination-20260907](#auditoria-anti-alucinação--auditanti-hallucination-20260907)
+- [analysis/complete-audit-20260907 — resumo executivo](#analysiscomplete-audit-20260907--resumo-executivo)
+- [analysis/complete-audit-20260907 — relatório completo](#bmchat--relatório-completo-de-auditoria-analysis_reportmd)
+- [Correções aplicadas (2026-09-07, com aprovação — TUDO)](#correções-aplicadas-2026-09-07-com-aprovação--tudo)
 - [optimization/performance-20260907 (2026-09-07)](#changelog--branch-optimizationperformance-20260907)
 - [fix/ci-lint-20260907 (2026-09-08)](#changelog--branch-fixci-lint-20260907)
 - [fix/security-20260908 (2026-09-08)](#changelog--branch-fixsecurity-20260908)
-- [anti-hallucination fix/security-20260908 (2026-09-08)](#hallucination-hunt--fixsecurity-20260908)
-- [identities + TTL (2026-09-08, main branch)](#identities-and-ttl--main-branch-2026-09-08)
-- [re-download after wipe (2026-09-08, main branch)](#re-download-after-wipe--main-branch-2026-09-08)
-- [peer rotation / sync from scratch (2026-09-08, main branch)](#peer-rotation--main-branch-2026-09-08)
-- [fast bootstrap / fresh list (2026-09-08, main branch)](#fast-bootstrap--main-branch-2026-09-08)
-- [CVEs and CVSS — fix/security-20260908](#cves-and-cvss--fixsecurity-20260908)
+- [anti-alucinação fix/security-20260908 (2026-09-08)](#caça-a-alucinações--fixsecurity-20260908)
+- [identidades + TTL (2026-09-08, ramo principal)](#identidades-e-ttl--ramo-principal-2026-09-08)
+- [re-download pós-wipe (2026-09-08, ramo principal)](#re-download-pós-wipe--ramo-principal-2026-09-08)
+- [rotação de pares / sync do zero (2026-09-08, ramo principal)](#rotação-de-pares--ramo-principal-2026-09-08)
+- [bootstrap rápido / lista fresca (2026-09-08, ramo principal)](#bootstrap-rápido--ramo-principal-2026-09-08)
+- [CVEs e CVSS — fix/security-20260908](#cves-e-cvss--fixsecurity-20260908)
 - [optimize/object-reception-20260909 (2026-09-09)](#optimizeobject-reception-20260909)
-- [sync header large inv (2026-09-09)](#sync-header-large-inv-2026-09-09)
+- [sync header inv grande (2026-09-09)](#sync-header-inv-grande-2026-09-09)
 - [fix/ci-flaky-sync (2026-09-09)](#fixci-flaky-sync-2026-09-09)
-- [lint suite 95% (2026-09-09)](#lint-suite-95-2026-09-09)
+- [lint bateria 95% (2026-09-09)](#lint-bateria-95-2026-09-09)
 
 ---
 
 # Changelog — branch `ui-optimization`
 
-Record of updates from branch `ui-optimization`
-(fast-forward merge `57a0d15` into `rolling-release`, 2026-09-07;
-base `a247655`). Format: Added / Changed / Fixed.
+Registro das atualizações vindas do branch `ui-optimization`
+(merge fast-forward `57a0d15` em `rolling-release`, 2026-09-07;
+base `a247655`). Formato: Adicionado / Mudado / Corrigido.
 
 ## [ui-optimization] — 2026-09-07
 
-### Added
+### Adicionado
 - Paginação do chat: últimas 200 mensagens + pílula "carregar mensagens
   anteriores" (+200 por clique).
 - Cache de quebra de linha `(texto, largura)`, cap 500 FIFO.
@@ -62,7 +61,7 @@ base `a247655`). Format: Added / Changed / Fixed.
   scrollbar e altura dinâmica no `choose`, abertura sem cintilação e grab
   sempre liberado.
 
-### Changed
+### Mudado
 - Redraw do chat: pula relayout se a largura não mudou; doodle só no
   viewport (era até 6000 px).
 - `_fit_width` com busca binária; prévia da conversa e não-lidas com menos
@@ -74,7 +73,7 @@ base `a247655`). Format: Added / Changed / Fixed.
   primeiro (botões sempre visíveis).
 - Tela de suporte e backup com botão "Enviar diagnóstico".
 
-### Fixed
+### Corrigido
 - Palavra gigante sem espaço congelava a interface (`_wrap_lines` O(n²) →
   ~4 medições por trecho).
 - Índice de seleção obsoleto quebrava ao abrir conversa.
@@ -83,7 +82,7 @@ base `a247655`). Format: Added / Changed / Fixed.
 - Códigos de atualização em inglês cru traduzidos.
 - `db.close()` duplo levantava exceção.
 
-### Verification
+### Verificação
 - `pytest tests/ -q`: **24 passed**.
 - Smokes Tkinter: paginação (250 msgs → 1907 itens), hover, scrollbar,
   envio, 71 checks de diálogos, consentimento, menus, startup e fechamento
@@ -93,19 +92,19 @@ base `a247655`). Format: Added / Changed / Fixed.
 
 ---
 
-## Anti-hallucination Audit — `audit/anti-hallucination-20260907`
+## Auditoria anti-alucinação — `audit/anti-hallucination-20260907`
 
-Isolated branch (no conflict with `rolling-release`): `audit/anti-hallucination-20260907`
-Date: 2026-09-07 · Base: `rolling-release@22964ff`
-Scope: all `bmchat/` + `run.py` + `tests/` (7386 lines)
+Branch isolada (sem conflito com `rolling-release`): `audit/anti-hallucination-20260907`
+Data: 2026-09-07 · Base: `rolling-release@22964ff`
+Escopo: todo `bmchat/` + `run.py` + `tests/` (7386 linhas)
 
-Method: 4 parallel tracks (imports/symbols, APIs/signatures, dead-code/refs, protocol/crypto vs PyBitmessage),
+Método: 4 frentes paralelas (imports/símbolos, APIs/assinaturas, dead-code/refs, protocolo/cripto vs PyBitmessage),
 com `py_compile`, `pyflakes`/`ruff` (zero `F821`/`F822`), `import` em runtime de todos os módulos,
 cruzamento AST `def` × chamadas, e reprodução executada dos suspeitos.
 
-### 1. Real Hallucinations — FIXED
+### 1. Alucinações reais — CORRIGIDAS
 
-#### H1 [CRITICAL] `bmchat/core/client.py:499` — `incoming.stream` does not exist
+#### H1 [CRÍTICO] `bmchat/core/client.py:499` — `incoming.stream` inexistente
 Antes:
 ```python
 channel_address = reverse.get(parsed.data[:32], incoming.stream)
@@ -128,7 +127,7 @@ if channel_address is None:
 Se a tag foi decifrada, ela está em `reverse` por construção; se houve
 corrida (inscrição removida no meio), apenas ignora em vez de gravar tipo errado.
 
-#### H2 [HIGH] chan owner without subscription lost posts — `encryption_private_from_address=None`
+#### H2 [ALTO] dono do chan sem inscrição perdia posts — `encryption_private_from_address=None`
 `AddressKeys.from_private_keys`/`generate_keys`/`chan_keys_from_name` nunca
 preenchem `encryption_private_from_address` (só `from_address` preenche).
 `_on_broadcast` registrava a identidade chan via `self.identities.get(...)`
@@ -154,7 +153,7 @@ Reprodução validada (script efêmero, depois virado em teste):
 - com inscrição → 1 mensagem + evento `('broadcast', addr, ...)`
 - dono chan sem inscrição → 1 mensagem (antes: 0)
 
-### 2. Verified and CLEAN (no hallucination)
+### 2. Verificado e LIMPO (sem alucinação)
 
 - **Imports/símbolos:** todos os `from X import Y` conferem (`client`, `keys`,
   `ecc`, `ecies`, `objects`, `packets`, `const`, `manager`, `peer`, `proxy`,
@@ -179,9 +178,9 @@ Reprodução validada (script efêmero, depois virado em teste):
 - **Falso-positivo esclarecido:** `branch.md:49` dizia "checksumfailed inalcançável";
   hoje `gui/app.py:2226` trata `checksumfailed` — está vivo.
 
-### 3. Documented Non-hallucinations (intentionally not fixed here)
+### 3. Não-alucinações documentadas (não corrigidas aqui de propósito)
 
-To avoid conflicts and behavior changes, only documented:
+Para não gerar conflito nem mudar comportamento, registrado apenas:
 
 - **Dead code (nunca chamado):** `database.delete_identity/set_identity_label/
   set_identity_difficulty/get_message/messages_for/messages_for_contact/
@@ -213,20 +212,20 @@ To avoid conflicts and behavior changes, only documented:
   só permissivo/estrito em pontos — anotado para decisão futura, fora do escopo
   anti-alucinação.
 
-### 4. Files Touched (minimal, no conflict)
+### 4. Arquivos tocados (mínimo, sem conflito)
 
 - `bmchat/core/client.py` — bloco `_on_broadcast` (H1+H2), ~10 linhas.
 - `tests/test_anti_hallucination.py` — NOVO, 2 testes de regressão.
 - Este documento.
 
-### 5. Validation
+### 5. Validação
 
 - `pytest tests/test_anti_hallucination.py -q`: **2 passed**.
 - `pytest tests/ -q`: **24 passed** (suite original) + 2 novos = 26 no total da branch.
 - `pyflakes`: só `F401/F841` (unused) — zero `F821/F822`.
 - `compileall`: OK.
 
-### 6. How to Merge Without Conflict
+### 6. Como fundir sem conflito
 
 ```bash
 git checkout rolling-release
@@ -238,16 +237,16 @@ Reversão segura: `git revert` do commit de `client.py` (testes novos podem fica
 
 ---
 
-## analysis/complete-audit-20260907 — executive summary
+## analysis/complete-audit-20260907 — resumo executivo
 
 - **Branch:** `analysis/complete-audit-20260907` · Base `d199a10` · 2026-09-07 UTC
-- **Scope:** 33 `.py`, 7471 lines · flake8 82 warnings · mypy 0 · bandit H3/M2/L112 · sample pytest 6 passed
+- **Escopo:** 33 `.py`, 7471 linhas · flake8 82 avisos · mypy 0 · bandit H3/M2/L112 · pytest amostral 6 passed
 
-### Verdict in 30 Seconds
+### Veredito em 30 segundos
 
 O núcleo cripto/protocolo está **correto e interoperável** (MAGIC, PoW-mínimo, ECIES/ECDSA, objetos v1/v4/v5 conferem com PyBitmessage). Não há SQLi nem import circular. O risco está em **fluxo e ciclo de vida**: primeiro envio DM queima PoW e não anuncia (A1), PoW incancelável que prende processos (A2), chans funcionam no backend mas são invisíveis na GUI (A3), retry/reannounce com comportamento errado (B6/B7), rede permissiva a flood (B11–B13), e chaves em claro sem permissão de diretório (A5). Nada disso exige re-arquitetura — são fixes locais priorizados abaixo.
 
-### Top 5 (fix first)
+### Top 5 (corrigir primeiro)
 
 1. **A1 — 1º envio DM trava ~10 min** (`client.py:557` sem `done_cb`) — 0.5h.
 2. **A2/A4 — PoW não cancela / trava no exit** (`pow.py` step 1<<54) — 1 dia.
@@ -257,43 +256,43 @@ O núcleo cripto/protocolo está **correto e interoperável** (MAGIC, PoW-mínim
 
 Próximos: B11/B12/B13 (rede antiflood), B14 (teto body antes do PoW), B9/B10 (target float, chave 0).
 
-### Numbers
+### Números
 
 - Achados validados: **5 críticos, 16 altos, 40 médios, ~35 baixos**
 - Categorias: Lógica 38% · Consistência 18% · Concorrência 14% · Segurança 12% · Performance 12%
 - Funções >50 linhas: 13 (pior: `_build_widgets` 196, `_redraw_chat` 161)
 - Falsos-positivos descartados: bandit B413/B404/B603/B606/B608/B104, `elif`-como-nesting, `checksumfailed`.
 
-### What Is Already Good (keep)
+### O que já está bom (manter)
 
 - Imports/símbolos 100% conferem; `mypy` limpo; sem SQLi (tudo `?`); sem ciclo circular (lazies intencionais).
 - Protocolo/cripto núcleo idêntico à referência; `requirements` compatível; README §§_fluxo/ACK/suporte/update batem (só overclaims pontuais a ajustar).
 - H1/H2 de broadcast já fixados em `d199a10` + 2 testes de regressão.
 
-### Plan (4 branches)
+### Plano (4 branches)
 
 1. Hotfix envio (A1+B4+B14+B2) · 2. PoW/estabilidade (A2+B1+B7+B3) · 3. Rede antiflood (B11+B12+B13+C5) · 4. Ciclo de vida + GUI chans + endurecimento (B6+B8+A3+A5). Higiene (bloco D) no contínuo + `pip audit`/`pytest-cov` no CI.
 
-Details, before/after code and estimates per item: see `ANALYSIS_REPORT.md`.
+Detalhes, código antes/depois e estimativas por item: ver `ANALYSIS_REPORT.md`.
 
 ---
 
-## BMCHAT — Complete Audit Report (analysis/complete-audit-20260907)
+## BMCHAT — Relatório Completo de Auditoria (analysis/complete-audit-20260907)
 
-- **Analysis branch:** `analysis/complete-audit-20260907` (created from `audit/anti-hallucination-20260907@d199a10`)
-- **Audited base:** `d199a10` (includes H1/H2 broadcast fix) · previous `rolling-release@22964ff`
-- **Date/time (UTC):** 2026-09-07 · Python 3.14.7 · Linux
-- **Scope:** 33 `.py` files (29 in `bmchat/` + `run.py` + 4 in `tests/`), **7471 lines** total
-- **Tools run:** `flake8` (82 warnings, 0 blocking), `mypy --ignore-missing-imports` (0 issues in 29 files), `bandit` (Low 112 / Medium 2 / High 3), `py_compile` OK, sample `pytest` (6 passed), custom AST (functions >50 lines, circular imports, SQLi)
-- **Methodology:** Phases 1–5 of the prompt (structural, per-file static, behavioral, consistency, dependencies/security). 4 parallel sub-agents + manual validation of CRITICAL findings by direct code reading. No product file was changed in this branch — only these reports.
+- **Branch de análise:** `analysis/complete-audit-20260907` (criada a partir de `audit/anti-hallucination-20260907@d199a10`)
+- **Base auditada:** `d199a10` (inclui fix H1/H2 de broadcast) · anterior `rolling-release@22964ff`
+- **Data/hora (UTC):** 2026-09-07 · Python 3.14.7 · Linux
+- **Escopo:** 33 arquivos `.py` (29 em `bmchat/` + `run.py` + 4 em `tests/`), **7471 linhas** totais
+- **Ferramentas executadas:** `flake8` (82 avisos, 0 bloqueantes), `mypy --ignore-missing-imports` (0 issues em 29 arquivos), `bandit` (Low 112 / Medium 2 / High 3), `py_compile` OK, `pytest` amostral (6 passed), AST próprio (funções >50 linhas, imports circulares, SQLi)
+- **Metodologia:** Fases 1–5 do prompt (estrutural, estática por arquivo, comportamental, consistência, dependências/segurança). 4 subagentes paralelos + validação manual dos CRÍTICOS por leitura direta do código. Nenhum arquivo de produto foi alterado nesta branch — só estes relatórios.
 
 > Convenção: cada achado segue `[TIPO] - SEVERIDADE`, arquivo:linha, função, descrição, código, impacto, solução, prioridade, estimativa. CRÍTICO/ALTO estão detalhados; MÉDIO/BAIXO estão em tabelas condensadas (mesmo conteúdo, sem repetição). Falsos-positivos do ferramental estão marcados como `[OK]` para não virarem issues.
 
 ---
 
-### PHASE 1 — Structural Mapping
+### FASE 1 — Mapeamento estrutural
 
-#### 1.1 Tree and Modules
+#### 1.1 Árvore e módulos
 
 ```
 bmchat/ (5755 LOC varridas pelo bandit; 7471 com tests/run.py)
@@ -326,7 +325,7 @@ run.py (17)             # entry: BMCHAT_DATA ou ~/.bmchat → gui.app.main
 tests/ (842): test_integration (587), test_wire (135), test_interop (124), test_update (67), test_anti_hallucination (64)
 ```
 
-#### 1.2 Architecture (actual flow)
+#### 1.2 Arquitetura (fluxo real)
 
 ```
 GUI (app.py poll 250ms ← ui_queue) ←→ Client ←→ NetworkManager ←→ PeerConnection ×N
@@ -334,11 +333,11 @@ GUI (app.py poll 250ms ← ui_queue) ←→ Client ←→ NetworkManager ←→ 
 Crypto (keys/ecc/ecies/pow) ←→ Protocol (address/objects/packets) ←→ Tests
 ```
 
-#### 1.3 Dependencies
+#### 1.3 Dependências
 
 `requirements.txt`: `PySocks>=1.7.1`, `pycryptodome>=3.15.0`, `ecdsa>=0.18.0` — todas usadas e presentes (1.7.1 / 3.23.0 / 0.19.2). `tkinter` é stdlib (corretamente fora do requirements). Restante só stdlib (`sqlite3`, `threading`, `subprocess`, `socket`, `hashlib`, `hmac`, `concurrent.futures`, etc.). Sem dependência obsoleta funcional (bandit reclama de `pycrypto` por heurística — na verdade é `pycryptodome`, mantido).
 
-#### 1.4 Functions >50 Lines (AST, confirmed)
+#### 1.4 Funções >50 linhas (AST, confirmado)
 
 | Arquivo | Função | Linhas |
 |---|---|---|
@@ -360,9 +359,9 @@ Aninhamento real >3 confirmado só em: `client._reannounce_pubkeys` (4), `pow.ru
 
 ---
 
-### PHASE 2+3+4+5 — Findings (deduplicated and validated by reading)
+### FASE 2+3+4+5 — Achados (deduplicados e validados por leitura)
 
-#### BLOCK A — CRITICAL (fix first; 5 items)
+#### BLOCO A — CRÍTICOS (corrigir primeiro; 5 itens)
 
 ##### [LÓGICA] - CRÍTICO — A1. Primeiro envio DM nunca anuncia o getpubkey
 - Arquivo: `bmchat/core/client.py:553-557` · Função: `send_message`
@@ -441,7 +440,7 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 
 ---
 
-#### BLOCK B — HIGH (detailed; 16 items)
+#### BLOCO B — ALTOS (detalhados; 16 itens)
 
 ##### [LÓGICA] - ALTO — B1. Reenvio duplica PoW/announce (sem estado `sending` nem in-flight)
 - Arquivo: `bmchat/core/client.py:88-97,549-551,560-600` · Funções: `_retry_awaiting`, `send_message`, `_pow_and_publish_message`
@@ -526,7 +525,7 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 
 ---
 
-#### BLOCK C — MEDIUM (condensed table; all confirmed by reading)
+#### BLOCO C — MÉDIOS (tabela condensada; todos confirmados por leitura)
 
 | ID | Arquivo:linha (função) | Problema → Impacto → Sugestão |
 |---|---|---|
@@ -571,11 +570,11 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 | C39 | run.py:9-18 | `makedirs` sem 0o700; `BMCHAT_DATA` sem abspath/validação. Endurecer. |
 | C40 | README vs código | “Só P2P sem canais” vs “suporta canais”; “formatos exatos” vs tolerâncias; retry “ao reabrir” vs 10min; flash “enviado” vs enfileirado. Unificar textos. |
 
-#### BLOCK D — LOW / hygiene (table; opportunistic fix)
+#### BLOCO D — BAIXOS / higiene (tabela; correção oportunista)
 
 `__import__('queue')`→`import queue`; `_on_object source`→`_source`; `_publish_pubkey force` remover; `import_keys_dat/_create_schema/_parse_msg/process_broadcast/snapshot/choose/_build_widgets*` extrair helpers; `messages_for_conversation limit` clampar; `set_message_status` whitelist; `wif_encode` checar 32B; `chan_keys None` validar; `search_range` validar 64B; `find_nonce` max; `ecies.X_LEN/ecc.ORDER_BYTES/SELF_NONCE/version_packet_command/is_onion/resolve_hostname/public_encryption_point/sha256-wrapper` remover/usar; `os/hashlib/sha512/ripemd160` não-usados remover; `Peer` não-usado remover; `end_of_pubkey` remover; `E402` (imports após código) reordenar; `E501` 20 linhas >79 quebrar; `W292` newline no EOF (24 arquivos); `E731` lambda em test_wire; `F841` alice/bob/end_of_pubkey; `F811` sys redefinido; `E305` blank lines; `varint ''→0` vs raise; `_take_varint` mascaramento; `assemble_addr ''`→`encode_varint(0)`; `peer magic/version` `_` explícito; `short version` fechar; `parse_streams` validar posição; `log payload[:200]`→`.hex()`; `send_initial best(30)` cachear; `proxy AF_INET`→`create_connection`; `backup clipboard` auto-limpar + `chmod 0o600` + `Entry show='•'` p/ WIF; `refresh_log/diagnostics` skip se igual; `_pow_last` limpar; `status/ack` usar payload; `pow_workers` expor com clamp; `get_setting vs get_int` unificar; `peer get_int try` morto remover.
 
-#### [OK] False Positives (do not open issue)
+#### [OK] Falsos-positivos (não abrir issue)
 
 - Bandit `B413 pycrypto` em `ecies.py:4-5`, `hashing.py:4` — é `pycryptodome` mantido, não `pycrypto` morto.
 - Bandit `B404/B603/B606` (`subprocess git`, `execv`) — usos legítimos; endurecer, não remover.
@@ -587,7 +586,7 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 
 ---
 
-### PHASE 5 — Dependencies and Compatibility
+### FASE 5 — Dependências e compatibilidade
 
 - **Instalado vs exigido:** OK (PySocks 1.7.1, pycryptodome 3.23.0, ecdsa 0.19.2). Sem conflito de versão.
 - **Python:** README diz 3.10+ (testado 3.14) — confere (3.14.7 aqui; sem sintaxe >3.10 detectada; `mypy` limpo).
@@ -596,7 +595,7 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 
 ---
 
-### METRICS
+### MÉTRICAS
 
 - Arquivos analisados: **33** (29 produto + 1 run + 4 tests + README/branch/docs como referência)
 - Linhas totais: **7471** (produto+tests+run); núcleo varrido bandit: 5755
@@ -609,7 +608,7 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 
 ---
 
-### ACTION PLAN (suggested order, separate branches by risk)
+### PLANO DE AÇÃO (ordem sugerida, branches separados por risco)
 
 1. **Hotfix funcional (0.5–1 dia, 1 branch):** A1 (done_cb getpubkey) + B4 (validar v4) + B14 (teto body) + B2 (subject) — todos em `send_message`/broadcast, mesmo teste de regressão.
 2. **Estabilidade PoW/processos (1–2 dias, 1 branch):** A2/A4 (budget+shutdown) + B1 (in-flight) + B7 (retry com limite) + B3 (sem downgrade silencioso).
@@ -623,7 +622,7 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 
 ---
 
-### EVIDENCE / MANUAL VALIDATION
+### EVIDÊNCIAS / VALIDAÇÃO MANUAL
 
 - Leitura direta de `client.py:553-557` vs `request_pubkey:521` e `_run_pow_and_done:659` (A1).
 - Leitura de `pow.py:51-111` (step 1<<54, sem stop no filho, `with` que espera) (A2/A4).
@@ -631,7 +630,7 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 - `flake8/mypy/bandit/AST/pytest` saídas na Fase 0 (baseline acima). Logs completos não anexados (saídas longas) — reproduzível com os comandos iniciais do prompt.
 - INÍCIO: 2026-09-07T (UTC) · FIM: mesmo dia · Log de ações: branches criados, baselines rodados, 4 subagentes paralelos, validação manual, 2 relatórios commitados.
 
-### RISKS / LIMITS OF THIS AUDIT
+### RISCOS / LIMITES DESTA AUDITORIA
 
 - Sem execução de rede real P2P nem fuzzing de peers maliciosos — extremos simulados por leitura.
 - Sem `pylint/safety/pytest-cov/radon` (não instalados) — substituídos por flake8/mypy/bandit/AST; rodar no CI antes de release.
@@ -639,45 +638,45 @@ os.execv(sys.executable, [sys.executable, run_path])  # update.py:96
 
 ---
 
-## Fixes Applied (2026-09-07, with approval — ALL)
+## Correções aplicadas (2026-09-07, com aprovação — TUDO)
 
-Branch: `analysis/complete-audit-20260907` · Approval: ALL at once · Validation: `pytest tests/ -q` **26 passed**, `mypy` 0 issues, `flake8` 82→74, `py_compile` OK.
+Branch: `analysis/complete-audit-20260907` · Aprovação: TUDO de uma vez · Validação: `pytest tests/ -q` **26 passed**, `mypy` 0 issues, `flake8` 82→74, `py_compile` OK.
 
-### Block 1 — Send Hotfix (`client.py`)
+### Bloco 1 — Hotfix envio (`client.py`)
 - A1: `send_message` agora anuncia getpubkey (`done_cb` → `net.announce_object`); antes PoW descartado travava 1º envio ~10min.
 - B4: `send_message` valida `version==4` + `try from_address` → `unsupported/invalid` em vez de crash v2/v3.
 - B14: teto `body+1000 > MAX_OBJECT_LENGTH` em `send_message/broadcast/broadcast_chan` → `too-large` (antes falso `sent`).
 - B2: `subject` prefixado no wire (`Subject: …`) em `send_message` e `_pow_and_publish_message` (retry lê do DB); antes perda silenciosa.
 - B3 parcial: sem ACK (`watch None`) marca `ack-failed` em vez de enviar degradado.
 
-### Block 2 — PoW/Stability (`pow.py`, `client.py`)
+### Bloco 2 — PoW/estabilidade (`pow.py`, `client.py`)
 - `PowExecutor.run`: `step 1<<54 → 1<<20`, valida `initial_hash 64B`, `shutdown(wait=False, cancel_futures=True)` — cancela de verdade, sem hang no `__exit__`.
 - `_msg_in_flight` + status `sending`: sem PoW/announce duplicado; `done` revalida conversa antes de anunciar; limpa em todos os retornos.
 - `_retry_awaiting`: limite 20/vez (sem fork-bomb); teste `retry_republishes` voltou a passar após remover gate offline.
 
-### Block 3 — Network Antiflood (`peer.py`, `peers.py`, `manager.py`, `client.py`)
+### Bloco 3 — Rede antiflood (`peer.py`, `peers.py`, `manager.py`, `client.py`)
 - `send_packet(s)`: guarda `None/closing` + `bytes_sent` sob lock; `announce_object`: `try` por peer.
 - `_read_header`: teto `MAX_OBJECT_LENGTH+64+HEADER`; `_read_loop/_handshake`: verificam `sha512[:4]` e isolam `_handle` por `try`.
 - `PeerStore`: `load` por item, `save` atômico (tmp+fsync+rename), `add` valida + cap 5000 com evicção, `from_dict` porta com clamp.
 - `manager`: `store_object` FIFO + cap `known_hashes`; `received_object` checa `len` antes de parsear; `on_getdata` em lote (`IN`, cap 500/200) + `try` no send; `max_connections` clamp 1–50.
 - `_on_getpubkey`: throttle 300s/tag + valida `stream==keys.stream`.
 
-### Block 4 — Lifecycle (`client.py`, `gui/app.py`)
+### Bloco 4 — Ciclo de vida (`client.py`, `gui/app.py`)
 - `_reannounce`: loop 24h (`_reannounce_loop` + `_once` por identidade, LIMIT 5); `stop()`: join threads 5s + remove `bmchat.lock` + `db.close` seguro; `start()`: lockfile com aviso de 2ª instância.
 - `_maybe_mark_ack`: `pop` (sem replay/leak) sob lock; `_refresh_streams`: não toca `their_streams`; `remove_contact` emite `contact-removed` (GUI trata); `create_channel` tupla `(status, addr)`.
 
-### Block 5 — GUI chans (`gui/app.py`)
+### Bloco 5 — GUI chans (`gui/app.py`)
 - `_refresh_conversations`: lista contatos + `all_subscriptions` + identidades chan (`# nome`); `_open_conversation`: branch `channel` (label `#`, status broadcast); `_remove_entry`: `unsubscribe` p/ canal; `_send`: canal via `broadcast_chan` + limite 5000 chars; `_unread_counts`: agrupa por canal (`CASE to_address`); backup `chmod 0o600`.
 
-### Block 6 — Hardening (15 files)
+### Bloco 6 — Endurecimento (15 arquivos)
 - `pow.calculate_target`: `/` → `//` (int); `ecc`: rejeita chave 0, valida curva, remove `PointJacobi`; `keys`: valida 32B/stream, `chan` com limite, `generate` cap nullprefix≤4 + `max_tries`, `wif` 32B.
 - `run.py`/`database.py`: `makedirs mode 0o700` + `chmod`; `BMCHAT_DATA` abspath; DB índices `(status,direction)`, `(timestamp)`, `(expires)`, `(type,version,expires)`, `UNIQUE(obj_hash)`; `add_subscription` preserva nome; `messages limit` clamp 1–1000; `set_message_status` whitelist (inclui `sending/ack-failed`).
 - `packets`: `assemble_addr` usa `services` + `ev(0)` vazio; `parse_inv/addr` caps 50k/1k; `address`: `elif` duplo-zero + rejeita v1/stream0; `base58`: leading-zero + limite 100 + dict; `version`: `lru_cache` + `git -C` + timeout 5s; `update`: status `ahead` + `execv +argv`; `proxy`: `create_connection`, bloqueia `.onion/.i2p` direto, `from_dict` seguro; `objects`: len checks + cap ntpb/eb.
 
-### Block 7 — Hygiene
+### Bloco 7 — Higiene
 - Remove `os/sha512/ripemd160` (`objects.py`), `hashlib` (`packets.py`), `Peer` (`manager.py`), `end_of_pubkey`; W292 newline em 27 arquivos; testes `F841/F811` (sem atribuir `alice/bob`, sem `import sys` duplicado). `__init__` re-exports mantidos (API). Bandit `IN (%s)` é falso-positivo (placeholders `?`).
 
-### How to Merge
+### Como fundir
 ```bash
 git checkout rolling-release
 git merge --no-ff analysis/complete-audit-20260907
@@ -688,15 +687,15 @@ python3 -m pytest tests/ -q  # 26 passed
 
 # Changelog — branch `optimization/performance-20260907`
 
-Record of updates from branch `optimization/performance-20260907`
+Registro das atualizações vindas do branch `optimization/performance-20260907`
 (merge `--no-ff` em `rolling-release`, 2026-09-07; rebase linear sobre
 `720c303` "Update README.md" do remoto; branch apagado após o merge;
-push fast-forward `720c303..2060c42`). Format: Added / Changed /
-Fixed.
+push fast-forward `720c303..2060c42`). Formato: Adicionado / Mudado /
+Corrigido.
 
 ## [optimization/performance-20260907] — 2026-09-07
 
-### Added
+### Adicionado
 - Sistema de temas claro/escuro (`bmchat/gui/theme.py`): cores, fontes,
   espaçamentos e raios centralizados; troca no hambúrguer ☰ → Tema.
 - Atalhos de teclado: Ctrl+N nova conversa, Ctrl+F busca, Ctrl+W/Esc fecha
@@ -724,7 +723,7 @@ Fixed.
 - Scroll virtual no chat: calcula layout de tudo, renderiza só o viewport
   + buffer de 100 px; redesenha ao rolar (`_chat_yview`).
 
-### Changed
+### Mudado
 - Barra de envio estilo Telegram (fix do layout quebrado ao maximizar):
   campo branco com borda (`field_box`), botões 📎/☺/➤/🕐 fixos, **só a
   coluna do campo tem `weight=1`** (antes o emoji dividia o extra 50/50 e
@@ -739,7 +738,7 @@ Fixed.
   prévia de até 100 chars (anexo removido do texto).
 - Statusbar usa cor do tema (`panel_bg_secondary`).
 
-### Fixed
+### Corrigido
 - **Chat em branco**: abrir conversa com ≥1 mensagem estourava
   `TypeError: '<=' str vs float` no loop de viewport (`lay[2]` era o
   `sender`) e o canvas ficava vazio — mensagem enviada e antigas não
@@ -750,7 +749,7 @@ Fixed.
 - `except` desalinhado no `_send` após inserir `_attach_file`
   (SyntaxError pego pela suíte).
 
-### Verification
+### Verificação
 - `pytest tests/ -q`: **26 passed** (antes do commit, do merge e do push).
 - `flake8` sem F821/F822; `mypy --ignore-missing-imports` limpo (32 arqs).
 - Smokes Tkinter: abrir 30 msgs, envio mockado, maximizar 1600 px,
@@ -761,13 +760,13 @@ Fixed.
 
 # Changelog — branch `fix/ci-lint-20260907`
 
-Record of updates from branch `fix/ci-lint-20260907`
+Registro das atualizações vindas do branch `fix/ci-lint-20260907`
 (merge `--no-ff` em `rolling-release`, 2026-09-08; branch apagado após o
-merge). Format: Added / Changed / Fixed.
+merge). Formato: Adicionado / Mudado / Corrigido.
 
 ## [fix/ci-lint-20260907] — 2026-09-08
 
-### Added
+### Adicionado
 - CI verde: 174 erros do flake8 zerados sem mudar comportamento
   (complexidades C901 quebradas em helpers, W292/W293/W391, E127/E128,
   E302/E305, E402, E731, F401 com `__all__` nos re-exports e `noqa`
@@ -784,7 +783,7 @@ merge). Format: Added / Changed / Fixed.
   no-upstream, preview, auto-apply, dirty-hold, opt-out, rascunho,
   restart, `ensure_upstream`).
 
-### Changed
+### Mudado
 - `perform_update` com callback de progresso (`fetch`/`merge`), mensagens
   de erro PT-BR com ação e `cache_clear()` da versão (anunciava a antiga).
 - `check_for_updates` com `fetch_timeout` (15s check / 60s apply) e dicts
@@ -794,7 +793,7 @@ merge). Format: Added / Changed / Fixed.
 - Erros de update viram status/log silencioso no automático; popup só no
   caminho manual.
 
-### Fixed
+### Corrigido
 - Restart sem `client.stop()` deixava `bmchat.lock` e gerava falso aviso
   de "2ª instância" (hook `pre_exec` antes do `execv`).
 - Reentrância: N threads de check/apply (flags + throttle 10s + status).
@@ -804,7 +803,7 @@ merge). Format: Added / Changed / Fixed.
 - `except` desalinhado no `_send`, `os` não importado, tipos do
   `encrypted_db.py`/`theme.py` (mypy).
 
-### Verification
+### Verificação
 - `pytest tests/ -q`: **65 passed, 1 skipped**.
 - `flake8` (2 comandos exatos do CI): exit 0; `mypy`: limpo (32 arqs).
 - Fluxos reais com clones: auto-apply ff (`v1→v2`), draft preservado,
@@ -817,14 +816,14 @@ Auditoria nova (3 agentes: pesquisa → programação → correções), foco
 exclusivo em vulnerabilidades, erros críticos e lógica de negócios.
 A auditoria `analysis/complete-audit` tinha parado em `d199a10`; a
 superfície nova (anexos, agendadas, backup `.enc`, notificações,
-auto-update) nunca tinha sido auditada. Method: leitura + AST/grep +
+auto-update) nunca tinha sido auditada. Método: leitura + AST/grep +
 bandit + PoCs inofensivas; `pip-audit` indisponível (sem rede) —
 dependências inconclusivas, `requirements.txt` segue sem pins/hashes.
-Format: Added / Changed / Fixed.
+Formato: Adicionado / Mudado / Corrigido.
 
 ## [fix/security-20260908] — 2026-09-08
 
-### Added
+### Adicionado
 - Testes: `tests/test_security_fixes.py` (+46) e
   `tests/test_adversarial_fixes.py` (+8); `test_retry_republishes`
   atualizado para 1 peer online (comportamento offline consistente).
@@ -835,7 +834,7 @@ Format: Added / Changed / Fixed.
 - Prune periódica de `objects` + caps (DB 20000, inventário 8000).
 - `run._ensure_writable_dir` e chmod 0600 no `.db`.
 
-### Changed
+### Mudado
 - Notificações sem interpolação: Windows via `-EncodedCommand` Base64,
   macOS via `argv`; `win10toast` removido (fora dos requirements).
 - Lockfile com PID (`kill(pid,0)`): 2ª instância viva é barrada com
@@ -854,7 +853,7 @@ Format: Added / Changed / Fixed.
 - `EncryptedDB` (placeholder quebrado) removida; código declara DB em
   claro com 0700/0600.
 
-### Fixed
+### Corrigido
 - **C1**: `PBKDF2(hmac_hash_module=hashlib.sha256)` passava função em vez
   de módulo (`AttributeError`, backup cifrado sempre falhava) → round-trip
   verificado, inclusive senha unicode.
@@ -876,7 +875,7 @@ Format: Added / Changed / Fixed.
   B413/B404/B603/B606/B104/B110 do bandit, path traversal, segredos no
   diagnóstico, tamanhos de rede, `UNIQUE(obj_hash)`.
 
-### Verification
+### Verificação
 - `pytest tests/ -q`: **119 passed, 1 skipped** (+54).
 - `flake8` (2 comandos do CI): exit 0; `mypy`: limpo (32 arqs).
 - 14/14 PoCs re-executadas pelo agente de correções; smoke GUI próprio
@@ -887,7 +886,7 @@ Format: Added / Changed / Fixed.
 
 ---
 
-## Hallucination Hunt — `fix/security-20260908`
+## Caça a alucinações — `fix/security-20260908`
 
 Varredura pós-refactor (3 refactors seguidos no ramo): `py_compile` +
 `pyflakes` (zero F821/F822) + `import` em runtime dos 26 módulos +
@@ -895,10 +894,10 @@ cruzamento AST `def` × chamadas + eventos `ui_queue` (emitidos ×
 tratados) + `command`/`bind`/`after`/`getattr` (75 refs) + `__all__`,
 `_chat_layouts`, flags, settings keys, colunas SQL, assinaturas,
 `_FakeApp` (31 métodos) + amostragem protocolo/cripto vs consenso
-documentado. Method: 1 agente de programação ( achar + corrigir +
+documentado. Método: 1 agente de programação ( achar + corrigir +
 testar).
 
-### Real Hallucinations (2)
+### Alucinações reais (2)
 - **H1 [ALTA] `request_pubkey` estourava em v3** (`client.py`):
   `send_message` tinha guarda `version!=4` (fix B4), mas `request_pubkey`
   não — `ValueError` subia até `report_callback_exception` ao adicionar
@@ -910,14 +909,14 @@ testar).
   Removido (prova de zero uso por grep) + teste-guarda
   `test_hall_lock_backup_file_removed`.
 
-### False Positives Discarded
+### Falsos-positivos descartados
 - 31 `calls=0` são dead antigo já documentado (intencionais, mantidos);
   closures (`done`/`worker`) e alvos de `Thread`/`pool.submit` vivos
   confirmados por grep; imports `update`/`dialogs` OK em runtime.
 - Todos os eventos `ui_queue` tratados; protocolo/cripto sem divergência
   do consenso (só endurecimentos intencionais).
 
-### Verification
+### Verificação
 - `pytest tests/ -q`: **121 passed, 1 skipped** (+2).
 - `flake8` (2 comandos do CI): exit 0; `mypy`: limpo (32 arqs);
   `py_compile` OK.
@@ -926,14 +925,14 @@ testar).
 
 ---
 
-# Identities and TTL — main branch, 2026-09-08
+# Identidades e TTL — ramo principal, 2026-09-08
 
 Trabalho feito direto em `rolling-release` (agentes de programação).
-Format: Added / Changed / Fixed.
+Formato: Adicionado / Mudado / Corrigido.
 
-## Identity Management
+## Gerenciamento de identidades
 
-### Added
+### Adicionado
 - Indicador sempre visível da identidade atual (rótulo + endereço curto +
   avatar/cor): linha "Enviar como" e badge no cabeçalho; tooltip com
   endereço completo; clique copia.
@@ -946,15 +945,15 @@ Format: Added / Changed / Fixed.
   histórico mantido); diálogo de detalhes (endereço + copiar, stream,
   criada em, contagens).
 
-### Verification
+### Verificação
 - `tests/test_identity_mgmt.py` (7, Tk real, PoW mockado): criar A/B,
   alternar A→B→A, envio isolado por endereço, persistência pós-restart,
   fallback sem popup, guardas, detalhes, agendada com identidade certa.
 - Suite total na época: 84 passed + 1 skipped; flake8/mypy limpos.
 
-## Message TTL + Management
+## TTL das mensagens + gestão
 
-### Added
+### Adicionado
 - TTL padrão GLOBAL (`msg_ttl_seconds`, default 1 dia), válido para todas
   as mensagens de todos os contatos/canais; faixa 1h–21d (fora clampa +
   avisa); presets 1h/1d/7d/21d + custom em Sistema → "Tempo de vida das
@@ -964,17 +963,17 @@ Format: Added / Changed / Fixed.
   Detalhes.
 - Testes `test_msg_ttl.py` (12) + `test_msg_ttl_gui.py` (1).
 
-### Changed
+### Mudado
 - `expires = now + ttl` nasce um por fluxo; `target` do PoW usa o mesmo
   TTL; ACK expira junto (watch com deadline + sweep); retry reutiliza o
   TTL guardado; agendada usa o TTL do envio. Pubkey/getpubkey seguem no
   `MSG_TTL` legado.
 
-### Fixed
+### Corrigido
 - `except` desalinhado no `_send` e falta de `import os` (pegos pela
   suíte/lint na hora).
 
-### Verification
+### Verificação
 - `pytest tests/ -q`: **97 passed, 1 skipped**; flake8/mypy limpos.
 - Caminho completo ao vivo: TTL 2h → enviada com `ttl=7200` e
   `expires=t0+7200` (contato com pubkey; sem pubkey fica corretamente em
@@ -982,11 +981,11 @@ Format: Added / Changed / Fixed.
 
 ---
 
-# Re-download After Wipe — main branch, 2026-09-08
+# Re-download pós-wipe — ramo principal, 2026-09-08
 
 Bug real testado pelo dono: "Apagar objetos" limpava e nada voltava.
 
-## Root Cause
+## Causa raiz
 `wipe_objects` mantinha as conexões abertas — e no Bitmessage não existe
 "me mande seu inventário": `inv` só chega em handshake novo ou objeto
 novo. Pares já conectados nunca reenviavam. Agravante descoberto contra a
@@ -996,7 +995,7 @@ referência repete o pedido; nós pedíamos **uma única vez** → 100% caía na
 janela de descarte. A simulação anterior passou à toa (manager nosso nos
 dois lados + `inv` injetado à mão).
 
-## Fix
+## Correção
 - `wipe_objects` derruba as conexões; o maintenance reconecta e o
   handshake novo traz os `inv`s (único mecanismo que o protocolo suporta).
 - Todo hash pedido é lembrado (`pending_getdata`) e o `getdata` é
@@ -1014,13 +1013,13 @@ dois lados + `inv` injetado à mão).
 
 ---
 
-# Peer Rotation — main branch, 2026-09-08
+# Rotação de pares — ramo principal, 2026-09-08
 
 Bug real (print do dono, pasta `~/.bmchat` apagada, 4m12s): 1
 estabelecida de 7, 6 "negociando" com ↑0B↓0B, 1 estabelecida muda,
 **0 invs em 4 minutos**.
 
-## Root Cause
+## Causa raiz
 - Handshake sem timeout efetivo (60s ocupando slot, +30s de TCP-connect
   sem byte); referência fecha não-estabelecido sem TX em 20s.
 - Estabelecido silencioso ficava para sempre (`_read_loop` engolia
@@ -1028,7 +1027,7 @@ estabelecida de 7, 6 "negociando" com ↑0B↓0B, 1 estabelecida muda,
 - 7/8 slots ocupados → 1 tentativa a cada 5s; `best()` sem bônus para
   quem já entregou `inv`; DNS resolvido 1× no start, reciclando mortos.
 
-## Fix
+## Correção
 - Handshake sem resposta fecha em 25s (punição leve, sem ban);
   estabelecido que nunca entregou nada útil é evictado em 90s (`record_mute`,
   sem ban; quem já entregou e aquietou é saudável e fica; `getdata`
@@ -1049,19 +1048,19 @@ estabelecida de 7, 6 "negociando" com ↑0B↓0B, 1 estabelecida muda,
 
 ---
 
-# Fast Bootstrap — main branch, 2026-09-08
+# Bootstrap rápido — ramo principal, 2026-09-08
 
 Problema do dono: entrar na rede demorava muito testando IP por IP uma
 lista cheia de mortos/proxies/rotativos.
 
-## Diagnosis (measured in old code)
+## Diagnóstico (medido no código antigo)
 - Sementes DNS: 2 (`bootstrap8080`/`bootstrap8444.bitmessage.org`),
   iguais às da referência — nada a completar, nenhum IP fixo.
 - Resolução serial sem timeout: 1 semente lenta travava tudo (20,3s).
 - Dial: `connect_timeout` 30s, 1 giro/5s, cooldown fixo 60s, sem poda:
   100 mortos → ~6min, 715 mortos → ~44min até a 1ª estabelecida.
 
-## Fix
+## Correção
 - Resolução paralela (1 thread/hostname, timeout 8s) + refresh periódico
   a cada 30min + re-DNS ao esgotar; merge sem duplicar.
 - `connect_timeout` default 30→10s (setting do usuário continua valendo).
@@ -1083,14 +1082,14 @@ lista cheia de mortos/proxies/rotativos.
 
 ---
 
-## CVEs and CVSS — fix/security-20260908
+## CVEs e CVSS — fix/security-20260908
 
 Primeiro levantamento de CVEs reais de dependências/ambiente (as
-auditorias anteriores cobriram só lógica própria). Date: 2026-09-08 ·
+auditorias anteriores cobriram só lógica própria). Data: 2026-09-08 ·
 Python 3.14.7 · Linux. Catálogo por-CVE em `SEGURANCA.MD` (33 blocos);
 aqui ficam metodologia, tabela de decisões e correções.
 
-### Methodology (zero tolerance for hallucination)
+### Metodologia (tolerância zero a alucinação)
 
 1. **Inventário (FASE 1):** versões exatas do runtime via
    `pip show`/`pip freeze`, `pip index versions` (rede OK) e imports do
@@ -1126,7 +1125,7 @@ aqui ficam metodologia, tabela de decisões e correções.
    versão instalada. Vereditos abaixo.
 4. **Correção (FASE 3)** e **documentação (FASE 4)** nas seções abaixo.
 
-### CVE Table and Decisions
+### Tabela de CVEs e decisões
 
 Legenda: AFETA = caminho real no nosso código/ambiente · NÃO AFETA +
 motivo · **(corrigida)** = eliminada pelo bump/defesa desta seção.
@@ -1171,7 +1170,7 @@ Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
 **aplicáveis 5** (Alta 4 · Média 1 — todas corrigidas) ·
 **não-afeta 28**. PySocks e six: 0 CVE (pip-audit + Snyk limpos).
 
-### Fixes Made (PHASE 3)
+### Correções feitas (FASE 3)
 
 - `requirements.txt`: `pycryptodome>=3.15.0→>=3.19.1` (piso da
   correção da CVE-2023-52323), `ecdsa>=0.18.0→>=0.19.2` (piso da
@@ -1190,7 +1189,7 @@ Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
   2 helpers; magics PSD/FITS/JP2 → `None` nos 2 helpers; lixo → `None`;
   altura de PSD cai no ícone (48); pisos do `requirements.txt`.
 
-### Accepted Risk (documented, not silenced)
+### Risco aceito (documentado, não silenciado)
 
 - **CVE-2024-23342 residual (Minerva):** sem correção upstream
   (side-channels fora do escopo do projeto ecdsa); trocar de lib
@@ -1200,7 +1199,7 @@ Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
   o upstream publicar fix ou o app passar a assinar sob medição
   adversária.
 
-### Own Code Issues Found Along the Way (CWE, no CVE)
+### Issues de código próprio achadas no caminho (CWE, sem CVE)
 
 - **W1 [CWE-400, ALTA — corrigida]:** prévia de anexos decodificava
   **qualquer** formato via `Image.open().load()` em bytes vindos de
@@ -1214,7 +1213,7 @@ Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
   DDS/TGA nem chama viewers — vereditos NÃO AFETA acima são por código,
   não por suposição. Nada recebeu ID CVE (só as 33 reais do NVD).
 
-### Verification
+### Verificação
 
 - `pytest tests/ -q`: **133 passed, 1 skipped** (+12 `test_cve_pillow`).
 - `flake8` (2 comandos do CI): exit 0; `mypy`: limpo (32 arqs);
@@ -1222,13 +1221,13 @@ Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
 - Fontes NVD abertas (33): `https://nvd.nist.gov/vuln/detail/<CVE>`
   para cada ID da tabela; JSONs da API em `/tmp/opencode/nvd/`.
 ---
-# Audit refactor/design-patterns — full scan (2026-09-10)
+# Auditoria refactor/design-patterns — varredura completa (2026-09-10)
 
 > Branch: `refactor/design-patterns` (`7f7a641` → `6a4ef92` → `36219bd` + correções desta seção) · Base: `rolling-release@9da7567`  
-> Method: 3 agentes em paralelo (crypto/protocol, core/client/db, gui/net) + validação manual dos CRÍTICOS por leitura direta + `py_compile/ruff/mypy/pytest`  
-> Scope: 28 arquivos de `bmchat/` + `run.py` + `tests/test_conversation_isolation.py` (varredura total > 12k linhas)
+> Método: 3 agentes em paralelo (crypto/protocol, core/client/db, gui/net) + validação manual dos CRÍTICOS por leitura direta + `py_compile/ruff/mypy/pytest`  
+> Escopo: 28 arquivos de `bmchat/` + `run.py` + `tests/test_conversation_isolation.py` (varredura total > 12k linhas)
 
-## Executive Summary
+## Resumo executivo
 
 - **Refatoração preservada:** os 7 patterns (Strategy, Observer, Command, State, Factory, Repository, DI) mantidos; correções desta auditoria **não revertem** a arquitetura, só fecham alucinações e vazamentos.
 - **Bugs de conversa corrigidos (2 commits anteriores a esta auditoria):**
@@ -1237,16 +1236,16 @@ Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
   - `fix(support): conversa SUPORTE nunca vazia` (`36219bd`) — `_chat_rows_for/_count_for/_last` com fallback OR quando DM vazio mas OR tem dados (identidade trocada) + `_refresh_conversations` sincroniza `_conv_selected`.
 - **Varredura desta seção:** 38 achados em crypto/protocol + 42 em core/db + 30 em gui/net = ~110 pontos; **32 eram alucinações/omissões reais** (o resto falso-positivo de linter ou tolerância intencional). **16 corrigidos agora**, **16 documentados** para fix futuro.
 
-## Methodology (anti-hallucination)
+## Metodologia (anti-alucinação)
 
 1. **Agentes:** 3 sub-agentes `explore/general` com prompt fechado para listar apenas `arquivo:linha + trecho literal` (sem inventar API).
 2. **Validação manual:** leitura direta de `client.py:1950-2170`, `database.py:342-470`, `gui/app.py:2635-3355`, `crypto/pow/*`, `protocol/objects.py:14-400`, `ecies.py:19-42`.
 3. **Reprodução:** DB real `~/.bmchat/bmchat.db` (5 msgs, `teste==Vip`) + `Database` temporária com `SELF/SUP/OTHER` + `Client` com `MockPoWStrategy` + `pytest test_conversation_isolation 3 passed`.
 4. **Ferramental:** `py_compile`, `ruff --select E,F`, `mypy --ignore-missing-imports` (17 arquivos ok), `pytest integration+ttl 28 passed`.
 
-## Findings by Area (summary — see full reports in agent logs)
+## Achados por área (resumido — ver relatórios completos nos logs dos agentes)
 
-### Crypto/Protocol (CRITICAL 4 + HIGH 13)
+### Crypto/Protocol (CRÍTICO 4 + ALTO 13)
 
 | # | Arquivo:linha | Problema | Impacto | Correção nesta seção |
 |---|---|---|---|---|
@@ -1266,7 +1265,7 @@ Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
 | C14 | `protocol/const.py:1` | `USER_AGENT` com IO no import | `import` lento/falha sem FS | Documentado |
 | C15 | `crypto/encrypted_db.py:86` | `except: pass` em `fchmod/fsync` | Backup 0644 com chaves | Documentado |
 
-### Core/Client/DB (HIGH 8 + MEDIUM 10)
+### Core/Client/DB (ALTA 8 + MÉDIA 10)
 
 | # | Arquivo:linha | Problema | Correção |
 |---|---|---|---|
@@ -1279,7 +1278,7 @@ Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
 | D26 | `database.py:26` `Lock` vs `RLock` | Deadlock se aninhar | Documentado (trocar para `RLock` futuro) |
 | D30 | `database.py:140` TTL sem `CHECK`/`GC` | DB cresce infinito | Documentado (adicionar `DELETE WHERE expires<?`) |
 
-### GUI/Net (HIGH 6 + MEDIUM 8)
+### GUI/Net (ALTA 6 + MÉDIA 8)
 
 | # | Arquivo:linha | Problema | Correção |
 |---|---|---|---|
@@ -1289,7 +1288,7 @@ Totais: **33 verificadas** (Crítica 3 · Alta 19 · Média 11) ·
 | G22 | `net/manager.py:15` `known_hashes` 200k | Memória 30MB | Documentado |
 | G24 | `net/proxy.py:70` DNS seed via `getaddrinfo` clearnet com Tor | Leak | Documentado |
 
-## Fixes Applied in This Section (local commit, no push)
+## Correções aplicadas nesta seção (commit local, sem push)
 
 Arquivos tocados nesta auditoria-varredura:
 - `crypto/ecc.py:82-89,92-110` — validação `private` + low-S + `<8`
@@ -1304,14 +1303,14 @@ Arquivos tocados nesta auditoria-varredura:
 - `gui/app.py:2831,3040,3200,3346` — self-chat isolado + preview filtrado + fallback OR nunca vazio
 - `tests/test_conversation_isolation.py` — atualizado para `self strict` (1 row)
 
-## Documented Weaknesses (future fix, no immediate risk)
+## Pontos fracos documentados (correção futura, sem risco imediato)
 
 - `core/database.py:26` `Lock` → `RLock`, `WAL`, índices `idx_dm_pair`, `GC expires` (D26,D29,D30)
 - `net/manager.py:610` caps, `peers.py:312` backoff mute, `proxy` DNS via Tor (G22-G24)
 - `gui/app.py:3346` scroll virtual, `encrypted_db` `except: pass` (C15,G11)
 - Estimativa: 2 dias para DB/WAL + índices, 1 dia para net/proxy, 1 dia para GUI virtual scroll.
 
-## Verification of This Section
+## Verificação desta seção
 
 - `py_compile` ok (11 arqs)
 - `ruff --select E,F` ok (1 fix `Any` removido)
@@ -1321,11 +1320,11 @@ Arquivos tocados nesta auditoria-varredura:
 - Reprodução DB real: `DM self (strict) 1 row (sem diag)`, `DM sup 1 row (diag)`, `OR vazava 4`
 
 ---
-# Standardized Test Suite — test/bateria-95-20260910 (2026-09-10)
+# Bateria de testes padronizada — test/bateria-95-20260910 (2026-09-10)
 
 > Branch: `test/bateria-95-20260910` (derivado de `refactor/design-patterns@96c14da`) · Base: `rolling-release@9da7567`  
 > Objetivo: >95% de confiança em todos os níveis (unitário, integração, estresse) com bateria padronizada, sem dependência de rede/Tk real.  
-> Method: checkout novo ramo, `git rm tests/test_*.py` (19 arquivos legados removidos), estrutura `tests/{unit,integration,stress}` + 4 agentes em paralelo + validação `pytest + coverage`.
+> Método: checkout novo ramo, `git rm tests/test_*.py` (19 arquivos legados removidos), estrutura `tests/{unit,integration,stress}` + 4 agentes em paralelo + validação `pytest + coverage`.
 
 ## Checkout
 
@@ -1333,7 +1332,7 @@ Arquivos tocados nesta auditoria-varredura:
 git checkout -b test/bateria-95-20260910  # a partir de refactor/design-patterns
 ```
 
-## Standardized Structure
+## Estrutura padronizada
 
 ```
 tests/
@@ -1354,11 +1353,11 @@ tests/
 *Total novo: 554 testes (174+94+59+105+12+80+15+15) + 0 legados (removidos).*  
 *Padrão: `pytest -q`, `tempdir` + `MockPoWStrategy(2**52)`/`FastMock` + `MockNetworkManager` + `FakeApp`, sem rede/Tk, <15s unit/<30s stress, determinístico.*
 
-## Removed (19)
+## Apagados (19)
 
 `test_adversarial_fixes`, `test_anti_hallucination`, `test_bootstrap`, `test_conversation_isolation`, `test_cve_pillow`, `test_identity_mgmt`, `test_integration`, `test_interop`, `test_menu_pow`, `test_msg_ttl`, `test_msg_ttl_gui`, `test_reconnect_fixes`, `test_security_fixes`, `test_sync_fix`, `test_sync_rotation`, `test_update`, `test_wipe_download_retry`, `test_wipe_resync`, `test_wire` — substituídos pela bateria acima (cobertura equivalente ampliada).
 
-## Measured Coverage (coverage run)
+## Cobertura medida (coverage run)
 
 ```bash
 python3 -m coverage run -m pytest tests/unit tests/integration tests/stress -q
@@ -1393,7 +1392,7 @@ python3 -m coverage report --include="bmchat/*"
 
 **Confiança >95%:** todos os níveis unitários, integração e estresse da lógica de negócio (crypto, protocolo, DB, repositories, models, events, factory, net, commands) acima de 95%; estresse valida 500 DMs isolados, 20 peers concorrentes, PoW 20×, TTL, rate-limit. GUI Tk permanece 14% por exigir display (helpers isolados 100% via `FakeApp`).
 
-## Execution
+## Execução
 
 ```bash
 python3 -m pytest tests/unit -q          # 327-420 passed em ~9-15s
@@ -1405,14 +1404,14 @@ python3 -m pytest tests/unit/test_crypto.py::TestKeysGenerate -q  # 5 passed (va
 
 *Correção de alucinação herdada:* `tests/stress/test_stress.py` e `tests/unit/test_core.py` patchavam `generate_keys` com `_fast_gen` sem `nullprefix` → `TypeError` em `test_crypto`; corrigido para validar `nullprefix` e não quebrar `test_generate_max_tries_exceeded` (usa `_orig_generate_keys`).
 
-## Commit (no push)
+## Commit (sem push)
 
 ```bash
 git rm tests/test_*.py          # 19 deletados
 git add tests/unit tests/integration tests/stress
 git commit -m "test: bateria padronizada 554 testes >95% (unit/integration/stress) - checkout novo ramo, sem push"
-# Branch: test/bateria-95-20260910 @ 96c14da + 1 local commit
-# git push NOT executed (as requested)
+# Branch: test/bateria-95-20260910 @ 96c14da + 1 commit local
+# git push NÃO executado (conforme pedido)
 ```
 
 
@@ -1422,7 +1421,7 @@ git commit -m "test: bateria padronizada 554 testes >95% (unit/integration/stres
 
 Ramo criado para otimizar recebimento de objetos — mais rápido e contagem regressiva honesta. Pesquisa PyBitmessage + wiki + benchmarks + implementação.
 
-## Research
+## Pesquisa
 - Fluxo real PyBitmessage `sendBigInv 49999 / DownloadThread + RandomTrackingDict per-peer / ReceiveQueue / InvThread` vs bmchat com gargalos G1-G6 (locks, O(N) evicts, HOL blocking, cópia quadrática).
 - Outra linguagem (Rust/Go) daria só +18-45% sobre asyncio ótimo vs 50× do asyncio sobre threading — concluído: Python otimizado é 80/20 (`manager.py:27`).
 
@@ -1437,7 +1436,7 @@ Ramo criado para otimizar recebimento de objetos — mais rápido e contagem reg
 
 ---
 
-# sync header large inv (2026-09-09)
+# sync header inv grande (2026-09-09)
 
 Bug real: header rejeitava `inv` grande (`262k`) vs rede real `1,6M` (50k hashes) → conexão fechava com `0 invs`. Truncamento `[:2000]` perdia 49k hashes.
 
@@ -1462,7 +1461,7 @@ CI falhou `test_loopback_50_objetos_sync` `17,74s >15s` só por runner lento.
 
 ---
 
-# lint suite 95% (2026-09-09)
+# lint bateria 95% (2026-09-09)
 
 Merge `refactor/design-patterns + test/bateria-95-20260910` trouxe 4452 erros flake8 (E225/E231/E501/E302 etc).
 
