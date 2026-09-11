@@ -12,19 +12,21 @@ from .peers import PeerStore, DNS_SEEDS
 MAX_FUTURE_SKEW = 28 * 24 * 3600 + 10800
 MAX_PAST_SKEW = 3600
 
-# A9/A10: limites anti-DoS/anti-OOM.
+# A9/A10: limites anti-DoS/anti-OOM. P0-R4/R8: caps elevados para sync rápido (PyBitmessage TTL 28d).
 INV_WANTED_MAX = 1000
-GETDATA_HASHES_MAX = 100
-GETDATA_BLOBS_MAX = 20
-GETDATA_BYTES_MAX = 3 * 1024 * 1024
+GETDATA_HASHES_MAX = 1000
+GETDATA_BLOBS_MAX = 100
+GETDATA_BYTES_MAX = 8 * 1024 * 1024
 INV_RATE_MAX = 5
 INV_RATE_WINDOW = 10.0
 GETDATA_RATE_MAX = 10
 GETDATA_RATE_WINDOW = 10.0
 STORE_RATE_MAX = 50
 STORE_RATE_WINDOW = 60.0
-INVENTORY_MAX = 8000
-DB_OBJECTS_MAX = 20000
+INVENTORY_MAX = 50000
+DB_OBJECTS_MAX = 100000
+# P0-R1: cap dinâmico para fresh/resync (até 50000 = MAX_OBJECT_COUNT)
+MAX_OBJECT_COUNT_LOCAL = 50000
 
 
 class NetworkManager:
@@ -103,6 +105,10 @@ class NetworkManager:
         self._inv_hits = {}
         self._getdata_hits = {}
         self._store_hits = {}
+        # P0-R3: batch DB (WAL + RAM cache + flush 5s/500 itens)
+        self._db_batch = []  # type: ignore[var-annotated]
+        self._db_batch_lock = threading.Lock()
+        self._last_db_flush = time.time()
 
     def _load_proxy(self):
         from ..net.proxy import ProxyProfile
@@ -259,6 +265,11 @@ class NetworkManager:
         for connection in list(self.connections.values()):
             connection.close()
         self.connections.clear()
+        # P0-R3: flush pendente antes de salvar
+        try:
+            self._flush_db_batch()
+        except Exception:
+            pass
         # M3: join da manutenção com timeout (sem travar o stop).
         thread = getattr(self, "_maintenance_thread", None)
         if thread is not None and thread.is_alive():
@@ -273,7 +284,7 @@ class NetworkManager:
         self.proxy = profile
         self.db.set_json("proxy", profile.to_dict())
 
-    def _maintenance(self, generation=None):
+    def _maintenance(self, generation=None):  # noqa: C901
         if generation is None:
             with self.lock:
                 generation = self._generation
@@ -288,6 +299,11 @@ class NetworkManager:
                 self._retry_pending_getdata()
                 self._update_resync()
                 self._maybe_periodic_refresh()
+                # P0-R3: flush batch DB periódico
+                try:
+                    self._flush_db_batch()
+                except Exception:
+                    pass
             except Exception as exc:
                 self.on_log("network", "manutenção: %s" % exc)
             # A10: prune periódica (antes: só no startup).
@@ -296,11 +312,20 @@ class NetworkManager:
                 self._evict_inventory_to_cap()
             except Exception as exc:
                 self.on_log("network", "limpeza: %s" % exc)
+            # P0-R2: loop 1s quando pending>0 (retry rápido), senão 2-120s
             try:
-                interval = int(self.db.get_int("maintenance_interval", 5))
-            except (TypeError, ValueError):
-                interval = 5
-            time.sleep(max(2, min(interval, 120)))
+                with self.lock:
+                    has_pending = bool(self.pending_getdata)
+            except Exception:
+                has_pending = False
+            if has_pending:
+                time.sleep(1)
+            else:
+                try:
+                    interval = int(self.db.get_int("maintenance_interval", 5))
+                except (TypeError, ValueError):
+                    interval = 5
+                time.sleep(max(2, min(interval, 120)))
 
     def _is_cold_start(self):
         """Inventário zerado e nenhum inv visto: boot vazio, girar rápido."""
@@ -733,6 +758,58 @@ class NetworkManager:
         except Exception:
             pass
 
+    def _enqueue_db(self, obj_hash, raw, obj_type, version, stream, expires):
+        # P0-R3: cache RAM + flush em lote (500 itens ou 5s)
+        try:
+            with self._db_batch_lock:
+                self._db_batch.append((obj_hash, raw, obj_type, version, stream, expires))
+                need_flush = len(self._db_batch) >= 500
+        except Exception:
+            need_flush = False
+            try:
+                self.db.store_object(obj_hash, raw, obj_type, version, stream, expires)
+            except Exception:
+                pass
+            return
+        if need_flush:
+            self._flush_db_batch()
+        else:
+            try:
+                if time.time() - self._last_db_flush > 5:
+                    self._flush_db_batch()
+            except Exception:
+                pass
+
+    def _flush_db_batch(self):  # noqa: C901
+        # P0-R3: executemany em transação única
+        batch = []
+        try:
+            with self._db_batch_lock:
+                if not self._db_batch:
+                    return
+                batch = list(self._db_batch)
+                self._db_batch.clear()
+                self._last_db_flush = time.time()
+        except Exception:
+            return
+        try:
+            # Usa batch API se disponível, senão fallback por item
+            if hasattr(self.db, "store_objects_batch"):
+                self.db.store_objects_batch(batch)
+            else:
+                for item in batch:
+                    try:
+                        self.db.store_object(*item)
+                    except Exception:
+                        pass
+        except Exception:
+            # fallback: re-enfileira para tentar depois
+            try:
+                with self._db_batch_lock:
+                    self._db_batch.extend(batch)
+            except Exception:
+                pass
+
     @staticmethod
     def _raw_expires(raw):
         import struct as _struct
@@ -813,13 +890,17 @@ class NetworkManager:
                 pass
         self.announce_object(raw, source)
 
-    def received_object(self, raw, source):
+    def received_object(self, raw, source):  # noqa: C901
         parsed = self._parse_incoming_object(raw)
         if parsed is None:
             return None
-        # A10: taxa de store por peer (antes: sem limite).
+        # A10: taxa de store por peer (antes: sem limite). P1-R7: afrouxa em resync/cold
         source_key = self._source_key(source)
-        if source_key is not None and self._rate_limited(
+        try:
+            bypass = bool(self.resync.get("active")) or self._is_cold_start()
+        except Exception:
+            bypass = False
+        if not bypass and source_key is not None and self._rate_limited(
             self._store_hits, source_key, STORE_RATE_MAX, STORE_RATE_WINDOW
         ):
             return None
@@ -835,9 +916,12 @@ class NetworkManager:
                 return obj_hash
             self.known_hashes.add(obj_hash)
         try:
-            self.db.store_object(obj_hash, raw, parsed.object_type, parsed.version, parsed.stream, parsed.expires)
+            self._enqueue_db(obj_hash, raw, parsed.object_type, parsed.version, parsed.stream, parsed.expires)
         except Exception:
-            pass
+            try:
+                self.db.store_object(obj_hash, raw, parsed.object_type, parsed.version, parsed.stream, parsed.expires)
+            except Exception:
+                pass
         self.store_object(raw)
         self._bump_stats("objects_received")
         with self.lock:
@@ -924,8 +1008,25 @@ class NetworkManager:
                 pass
 
     def send_inventory(self, connection):
+        # P1-R5: inclui DB (expires>now) + RAM, como PyBitmessage BigInv
+        now = int(time.time())
+        try:
+            rows = self.db.query(
+                "SELECT hash FROM objects WHERE expires > ? LIMIT ?",
+                (now, MAX_OBJECT_COUNT_LOCAL),
+            )
+            db_hashes = [bytes(r["hash"]) for r in rows if r.get("hash") is not None]
+        except Exception:
+            db_hashes = []
         with self.lock:
-            hashes = list(self.inventory.keys())
+            ram_hashes = list(self.inventory.keys())
+            # Dedup RAM+DB
+            seen = set(ram_hashes)
+            hashes = list(ram_hashes)
+            for h in db_hashes:
+                if h not in seen:
+                    hashes.append(h)
+                    seen.add(h)
         if not hashes:
             return
         for idx in range(0, len(hashes), 49999):
@@ -960,24 +1061,60 @@ class NetworkManager:
         for i in range(0, len(hashes), 100):
             connection.send_packet(b"getdata", packets.assemble_getdata(hashes[i: i + 100]))
 
-    def _collect_wanted(self, hashes):
-        # R-ALTO-02: pending por hash único (deduplica)
+    def _collect_wanted(self, hashes):  # noqa: C901
+        # P0-R1 + P1-R6: snapshot único + cap dinâmico (fresh/resync 50k, senão 1k só se pending>200k)
+        try:
+            with self.lock:
+                pending_len = len(self.pending_getdata)
+                is_resync = bool(self.resync.get("active"))
+                try:
+                    invs = int(self.stats.get("invs", 0))
+                except Exception:
+                    invs = 0
+                cold = not self.inventory and not self.known_hashes and pending_len == 0 and invs == 0
+                if is_resync or cold or pending_len < 200000:
+                    max_wanted = MAX_OBJECT_COUNT_LOCAL
+                else:
+                    max_wanted = INV_WANTED_MAX
+                # P1-R6: snapshot único para diff rápido
+                combined = set(self.inventory.keys()) | self.known_hashes | set(self.pending_getdata.keys())
+        except Exception:
+            combined = set()
+            max_wanted = INV_WANTED_MAX
         wanted = []
         seen = set()
         for obj_hash in hashes:
             if obj_hash in seen:
                 continue
             seen.add(obj_hash)
-            with self.lock:
-                known = obj_hash in self.inventory or obj_hash in self.known_hashes or obj_hash in self.pending_getdata
-            if known:
+            if obj_hash in combined:
                 continue
             wanted.append(obj_hash)
-            if len(wanted) >= INV_WANTED_MAX:
+            if len(wanted) >= max_wanted:
                 break
+        # Respeita MAX_PENDING global
+        try:
+            with self.lock:
+                remaining = self.MAX_PENDING - len(self.pending_getdata)
+                if remaining < len(wanted) and remaining >= 0:
+                    wanted = wanted[:remaining]
+        except Exception:
+            pass
+        # Hard cap PyBitmessage 50k
+        if len(wanted) > MAX_OBJECT_COUNT_LOCAL:
+            wanted = wanted[:MAX_OBJECT_COUNT_LOCAL]
         return wanted
 
     def _should_delay_getdata(self, connection):
+        # P0-R2: sem delay durante resync/cold (recupera skipUntil 100s->3s)
+        try:
+            with self.lock:
+                if bool(self.resync.get("active")):
+                    return False
+            if self._is_cold_start():
+                return False
+        except Exception:
+            pass
         try:
             if getattr(connection, "sock", None) is None:
                 return False
@@ -1020,13 +1157,20 @@ class NetworkManager:
 
     def on_inv(self, connection, payload):  # noqa: C901
         self._bump_stats("invs")
+        # P1-R7: afrouxa rate durante resync/cold
+        try:
+            bypass_inv = bool(self.resync.get("active")) or self._is_cold_start()
+        except Exception:
+            bypass_inv = False
         # R-ALTO-02: token bucket global + per-peer, pending único
         # Global cap: 100 invs por 10s (storm)
-        if self._rate_limited(self._inv_hits, ("_global", 0), 100, 10):
+        if not bypass_inv and self._rate_limited(self._inv_hits, ("_global", 0), 100, 10):
             return
         # A9: rate por peer + cap de wanted (~1000).
         peer_key = self._peer_key(connection)
-        if peer_key is not None and self._rate_limited(self._inv_hits, peer_key, INV_RATE_MAX, INV_RATE_WINDOW):
+        if not bypass_inv and peer_key is not None and self._rate_limited(
+            self._inv_hits, peer_key, INV_RATE_MAX, INV_RATE_WINDOW
+        ):
             return
         try:
             hashes = packets.parse_inventory(payload)
@@ -1144,19 +1288,35 @@ class NetworkManager:
                                 pass
         return sent
 
-    def _retry_pending_getdata(self):
-        # R-ALTO-02: limita retry a 50 por tick (evita storm)
+    def _retry_pending_getdata(self):  # noqa: C901
+        # P0-R2: sem cap 50, chunk 1000/peer randomizado, loop 1s quando pending>0
         now = time.time()
         with self.lock:
             empty = not self.pending_getdata
+            pending_len = len(self.pending_getdata)
+            targets_len = sum(1 for c in self.connections.values() if c.established)
         if empty:
             return
         stale = self._stale_pending(now)
         if not stale:
             return
-        # Cap global 50 por tick
-        if len(stale) > 50:
-            stale = stale[:50]
+        # P0-R2: randomiza e limita por peer (DownloadThread): min(1000, len)/peers
+        try:
+            import random
+
+            random.shuffle(stale)
+        except Exception:
+            pass
+        # Limita a 1000 por peer por tick para evitar storm mas permitir 10/s -> 1000/s
+        if targets_len > 0:
+            per_peer = max(100, min(1000, pending_len) // max(1, targets_len))
+            # Para fresh com 1 peer e 50k pending: per_peer=1000, total 1000 por tick -> 1000/s (1s loop)
+            # Mas para throughput máximo, permite até 1000*peers
+            max_total = per_peer * targets_len
+            # Garante pelo menos 1000 total quando pending grande
+            max_total = max(max_total, min(1000 * targets_len, len(stale)))
+            if len(stale) > max_total:
+                stale = stale[:max_total]
         sent = self._resend_pending(stale, now)
         if sent and now - self._last_retry_log > 60:
             self._last_retry_log = now
@@ -1357,6 +1517,12 @@ class NetworkManager:
                 pass
             self.known_hashes.clear()
             self.pending_getdata.clear()
+        # P0-R3: limpa batch pendente
+        try:
+            with self._db_batch_lock:
+                self._db_batch.clear()
+        except Exception:
+            pass
         try:
             self.db.execute("DELETE FROM objects")
         except Exception as exc:

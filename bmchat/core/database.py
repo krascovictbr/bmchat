@@ -35,7 +35,20 @@ class Database:
         except Exception:
             pass
 
+    def _enable_wal(self):
+        # P0-R3: WAL + synchronous NORMAL reduz fsync por commit (batch)
+        try:
+            with self.lock:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.execute("PRAGMA synchronous=NORMAL")
+                self.conn.execute("PRAGMA temp_store=MEMORY")
+                self.conn.execute("PRAGMA cache_size=-64000")
+                self.conn.commit()
+        except Exception:
+            pass
+
     def _create_schema(self):
+        self._enable_wal()
         with self.lock:
             self.conn.executescript("""
 CREATE TABLE IF NOT EXISTS settings (
@@ -610,6 +623,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_hash ON messages(obj_hash) WHERE obj_h
             )
         except sqlite3.IntegrityError:
             pass
+
+    def store_objects_batch(self, items):
+        # P0-R3: batch executemany em transação única (PyBitmessage flush)
+        if not items:
+            return
+        rows = []
+        now = int(time.time())
+        for obj_hash, raw, obj_type, version, stream, expires in items:
+            try:
+                rows.append((obj_hash, raw, obj_type, version, stream, int(expires), now))
+            except Exception:
+                continue
+        if not rows:
+            return
+        with self.lock:
+            try:
+                self.conn.executemany(
+                    "INSERT OR IGNORE INTO objects"
+                    "(hash, raw, type, version, stream, expires, received) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    rows,
+                )
+                self.conn.commit()
+            except Exception:
+                try:
+                    self.conn.commit()
+                except Exception:
+                    pass
 
     def get_object(self, obj_hash):
         rows = self.query("SELECT * FROM objects WHERE hash=?", (obj_hash,))
