@@ -23,6 +23,7 @@
 - [peer rotation / sync from scratch (2026-09-08, main branch)](#peer-rotation--main-branch-2026-09-08)
 - [fast bootstrap / fresh list (2026-09-08, main branch)](#fast-bootstrap--main-branch-2026-09-08)
 - [CVEs and CVSS — fix/security-20260908](#cves-and-cvss--fixsecurity-20260908)
+- [sync do zero rápido (2026-09-10, pow/network)](#sync-do-zero-rápido-2026-09-10)
 - [optimize/object-reception-20260909 (2026-09-09)](#optimizeobject-reception-20260909)
 - [sync header large inv (2026-09-09)](#sync-header-large-inv-2026-09-09)
 - [fix/ci-flaky-sync (2026-09-09)](#fixci-flaky-sync-2026-09-09)
@@ -1497,3 +1498,19 @@ Branch created from `rolling-release@139feea` + `feat` docs, no Python code chan
 ## Notes
 - No new deps, no `requirements.txt` change, no wire break, 0BSD kept, EN/PT-BR synced, `branch.md` history never rewritten (append only), temporaries `/tmp/opencode/` respected, `ai/.gitkeep` kept empty.
 - Merge: `git checkout rolling-release && git merge --no-ff feat/ai-llm-config-20260910 && python3 -m pytest tests/unit tests/integration tests/stress -q`
+
+---
+
+# sync do zero rápido — pow/network, 2026-09-10
+
+Apagar identidades e baixar do zero ficava muito lento (minutos). Pesquisa no PyBitmessage (`storage/sqlite.py:12` flush bulk, `tcp.py:251 BigInv 49999`, `downloadthread.py:14` 1000/peer/s) mostrou gargalos.
+
+## Corrigido
+- `INV_WANTED 1000 → 50k` quando `pending<200k` ou `resync` (antes cortava 98% do BigInv); `pending` por `hash` único e `retry 50/5s → 1000/s` + loop `1s` quando `pending>0` (antes `10/s`).
+- Batch DB: `WAL` + `executemany` (`database.py:614`) vs `INSERT` por objeto (10× IOPS); `send_inventory` agora RAM+DB até 50k (antes só RAM 8k).
+- Caps `INVENTORY 8k→50k` / `DB 20k→100k`, `GETDATA` `20→100` blobs / `100→1000` hashes / `3→8MiB`, `set diff` O(1) vs `N·lock`.
+
+## Verificação
+- Loopback 50 objs `3s → 0,54s`; `554 passed`, `flake8 0`, `mypy 53 Success`.
+- Commit `12ead48` no ramo `fix/pow-network-backend-20260910`.
+
