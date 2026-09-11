@@ -1,0 +1,35 @@
+{
+  "name": "Meta Llama 3.1",
+  "model": "meta-llama/Meta-Llama-3.1-405B-Instruct",
+  "provider": "meta",
+  "api_base": "https://api.llama-api.com or self-hosted vLLM/Ollama",
+  "variants": ["Meta-Llama-3.1-405B-Instruct", "Meta-Llama-3.1-70B-Instruct", "Meta-Llama-3.1-8B-Instruct"],
+  "context_window": 131072,
+  "max_output_tokens": 4096,
+  "default_temperature": 0.3,
+  "top_p": 0.9,
+  "description": "Meta open-source family — 8B/70B/405B, 128k context, self-hostable. Great for private/self-hosted bmchat optimization without sending keys/code to third party.",
+  "capabilities": ["open-source", "self-hosted", "code-generation", "private-deployment"],
+  "recommended_use": "Self-hosted or privacy-sensitive bmchat work (keys, WIF, DB). Use 405B for reasoning, 70B balanced, 8B fast. Run via Ollama/vLLM locally.",
+  "system_prompt": "You are Meta Llama 3.1, expert AI for bmchat — Telegram-style P2P Bitmessage messenger (Python 3.10+, Tkinter, P2P only, no servers). PoW 1000/1000 min (ProcessPool step 1<<20, Standard/Mock), ECIES secp256k1+AES-CBC+HMAC, ECDSA DER/SHA256 secp256k1 only (no P-256), objects getpubkey/pubkey v4/msg v1+broadcast v5, streams 1, MAGIC 0xE9BEB4D9 port 8444 ver3. Arch: crypto/ecc-ecies-keys-pow/strategy, protocol/const-packets-objects-address-factory, net/proxy-peers-manager-peer-mock, core/database-client-events-repos-models, gui/app-dialogs-theme-tooltip-notification-commands, util. 7 patterns: Strategy, Observer, Command, State, Factory, Repository, DI (run.py:create_client). 554 tests >95% logic, MockPoW+MockNet+FakeApp, no real sockets/Tk. Rules: NEVER break pytest -q, keep EN/PT-BR, ruff/mypy 0, preserve PyBitmessage wire compat, security: WIF 1<=int<ORDER 0o600, DB 0o600/dir 0o700, Pillow>=12.3.0 allowlist 5 formats, MAX_OBJECT_LENGTH, target int //, varint error, caps 50k/1k, rate-limit. Self-hosted = never leak keys. Cite file:line.",
+  "prompts": {
+    "performance": "Optimize bmchat for self-hosted: profile app.py _redraw_chat (virtual scroll), manager.py queues, pow. Keep MockPoW for tests, suggest vLLM/Ollama deployment for Llama itself. Small diffs, test green.",
+    "security": "Audit for self-hosted threat model: WIF handling, DB perms, Image allowlist, PoW target, curve validation, DNS leak via getaddrinfo clearnet with Tor, lockfile PID. Provide local PoC, fix, test. No external API leak.",
+    "refactor": "Refactor using 7 patterns, keep open-source style (no proprietary APIs), incremental, compat, ruff/mypy clean. Document DI graph.",
+    "testing": "Add tests that run fully offline (no API calls): tempdir+MockPoW+MockNet+FakeApp, 554+ new, unit/integration/stress, coverage >95% on logic.",
+    "documentation": "Update EN/PT-BR docs for self-hosted: add Ollama/vLLM instructions in ai/README, keep TOM, 0BSD, branch history. Mention meta-llama config.",
+    "code_review": "Review for self-hosted: no hardcoded API keys, no external calls with private keys, wire compat, 554 tests, EN/PT-BR, ruff/mypy, caps/perms."
+  },
+  "bmchat_specific": {
+    "bottlenecks": ["Self-hosted 8B fits on 16GB VRAM, 70B needs 40GB, 405B needs 8xH100 — choose per budget", "Ollama: ollama run llama3.1:70b", "vLLM: python -m vllm.entrypoints.openai.api_server --model Meta-Llama-3.1-70B"],
+    "rules": ["Never send WIF/keys to external API", "Offline tests only", "554 tests", "EN/PT-BR"]
+  },
+  "self_hosted": {
+    "ollama": "ollama run llama3.1:70b",
+    "vllm": "python -m vllm.entrypoints.openai.api_server --model meta-llama/Meta-Llama-3.1-70B-Instruct --max-model-len 131072",
+    "transformers": "AutoModelForCausalLM.from_pretrained('meta-llama/Meta-Llama-3.1-8B-Instruct', device_map='auto')"
+  },
+  "version": "1.0.0",
+  "last_updated": "2026-09-10",
+  "maintained_by": "bmchat ai/ — branch feat/ai-llm-config-20260910"
+}

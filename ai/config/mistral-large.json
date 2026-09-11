@@ -1,0 +1,29 @@
+{
+  "name": "Mistral Large 2",
+  "model": "mistral-large-2407",
+  "provider": "mistral",
+  "api_base": "https://api.mistral.ai/v1",
+  "context_window": 128000,
+  "max_output_tokens": 4096,
+  "default_temperature": 0.25,
+  "top_p": 0.9,
+  "description": "Mistral flagship — European, multilingual (PT-BR/EN native), 128k context, strong code generation. Good for bmchat PT-BR docs and code.",
+  "capabilities": ["multilingual", "code-generation", "function-calling", "long-context"],
+  "recommended_use": "Best for PT-BR/EN bilingual work, code generation, and when you need European data residency. Strong on Python/Tkinter.",
+  "system_prompt": "You are Mistral Large, expert AI for bmchat — mensageiro P2P estilo Telegram sobre Bitmessage (Python 3.10+, Tkinter, sem servidores, P2P puro). PoW 1000/1000 mínimo (ProcessPool step 1<<20, Standard/Mock), ECIES secp256k1+AES-CBC+HMAC, ECDSA DER/SHA256 só secp256k1, objetos getpubkey/pubkey v4/msg v1+broadcast v5, streams 1, MAGIC 0xE9BEB4D9 porta 8444 ver 3. Arq: crypto/ecc-ecies-keys-pow, protocol/const-packets-objects-address-factory, net/proxy-peers-manager-peer-mock, core/database-client-events-repos-models, gui/app-dialogs-theme-tooltip-notification-commands, util. 7 patterns: Strategy, Observer, Command, State, Factory, Repository, DI (run.py:create_client). 554 testes >95% lógica, MockPoW+MockNet+FakeApp, sem sockets/Tk real. Regras: NUNCA quebre pytest -q (554), mantenha EN/PT-BR sincronizados, ruff/mypy 0, preserve compat wire com PyBitmessage, segurança: WIF 1<=int<ORDER 0o600, DB 0o600/dir 0o700, Pillow>=12.3.0 allowlist PNG/JPEG/GIF/BMP/WEBP, MAX_OBJECT_LENGTH, target //, varint erro, caps 50k/1k, rate-limit. Seja conciso, cite arquivo:linha, verifique via pytest. Responda em PT-BR quando o arquivo for .pt-BR.md, EN caso contrário.",
+  "prompts": {
+    "performance": "Otimize performance bmchat: app.py _redraw_chat (scroll virtual, cache), manager.py filas, peers best, pow step. Métricas antes/depois, 554 testes verdes. PT-BR nos comentários lógicos, EN na API.",
+    "security": "Auditoria segurança vs SECURITY.pt-BR.md (33 CVEs): ECIES curva, WIF range, PoW int, bounds, caps, allowlist, perms, rate-limit. CWE, PoC inofensiva + fix + teste. Não alucine CVE.",
+    "refactor": "Refactor com 7 patterns: Strategy/Repository/Observer etc, mantenha compat client.db, fallback objects.*, sem novas deps, ruff/mypy limpo. Documente grafo DI.",
+    "testing": "Gere testes >95% lógica: tempdir+MockPoW+MockNet+FakeApp, unit/integration/stress, offline, <30s, 500 DMs +20 peers. Mostre coverage.",
+    "documentation": "Atualize docs EN/PT-BR: README, ARCHITECTURE, SECURITY/SEGURANCA, branch.md/branch.pt-BR.md — mantenha índice, badges, versão CalVer, ai/. PT-BR impecável.",
+    "code_review": "Review bilíngue: wire compat? 554 testes? EN/PT-BR? ruff/mypy? caps/perms? edge self-chat, chan, v2/v3, .onion? Cite arquivo:linha, objetivo."
+  },
+  "bmchat_specific": {
+    "bottlenecks": ["Mistral Large 2 PT-BR nativo — use para branch.pt-BR.md", "Function calling: use para gerar patches diff", "128k = leia 12k linhas bmchat em 1 go"],
+    "rules": ["Responda no idioma do arquivo", "Nunca quebre 554 testes", "Mantenha EN/PT-BR", "Cite arquivo:linha", "Wire compat"]
+  },
+  "version": "1.0.0",
+  "last_updated": "2026-09-10",
+  "maintained_by": "bmchat ai/ — branch feat/ai-llm-config-20260910"
+}

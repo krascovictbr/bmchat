@@ -1,0 +1,30 @@
+{
+  "name": "Google Gemini 1.5 Pro",
+  "model": "gemini-1.5-pro",
+  "provider": "google",
+  "api_base": "https://generativelanguage.googleapis.com",
+  "context_window": 2097152,
+  "max_output_tokens": 8192,
+  "default_temperature": 0.25,
+  "top_p": 0.95,
+  "top_k": 40,
+  "description": "Google largest context model — 2M tokens, ideal for entire bmchat codebase analysis (12k+ lines) in one shot. Multimodal, strong for cross-file optimization.",
+  "capabilities": ["ultra-long-context", "multimodal", "code-analysis", "batch-optimization"],
+  "recommended_use": "When you need to analyze entire bmchat at once (all 28 bmchat files + tests), compare branches, or do holistic optimization. 2M lets you paste branch.md + ARCHITECTURE + all source.",
+  "system_prompt": "You are Gemini 1.5 Pro, expert AI for bmchat — Telegram-style P2P Bitmessage messenger (Python 3.10+, Tkinter, P2P only, no servers). PoW 1000/1000 min (ProcessPoolExecutor step 1<<20, Standard/Mock strategies), ECIES secp256k1+AES-CBC+HMAC, ECDSA DER/SHA256 secp256k1, objects getpubkey/pubkey(v4)/msg(v1+ack)/broadcast(v5), streams default 1, MAGIC 0xE9BEB4D9 port 8444. Arch: crypto/ecc-ecies-keys-pow, protocol/const-packets-objects-address-factory, net/proxy-peers-manager-peer-mock, core/database-client-events-repos-models, gui/app-dialogs-theme-tooltip-notification-commands, util. 7 patterns: Strategy, Observer, Command, State, Factory, Repository, DI (run.py:create_client). 554 tests >95% logic (470+ unit +15 integration +15 stress, MockPoW 2**52, MockNet, FakeApp). Rules: never break pytest -q, keep EN/PT-BR, ruff/mypy 0, PyBitmessage wire compat, security caps (MAX_OBJECT_LENGTH, 200k wire, 0o700/0o600, Pillow allowlist 5 formats, >=12.3.0). Use 2M context to reason across whole codebase, cite file:line, verify.",
+  "prompts": {
+    "performance": "Holistic performance optimization using 2M context: ingest all bmchat files, profile hotspots (app.py _redraw_chat, manager.py queues, peers best, pow). Propose batched, cache-friendly, FIFO O(1), virtual scroll, parallel DNS. Show metrics before/after (redraw 1382->216ms). Keep 554 tests, measure loopback 50 objs ~2.2s.",
+    "security": "Full-codebase security audit (2M window — read all source + SECURITY.md 33 CVEs + branch.md). Check every grep target: tarfile/html.parser/http/email/xml/unicodedata/ImageFont/PcfFontFile/BdfFontFile/GdImageFile/ImageCms/RankFilter/PdfParser/OAEP/sign_digest/from_der — all should be unused except allowed paths. Validate ECIES curve, WIF range, PoW int, bounds, caps, allowlist, perms. Report by CWE, with file:line.",
+    "refactor": "Large-scale refactor plan: analyze all 7 patterns across codebase, propose incremental migration (SQL -> repos, Message model in GUI, Factory for packets). Keep compat (PowExecutor legacy wrapper, ui_queue bridge, client.db). Show DI graph in run.py, no new deps.",
+    "testing": "Generate holistic test suite: cover all modules to >95% using 2M context to avoid duplication with existing 554 tests. Use tempdir+MockPoW+MockNet+FakeApp, unit/integration/stress split, stress 500 DMs +20 peers+TLL+rate-limit. Show coverage include.",
+    "documentation": "Update all EN/PT-BR docs consistently: read README+ARCHITECTURE+SECURITY+branch.md+tests/README in one context, ensure TOC, badges, version, ai/ section, no contradictions. Preserve history.",
+    "code_review": "Ultra-long review: ingest PR diff + entire bmchat, check wire compat, tests, EN/PT-BR, ruff/mypy, caps, edge cases (self-chat, chan, v2/v3, .onion, getdata repeat). Cite file:line."
+  },
+  "bmchat_specific": {
+    "bottlenecks": ["2M context = paste entire bmchat (10646 stmts) at once", "gui/app.py 4649 lines needs chunking even for 2M", "manager.py 1045 + peers 257 — batch in one go"],
+    "rules": ["Use long context to avoid hallucinating missing files", "Cite file:line", "Verify JSON/YAML", "554 tests", "EN/PT-BR"]
+  },
+  "version": "1.0.0",
+  "last_updated": "2026-09-10",
+  "maintained_by": "bmchat ai/ — branch feat/ai-llm-config-20260910"
+}

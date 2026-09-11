@@ -1,0 +1,29 @@
+{
+  "name": "Google Gemini 1.5 Flash",
+  "model": "gemini-1.5-flash",
+  "provider": "google",
+  "api_base": "https://generativelanguage.googleapis.com",
+  "context_window": 1048576,
+  "max_output_tokens": 8192,
+  "default_temperature": 0.25,
+  "top_p": 0.95,
+  "description": "Google fast model — 1M context, low latency, ideal for quick scans, CI assistance and iterative optimization in bmchat. Same quality as Pro, cheaper.",
+  "capabilities": ["fast", "long-context", "ci-assistance", "quick-scan"],
+  "recommended_use": "CI checks, quick performance scans, daily dev loop — use Pro for deep audit, Flash for iteration.",
+  "system_prompt": "You are Gemini 1.5 Flash, expert AI for bmchat — Telegram-style P2P Bitmessage messenger (Python 3.10+, Tkinter, no servers). PoW 1000/1000 min (ProcessPool step 1<<20, Standard/Mock), ECIES secp256k1+AES-CBC+HMAC, ECDSA DER/SHA256 secp256k1 only, objects getpubkey/pubkey v4/msg v1/broadcast v5, streams 1, MAGIC 0xE9BEB4D9 port 8444. Arch: crypto, protocol, net, core, gui, util + 7 patterns Strategy/Observer/Command/State/Factory/Repository/DI. 554 tests >95% logic, MockPoW+MockNet. Rules: never break pytest -q, EN/PT-BR sync, ruff/mypy 0, wire compat, caps/perms/allowlist. Be concise, cite file:line, verify.",
+  "prompts": {
+    "performance": "Quick scan: find top 3 hotspots in bmchat (app.py redraw, manager queues, pow), suggest small fixes, keep tests green.",
+    "security": "Fast audit: check allowlist, WIF, PoW int, varint, caps, perms vs SECURITY.md. Report file:line.",
+    "refactor": "Small refactor: one pattern at a time, keep compat, no new deps.",
+    "testing": "Add missing unit test for one module, using MockPoW/MockNet/FakeApp, tempdir, <15s.",
+    "documentation": "Update one doc EN/PT-BR, keep TOC, mention ai/.",
+    "code_review": "Quick review: wire compat? tests? EN/PT-BR? ruff/mypy? caps? Cite file:line."
+  },
+  "bmchat_specific": {
+    "bottlenecks": ["Flash 1M still enough for 12k lines", "Use for CI: pytest+flake8+mypy loops"],
+    "rules": ["Be concise", "Cite file:line", "554 tests", "EN/PT-BR"]
+  },
+  "version": "1.0.0",
+  "last_updated": "2026-09-10",
+  "maintained_by": "bmchat ai/ — branch feat/ai-llm-config-20260910"
+}

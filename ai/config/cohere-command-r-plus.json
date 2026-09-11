@@ -1,0 +1,33 @@
+{
+  "name": "Cohere Command R+",
+  "model": "command-r-plus",
+  "provider": "cohere",
+  "api_base": "https://api.cohere.ai/v1",
+  "context_window": 128000,
+  "max_output_tokens": 4096,
+  "default_temperature": 0.3,
+  "p": 0.9,
+  "description": "Cohere RAG/tool-use specialist — 128k context, best for documentation, retrieval-augmented bmchat help and tool-calling workflows. Good for docs and support.",
+  "capabilities": ["rag", "tool-use", "documentation", "multilingual"],
+  "recommended_use": "Documentation generation, RAG over bmchat docs (README+ARCHITECTURE+branch.md), tool-use workflows, support chat. Use with bmchat support protocol.",
+  "system_prompt": "You are Cohere Command R+, expert AI for bmchat — Telegram-style P2P Bitmessage messenger (Python 3.10+, Tkinter, P2P only, no servers). Protocol: PoW 1000/1000 min (ProcessPoolExecutor step 1<<20, Standard/Mock), ECIES secp256k1+AES-CBC+HMAC, ECDSA DER/SHA256 secp256k1 only, objects getpubkey/pubkey v4/msg v1/broadcast v5, streams 1, MAGIC 0xE9BEB4D9 port 8444. Arch: crypto/ecc-ecies-keys-pow, protocol/const-packets-objects-address-factory, net/proxy-peers-manager-peer-mock, core/database-client-events-repos-models, gui/app-dialogs-theme-tooltip-notification-commands, util. 7 patterns: Strategy, Observer, Command, State, Factory, Repository, DI (run.py:create_client). 554 tests >95% logic, MockPoW+MockNet+FakeApp. Rules: never break pytest -q, keep EN/PT-BR sync, ruff/mypy 0, wire compat, caps/perms/allowlist (Pillow>=12.3.0 allowlist 5 formats, MAX_OBJECT_LENGTH, target //, varint, 0o700/0o600). Use RAG: ground answers in provided docs (README, ARCHITECTURE, SECURITY, branch.md), cite file:line, avoid hallucination, use tools when available.",
+  "prompts": {
+    "performance": "RAG performance guide: retrieve bmchat performance sections (branch.md #optimize/object-reception, #fast-bootstrap, #peer-rotation), synthesize optimization checklist, cite sources, propose next steps with file:line.",
+    "security": "RAG security audit: retrieve SECURITY.md 33 CVEs + branch.md CVE table + code, cross-reference, report grounded findings with file:line + CVE ID, no hallucination. Use tool-use to verify grep results.",
+    "refactor": "Tool-use refactor: propose multi-step tool calls (read file, run pytest, apply diff, re-verify), using 7 patterns, keep compat, ground in ARCHITECTURE.md patterns.",
+    "testing": "Generate test plan via RAG: retrieve tests/README.md + unit test examples, propose new tests mirroring existing MockPoW/MockNet pattern, ground in coverage report (>95% logic).",
+    "documentation": "RAG documentation: retrieve EN/PT-BR docs, ensure consistency, update with ai/ section, keep TOC, badges, CalVer, 0BSD, cite sources. Multilingual PT-BR/EN.",
+    "code_review": "RAG review: retrieve related docs + code, check grounding (does code match spec?), wire compat, 554 tests, EN/PT-BR, ruff/mypy, caps, cite file:line."
+  },
+  "bmchat_specific": {
+    "bottlenecks": ["RAG best for answering 'how does bmchat handle X?' — ground in docs", "Tool-use: chain read->grep->pytest->edit", "Multilingual PT-BR/EN docs"],
+    "rules": ["Ground in provided docs, cite file:line", "Never hallucinate CVE/file", "554 tests", "EN/PT-BR", "Use tools"]
+  },
+  "rag": {
+    "documents": ["README.md", "README.pt-BR.md", "ARCHITECTURE.md", "ARCHITECTURE.pt-BR.md", "SECURITY.md", "SECURITY.pt-BR.md", "SEGURANCA.MD", "branch.md", "tests/README.md", "ai/skills/bmchat-optimizer.md"],
+    "instruction": "Always cite source document and file:line when answering about bmchat."
+  },
+  "version": "1.0.0",
+  "last_updated": "2026-09-10",
+  "maintained_by": "bmchat ai/ — branch feat/ai-llm-config-20260910"
+}

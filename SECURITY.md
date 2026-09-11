@@ -1,5 +1,11 @@
 > **Language:** [English](SECURITY.md) | [Português (BR)](SECURITY.pt-BR.md)
 
+## 🤖 AI-Assisted Audit
+
+> See [`ai/README.md`](ai/README.md) § Supported LLMs and [`ai/prompts/security-audit.md`](ai/prompts/security-audit.md) + [`ai/skills/bmchat-optimizer.md`](ai/skills/bmchat-optimizer.md).
+
+AI can help audit bmchat: 9 LLM configs (`ai/config/` alias `ai/llms/` — OpenAI GPT-4o/mini, Anthropic Claude 3.5 Sonnet, Google Gemini 1.5 Pro/Flash, Meta Llama 3.1, Mistral Large 2, DeepSeek V3/R1, Cohere Command R+) each with bmchat-tuned `system_prompt` + `prompts.security` (CWE/CVE, 33 CVEs, W1). The security-audit prompt teaches any LLM to verify via `grep` + `pip-audit` + NVD API (`services.nvd.nist.gov/rest/json/cves/2.0`) + `py_compile` without hallucinating CVE IDs, and the skill lists crypto/protocol/net/gui checklists with `file:line` (e.g., `crypto/ecies.py:30` curve, `gui/app.py:2100` allowlist). AI audit is complementary — still requires `pytest tests/ -q` (554 tests) + `flake8` + `mypy` + manual `pip-audit`.
+
 ## CVE-2024-23342
 - ID: CVE-2024-23342
 - Description: Minerva timing attack against the P-256 curve in the ecdsa package via `SigningKey.sign_digest()`; measuring signing time leaks the internal nonce and may reveal the private key. Signature verification is not affected; no planned fix (side channels out of project scope).
