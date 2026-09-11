@@ -1,4 +1,6 @@
-# Bem-vindo ao bmchat
+> **Language:** [English](README.md) | [Português (BR)](README.pt-BR.md)
+
+# Welcome to bmchat
 
 ![bmchat](https://img.shields.io/badge/Rolling%20Release-bmchat-1793D1?style=flat-square&logo=bmchat&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
@@ -6,99 +8,99 @@
 
 # bmchat
 
-Cliente de chat estilo Telegram que usa **somente o protocolo Bitmessage**
-para trocar mensagens, com interface gráfica em Tkinter.
+Telegram-style chat client that uses **only the Bitmessage protocol**
+to exchange messages, with a Tkinter graphical interface.
 
-> **Aviso importante — leia antes de usar.** O bmchat é um projeto
-> **experimental, em desenvolvimento ativo, sem auditoria de segurança**.
-> Ele pode conter falhas, erros e vulnerabilidades — incluindo bugs que
-> fazem mensagens não chegarem, corrompem dados locais ou expõem mais
-> metadados do que o esperado. Não confie nele para nada em que sua
-> segurança, liberdade ou sustento dependam do sigilo. Detalhes na seção
-> [Limites e riscos](#11-limites-e-riscos-conhecidos).
+> **Important notice — read before use.** bmchat is an
+> **experimental project, under active development, without a security audit**.
+> It may contain flaws, bugs and vulnerabilities — including bugs that
+> cause messages not to be delivered, corrupt local data or expose more
+> metadata than expected. Do not rely on it for anything where your
+> safety, freedom or livelihood depends on secrecy. See the
+> [Known limitations and risks](#11-known-limitations-and-risks) section for details.
 
-## Índice
+## Table of Contents
 
-1. [O que é o bmchat](#1-o-que-é-o-bmchat)
-2. [Como funciona um mensageiro P2P](#2-como-funciona-um-mensageiro-p2p)
-3. [Prova de trabalho (PoW)](#3-prova-de-trabalho-pow)
-4. [Instalação e execução](#4-instalação-e-execução)
-5. [Primeiros passos](#5-primeiros-passos)
-6. [Guia de uso](#6-guia-de-uso)
-7. [Onde ficam os dados](#7-onde-ficam-os-dados)
-8. [Como funciona por dentro (protocolo)](#8-como-funciona-por-dentro-protocolo)
-9. [Estrutura do código](#9-estrutura-do-código)
-- [Suporte](#suporte)
-10. [Testes](#10-testes)
-11. [Limites e riscos conhecidos](#11-limites-e-riscos-conhecidos)
-12. [Versionamento](#12-versionamento)
-- [Solução de problemas](#solução-de-problemas)
+1. [What is bmchat](#1-what-is-bmchat)
+2. [How a P2P Messenger Works](#2-how-a-p2p-messenger-works)
+3. [Proof of Work (PoW)](#3-proof-of-work-pow)
+4. [Installation and Running](#4-installation-and-running)
+5. [Getting Started](#5-getting-started)
+6. [Usage Guide](#6-usage-guide)
+7. [Where Data is Stored](#7-where-data-is-stored)
+8. [How It Works Internally (Protocol)](#8-how-it-works-internally-protocol)
+9. [Code Structure](#9-code-structure)
+- [Support](#support)
+10. [Testing](#10-testing)
+11. [Known Limitations and Risks](#11-known-limitations-and-risks)
+12. [Versioning](#12-versioning)
+- [Troubleshooting](#troubleshooting)
 
-## 1. O que é o bmchat
+## 1. What is bmchat
 
-É um programa de conversa parecido com o Telegram por fora (lista de
-conversas, bolhas de mensagem, confirmações de leitura), mas por dentro ele
-não usa os servidores de nenhuma empresa: ele fala **direto com a rede
-Bitmessage**, que é mantida pelos próprios usuários.
+It is a chat program that looks like Telegram on the outside (conversation
+list, message bubbles, read receipts), but on the inside it
+does not use any company's servers: it talks **directly to the
+Bitmessage network**, which is maintained by its own users.
 
-Consequências práticas disso:
+Practical consequences of this:
 
-- Não existe cadastro, login, senha ou "esqueci minha senha".
-- Sua **identidade é um par de chaves criptográficas**. Quem tem a chave
-  privada controla o endereço; quem perde, perde para sempre.
-- Não há empresa para reclamar se algo der errado — nem para pedir seus
-  dados de volta.
+- There is no sign-up, login, password or "forgot my password".
+- Your **identity is a pair of cryptographic keys**. Whoever has the private
+  key controls the address; whoever loses it, loses it forever.
+- There is no company to complain to if something goes wrong — nor to ask
+  to get your data back.
 
-## 2. Como funciona um mensageiro P2P
+## 2. How a P2P Messenger Works
 
-Num mensageiro comum (WhatsApp, Telegram), suas mensagens passam pelo
-servidor da empresa, que entrega ao destinatário. Num mensageiro P2P
-(*peer-to-peer*, "ponta a ponta" entre iguais), **todo mundo conectado é
-ao mesmo tempo cliente e servidor**:
+In a regular messenger (WhatsApp, Telegram), your messages go through
+the company's server, which delivers them to the recipient. In a P2P
+(*peer-to-peer*) messenger, **everyone connected is
+both client and server at the same time**:
 
-- **Nós e conexões.** Ao abrir, o bmchat conecta a alguns nós da rede
-  (endereços descobertos por sementes DNS e por outros nós). O rodapé mostra
-  `Rede: E/T` — conexões realmente estabelecidas de tentadas.
-- **Objetos e inventário.** Tudo na rede (pedidos de chave, chaves,
-  mensagens) é um **objeto**: um bloco de bytes com prazo de validade e
-  prova de trabalho. Cada nó guarda os objetos que recebe (o **inventário**)
-  e anuncia aos vizinhos só os resumos (`inv`); quem não tem pede o conteúdo
-  (`getdata`). É assim que uma mensagem sua chega ao destinatário: de nó em
-  nó, por retransmissão.
-- **Streams.** A rede é dividida em fluxos numerados para ninguém precisar
-  baixar tudo. Quase todo mundo usa o stream 1, que é o padrão aqui.
-- **Endereços.** Um endereço `BM-...` embute versão, stream e um resumo das
-  chaves públicas. A parte secreta (chaves privadas) nunca sai do seu
-  computador.
-- **Só P2P.** O bmchat trabalha apenas com mensagens diretas entre
-  identidades e contatos — sem canais nem grupos na interface.
+- **Nodes and connections.** On launch, bmchat connects to some network nodes
+  (addresses discovered via DNS seeds and other nodes). The footer shows
+  `Network: E/T` — actually established connections out of attempted.
+- **Objects and inventory.** Everything on the network (key requests, keys,
+  messages) is an **object**: a block of bytes with an expiration time and
+  proof of work. Each node stores the objects it receives (**inventory**)
+  and announces to neighbors only the digests (`inv`); those who don't have them request the content
+  (`getdata`). This is how your message reaches its recipient: node by
+  node, via relay.
+- **Streams.** The network is divided into numbered streams so no one needs
+  to download everything. Almost everyone uses stream 1, which is the default here.
+- **Addresses.** A `BM-...` address embeds version, stream and a digest of the
+  public keys. The secret part (private keys) never leaves your
+  computer.
+- **P2P only.** bmchat works only with direct messages between
+  identities and contacts — no channels or groups in the interface.
 
-Por ser retransmissão entre voluntários, **nada é instantâneo**: entre
-publicar e o outro lado receber passam minutos, e a primeira sincronização
-(dezenas de milhares de objetos) pode levar de minutos a horas.
+Because it relies on relay among volunteers, **nothing is instant**: between
+publishing and reception by the other side minutes pass, and the first synchronization
+(tens of thousands of objects) can take from minutes to hours.
 
-## 3. Prova de trabalho (PoW)
+## 3. Proof of Work (PoW)
 
-Para impedir spam sem precisar de cadastro, a rede exige **prova de
-trabalho**: antes de publicar qualquer objeto, seu computador precisa
-resolver um quebra-cabeça criptográfico (achar um `nonce` cujo SHA-512
-duplo fique abaixo de uma meta). Pontos importantes:
+To prevent spam without requiring sign-up, the network requires **proof
+of work**: before publishing any object, your computer must
+solve a cryptographic puzzle (find a `nonce` whose double SHA-512
+falls below a target). Important points:
 
-- A dificuldade mínima é **1000/1000 por objeto** e não pode ser abaixada —
-  é regra da rede, não opção do programa.
-- **Custa CPU de verdade**: cada objeto (pedido de chave, chave, mensagem,
-  confirmação) leva de dezenas de segundos a alguns minutos de
-  processamento, dependendo da máquina. O bmchat usa vários núcleos e mostra
-  `PoW: N` no rodapé enquanto calcula.
-- Por isso os símbolos da conversa importam: **relógio** = ainda calculando
-  ou aguardando chave; **✓✓ cinza** = publicado na rede; **✓✓ azul** =
-  entregue (ACK recebido). O botão direito na mensagem mostra os detalhes.
-- Fechar o programa no meio de um PoW cancela aquele cálculo; a mensagem
-  pendente tenta de novo sozinha a cada 10 minutos.
+- The minimum difficulty is **1000/1000 per object** and cannot be lowered —
+  it is a network rule, not a program option.
+- **It costs real CPU**: each object (key request, key, message,
+  acknowledgment) takes from tens of seconds to a few minutes of
+  processing, depending on the machine. bmchat uses multiple cores and shows
+  `PoW: N` in the footer while computing.
+- That's why conversation symbols matter: **clock** = still computing
+  or awaiting key; **✓✓ gray** = published to the network; **✓✓ blue** =
+  delivered (ACK received). Right-click on the message shows details.
+- Closing the program in the middle of a PoW cancels that computation; the
+  pending message retries on its own every 10 minutes.
 
-## 4. Instalação e execução
+## 4. Installation and Running
 
-Requisitos: Python 3.10+ (testado em 3.14), Tkinter e o conteúdo de
+Requirements: Python 3.10+ (tested on 3.14), Tkinter and the contents of
 `requirements.txt` (`PySocks`, `pycryptodome`, `ecdsa`).
 
 ```bash
@@ -108,97 +110,97 @@ pip install -r requirements.txt
 python3 run.py
 ```
 
-Diretório de dados padrão: `~/.bmchat`. Para usar outro:
+Default data directory: `~/.bmchat`. To use another:
 
 ```bash
-BMCHAT_DATA=/caminho/para/dados python3 run.py
+BMCHAT_DATA=/path/to/data python3 run.py
 ```
 
-## 5. Primeiros passos
+## 5. Getting Started
 
-1. Na primeira abertura, uma identidade já é criada. Abra o menu ☰ →
-   **Minha identidade** (ou a tela inicial) e **copie seu endereço
-   `BM-...`** com o botão — é ele que você envia aos contatos por qualquer
-   meio (e-mail, papel, outro mensageiro).
-2. Adicione alguém: botão ✎ → **Novo contato**, colando o `BM-...` dele.
-3. Abra a conversa e escreva. A mensagem aparece na hora com o relógio.
-4. Nos bastidores: o bmchat publica um pedido da chave pública do contato;
-   quando ela chega (minutos), a mensagem é cifrada e enviada sozinha; quando
-   o outro lado recebe, vem o ACK e o `✓✓` fica azul.
+1. On first launch, an identity is already created. Open the ☰ menu →
+   **My identity** (or the welcome screen) and **copy your `BM-...` address**
+   with the button — this is what you send to contacts by any
+   means (email, paper, another messenger).
+2. Add someone: ✎ button → **New contact**, pasting their `BM-...`.
+3. Open the conversation and write. The message appears immediately with the clock.
+4. Behind the scenes: bmchat publishes a request for the contact's public key;
+   when it arrives (minutes), the message is encrypted and sent automatically; when
+   the other side receives it, the ACK comes and `✓✓` turns blue.
 
-## 6. Guia de uso
+## 6. Usage Guide
 
-- **Conversas**: lista à esquerda com prévia, horário e selo de não-lidas;
-  busca pela lupa; mensagens em ordem cronológica, sempre as novas embaixo.
-- **Mouse**: botão direito na conversa abre/inicia (Abrir, Copiar endereço,
-  Excluir conversa, Remover contato); botão direito na
-  bolha copia o texto, exclui a mensagem ou mostra detalhes (estado,
-  remetente, data, expiração, hash).
-- **Tempo de vida das mensagens (TTL)**: toda mensagem nasce com prazo de
-  validade — passado ele, a rede descarta o objeto. O padrão é **1 dia**
-  para todas as mensagens de todos os contatos; mude em Sistema →
-  **Tempo de vida das mensagens…** (1 hora a 21 dias, conforme as regras
-  do protocolo; fora disso o valor é ajustado e avisado). TTL maior exige
-  mais prova de trabalho e demora mais para enviar; o ACK expira junto.
-  Os Detalhes da bolha mostram "Expira em".
-- **Backup** (botão na barra da identidade ou menu): mostra as chaves
-  privadas em WIF **com aviso explícito** — guarde em lugar seguro (papel,
-  gerenciador de senhas, pendrive offline); **perdeu, acabou: não há como
-  recuperar**. Permite salvar em arquivo, copiar, importar de volta e
-  exportar/importar **`keys.dat`** (formato do PyBitmessage) para levar as
-  chaves a outros clientes — e trazer de lá.
-- **Proxy / darknet**: Tor (9050/9150), I2P (SOCKS 4447, HTTP 4444) ou
-  conexão direta. A escolha fica salva e as conexões são refeitas.
-- **Configurações de rede**: timeout de conexão e de leitura, máximo de
-  conexões e intervalo da manutenção.
-- **Diagnóstico de rede**: proxy, tempo ativo, conexões (estado, versão,
-  streams, nota do par, divergência de relógio), tráfego total e da sessão,
-  inventário; botões para copiar o relatório e **apagar todos os objetos**
-  (o histórico é preservado; a rede é baixada de novo).
-- **Ver log**: mostra os eventos de rede e mensagens (pedidos de chave,
-  publicações, recebimentos, ACKs) com botão de copiar — útil para relatar
-  problemas.
-- **Legenda de confirmações**: explica cada símbolo; lembre-se de que o
-  Bitmessage não tem "online" nem "visto por último" — a legenda do contato
-  mostra apenas se a chave pública dele é conhecida.
-- **Rodapé**: `Rede: E/T` (conexões estabelecidas de tentadas),
-  `Objetos` (guardados no banco), `Pares` (conhecidos), `PoW` (cálculos
-  rodando), `Pendentes` (mensagens aguardando chave) e `Proxy` em uso.
+- **Conversations**: list on the left with preview, time and unread badge;
+  search via magnifying glass; messages in chronological order, newest always at the bottom.
+- **Mouse**: right-click on conversation to open/start (Open, Copy address,
+  Delete conversation, Remove contact); right-click on
+  bubble copies text, deletes message or shows details (state,
+  sender, date, expiration, hash).
+- **Message time-to-live (TTL)**: every message is born with an expiration
+  time — after it, the network discards the object. The default is **1 day**
+  for all messages to all contacts; change in System →
+  **Message time-to-live…** (1 hour to 21 days, per protocol
+  rules; out-of-range values are adjusted and you are notified). Larger TTL requires
+  more proof of work and takes longer to send; the ACK expires together.
+  Bubble Details show "Expires in".
+- **Backup** (button in the identity bar or menu): shows the private
+  keys in WIF **with explicit warning** — store in a safe place (paper,
+  password manager, offline USB stick); **if lost, it's gone: there is no way
+  to recover**. Allows saving to file, copying, importing back and
+  exporting/importing **`keys.dat`** (PyBitmessage format) to carry
+  keys to other clients — and bring them from there.
+- **Proxy / darknet**: Tor (9050/9150), I2P (SOCKS 4447, HTTP 4444) or
+  direct connection. The choice is saved and connections are re-established.
+- **Network settings**: connection and read timeout, max
+  connections and maintenance interval.
+- **Network diagnostics**: proxy, uptime, connections (state, version,
+  streams, peer rating, clock divergence), total and session traffic,
+  inventory; buttons to copy the report and **delete all objects**
+  (history is preserved; the network is downloaded again).
+- **View log**: shows network and message events (key requests,
+  publications, receptions, ACKs) with a copy button — useful for reporting
+  issues.
+- **Receipt legend**: explains each symbol; remember that
+  Bitmessage has no "online" or "last seen" — the contact legend
+  only shows whether his public key is known.
+- **Footer**: `Network: E/T` (established out of attempted connections),
+  `Objects` (stored in DB), `Peers` (known), `PoW` (running
+  computations), `Pending` (messages awaiting key) and `Proxy` in use.
 
-## 7. Onde ficam os dados
+## 7. Where Data is Stored
 
-Tudo em `~/.bmchat` (ou `$BMCHAT_DATA`):
+Everything in `~/.bmchat` (or `$BMCHAT_DATA`):
 
-- `bmchat.db` (SQLite): identidades e chaves privadas, contatos, inscrições,
-  mensagens, chaves públicas, objetos da rede, configurações.
-- `knownnodes.dat`: pares conhecidos e reputação (para reconectar rápido).
+- `bmchat.db` (SQLite): identities and private keys, contacts, subscriptions,
+  messages, public keys, network objects, settings.
+- `knownnodes.dat`: known peers and reputation (for quick reconnect).
 
-**Faça backup das chaves** (seção 6). Quem tiver acesso a esses arquivos tem
-sua identidade. O banco não é cifrado.
+**Back up your keys** (section 6). Anyone with access to these files has
+your identity. The database is not encrypted.
 
-## 8. Como funciona por dentro (protocolo)
+## 8. How It Works Internally (Protocol)
 
-- Tipos de objeto usados: `getpubkey`, `pubkey` (v4), `msg` (v1, com
-  `ack_data` embutido), `broadcast` (v5); comandos de rede `version`,
-  `verack`, `addr`, `inv`, `getdata`, `object`, `ping`, `pong`, `dinv` e
-  `error`, nos formatos exatos da especificação.
-- Criptografia: ECIES (ECDH secp256k1 + AES-256-CBC + HMAC-SHA256) e ECDSA
-  em DER/SHA256, interoperáveis com o PyBitmessage (verificado por testes
-  cruzados com a biblioteca original).
-- Validação de entrada: PoW mínimo 1000/1000, janela de validade (passado
-  −1h, futuro +28d+3h), tamanho máximo e checagem de assinatura; o que falha
-  é descartado em silêncio, como na rede.
-- ACK: o remetente embute na mensagem um objeto pronto (com PoW); o
-  destinatário valida e re-anuncia; ao ver o objeto circulando, o remetente
-  marca a mensagem como entregue. ACK prova recebimento pelo programa do
-  destinatário — não que um humano leu.
-- Persistência de sincronia: hashes conhecidos e objetos ficam no banco; ao
-  reabrir, nada já guardado é baixado de novo (a primeira sincronização,
-  essa sim, baixa tudo uma vez).
+- Object types used: `getpubkey`, `pubkey` (v4), `msg` (v1, with
+  embedded `ack_data`), `broadcast` (v5); network commands `version`,
+  `verack`, `addr`, `inv`, `getdata`, `object`, `ping`, `pong`, `dinv` and
+  `error`, in the exact specification formats.
+- Cryptography: ECIES (ECDH secp256k1 + AES-256-CBC + HMAC-SHA256) and ECDSA
+  in DER/SHA256, interoperable with PyBitmessage (verified by cross
+  tests with the original library).
+- Input validation: minimum PoW 1000/1000, validity window (past
+  −1h, future +28d+3h), maximum size and signature check; anything that fails
+  is silently discarded, as on the network.
+- ACK: the sender embeds in the message a ready-made object (with PoW); the
+  recipient validates and re-announces it; upon seeing the object circulating, the sender
+  marks the message as delivered. ACK proves receipt by the
+  recipient's program — not that a human has read it.
+- Sync persistence: known hashes and objects stay in the DB; on
+  reopen, nothing already stored is downloaded again (the first synchronization,
+  however, downloads everything once).
 
-## 9. Estrutura do código
+## 9. Code Structure
 
-> Refatorado com 7 Design Patterns (branch `refactor/design-patterns`). Detalhes em [ARCHITECTURE.md](ARCHITECTURE.md).
+> Refactored with 7 Design Patterns (branch `refactor/design-patterns`). Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```
 bmchat/
@@ -207,8 +209,8 @@ bmchat/
     ecc.py, ecies.py, keys.py, encrypted_db.py
     pow/                 # Strategy Pattern
       strategy.py        # PoWStrategy (ABC)
-      standard.py        # StandardPoWStrategy (produção)
-      mock.py            # MockPoWStrategy (testes)
+      standard.py        # StandardPoWStrategy (production)
+      mock.py            # MockPoWStrategy (tests)
   protocol/
     const.py, packets.py, objects.py, address.py
     factory.py           # Factory Pattern (ProtocolObjectFactory)
@@ -231,143 +233,141 @@ bmchat/
     dialogs.py, theme.py, tooltip.py, notification.py
     commands/            # Command Pattern
       send_message.py, delete_contact.py, backup_keys.py
-run.py                   # DI: create_client() monta o grafo
-ARCHITECTURE.md          # diagrama e descrição dos padrões
-tests/                   # 209 testes (integração, rede, interop)
+run.py                   # DI: create_client() builds the graph
+ARCHITECTURE.md          # diagram and pattern description
+tests/                   # 209 tests (integration, network, interop)
 ```
 
-## Suporte
+## Support
 
-Menu ☰ → **Suporte…**: explica o canal oficial de suporte, mostra o
-endereço com botão de copiar e tem **Conversar agora**, que cria o contato
-e abre a conversa direto. A conversa é cifrada como qualquer outra.
+Menu ☰ → **Support…**: explains the official support channel, shows the
+address with a copy button and has **Chat now**, which creates the contact
+and opens the conversation directly. The conversation is encrypted like any other.
 
-**Prazos realistas — leia com calma.** O suporte é atendido por pessoas,
-em fila, e cada mensagem precisa atravessar a rede Bitmessage:
+**Realistic timelines — please read carefully.** Support is handled by people,
+in a queue, and each message must traverse the Bitmessage network:
 
-- **Resposta**: pode levar **horas ou dias**. Se o suporte estiver
-  investigando um bug ou erro, a conversa pode se estender por **dias ou até
-  semanas** (reproduzir o problema, testar correção, publicar atualização).
-  Reenviar a mesma pergunta não acelera — cada nova mensagem entra no fim
-  da fila e paga PoW de novo.
-- **Por que demora**: o bmchat usa **PoW (prova de trabalho) conforme o
-  protocolo demanda** — dificuldade mínima 1000/1000 por objeto,
-  inegociável. Cada envio (pedido de chave, chave, mensagem, confirmação)
-  custa de dezenas de segundos a minutos de CPU **nos dois lados**, e a
-  retransmissão P2P entre nós voluntários soma mais minutos. Some a isso
-  programa fechado, computador desligado ou rede ainda sincronizando, e o
-  ciclo de ida-e-volta de uma pergunta/resposta facilmente passa de horas.
-- **O que fazer enquanto espera**: deixe o programa aberto e conectado;
-  acompanhe o estado pelos símbolos (`…`, `✓✓`, `✓✓`) e pelo *Ver log*.
-  Se pedirem detalhes, envie o conteúdo de *Ver log* e do *Diagnóstico de
-  rede* (ambos têm botão de copiar).
+- **Response**: may take **hours or days**. If support is
+  investigating a bug or error, the conversation may extend for **days or even
+  weeks** (reproducing the issue, testing a fix, publishing an update).
+  Resending the same question does not speed things up — each new message goes to the end
+  of the queue and pays PoW again.
+- **Why it takes time**: bmchat uses **PoW (proof of work) as
+  the protocol requires** — minimum difficulty 1000/1000 per object,
+  non-negotiable. Each send (key request, key, message, acknowledgment)
+  costs tens of seconds to minutes of CPU **on both sides**, and
+  P2P relay among volunteer nodes adds more minutes. Add to that
+  program closed, computer off or network still syncing, and the
+  round-trip cycle of a question/answer easily exceeds hours.
+- **What to do while waiting**: leave the program open and connected;
+  follow the state via symbols (`…`, `✓✓`, `✓✓`) and *View log*.
+  If details are requested, send the contents of *View log* and *Network diagnostics*
+  (both have copy buttons).
 
-Abrindo a conversa do suporte aparece uma barra com **Enviar diagnóstico**
-(também na janela do Suporte): ela monta um relatório de triagem (versão,
-sistema, rede, contas, pendentes, config, PoW e log recente — **sem chaves
-privadas nem conteúdo de mensagens**) e mostra tudo numa prévia. O botão
-**Enviar ao suporte nasce desabilitado** e só libera marcando
-"Li o relatório acima e autorizo o envio ao suporte" — **nada é enviado sem
-esse consentimento explícito**; há também Copiar e Cancelar. O envio segue
-cifrado pelo fluxo normal de mensagens.
+Opening the support conversation shows a bar with **Send diagnostics**
+(also in the Support window): it builds a triage report (version,
+system, network, accounts, pending, config, PoW and recent log — **without private
+keys or message contents**) and shows everything in a preview. The
+**Send to support button is disabled by default** and only enables after checking
+"I have read the report above and authorize sending it to support" — **nothing is sent without
+that explicit consent**; there are also Copy and Cancel. Sending proceeds
+encrypted via the normal message flow.
 
-## 10. Testes
+## 10. Testing
 
 ```bash
 python3 -m pytest tests/ -q
 ```
 
-Cobrem ciclo de pubkey, envio com ACK, rede local entre dois clientes,
-assinaturas DER, PoW contra a função extraída do PyBitmessage, derivação de
-chans idêntica à referência, ECIES cruzado com o `pyelliptic` original,
-persistência de inventário, backup/restore e exclusões. Os testes aceleram
-o PoW; na rede real vale o 1000/1000. **Testes aumentam a confiança, não
-provam ausência de bugs** (ver seção 11).
+Covers pubkey cycle, sending with ACK, local network between two clients,
+DER signatures, PoW against the function extracted from PyBitmessage, chan derivation identical to the reference, ECIES cross-checked with the original `pyelliptic`,
+inventory persistence, backup/restore and deletions. Tests speed up
+PoW; on the real network 1000/1000 applies. **Tests increase confidence, they do not
+prove absence of bugs** (see section 11).
 
-## 11. Limites e riscos conhecidos
+## 11. Known Limitations and Risks
 
-Seja direto: este software **não é auditado** e foi escrito de forma
-iterativa. Ao usá-lo, assuma que:
+Be direct: this software **is not audited** and was written
+iteratively. By using it, assume that:
 
-- **Pode haver bugs** que perdem mensagens, duplicam envios, corrompem o
-  banco local ou travam a interface — e **vulnerabilidades** (incluindo
-  execução remota via dados de rede, como em todo cliente de rede complexo).
-- **Privacidade tem limites inerentes ao protocolo**: as mensagens são
-  cifradas, mas todos os nós retransmitem todos os objetos — tamanho,
-  horário e volume do seu tráfego são visíveis a quem observa a rede. Sem
-  proxy Tor/I2P, seu IP fica exposto aos pares. Não há *forward secrecy*:
-  se sua chave privada vazar no futuro, mensagens antigas gravadas podem
-  ser lidas.
-- **Anonimato não é garantido** por este programa; para ameaças sérias use
-  ferramentas auditadas e aprenda o modelo de ameaças antes.
-- **Chaves**: perda = perda permanente da identidade e do histórico
-  associado; vazamento = outra pessoa se passa por você e lê o que chegar.
-- **Rede**: lentidão de minutos a horas é normal (PoW + retransmissão);
-  "rápido" aqui não significa seguro.
-- **Compatibilidade**: o alvo é o protocolo Bitmessage v3/stream 1 e
-  objetos v1/v4/v5; endereços antigos (v2/v3) para contato são recusados.
+- **Bugs may exist** that lose messages, duplicate sends, corrupt the
+  local database or freeze the UI — and **vulnerabilities** (including
+  remote execution via network data, as with any complex network client).
+- **Privacy has inherent protocol limits**: messages are
+  encrypted, but all nodes relay all objects — size,
+  timing and volume of your traffic are visible to anyone observing the network. Without
+  Tor/I2P proxy, your IP is exposed to peers. There is no *forward secrecy*:
+  if your private key leaks in the future, old recorded messages can
+  be read.
+- **Anonymity is not guaranteed** by this program; for serious threats use
+  audited tools and learn the threat model first.
+- **Keys**: loss = permanent loss of identity and associated history
+  ; leak = someone else impersonates you and reads what arrives.
+- **Network**: slowness of minutes to hours is normal (PoW + relay);
+  "fast" here does not mean secure.
+- **Compatibility**: the target is the Bitmessage protocol v3/stream 1 and
+  objects v1/v4/v5; old addresses (v2/v3) for contacts are rejected.
 
-Se encontrar algo errado, relate com o conteúdo de *Ver log* e do
-*Diagnóstico de rede* (botões de copiar embutidos) — sem esses dados quase
-não há como investigar.
+If you find something wrong, report it with the contents of *View log* and
+*Network diagnostics* (built-in copy buttons) — without that data there is almost
+no way to investigate.
 
-## Licença
+## License
 
-**0BSD** (BSD Zero Clause) — a mais permissiva possível: pode usar, copiar,
-modificar e distribuir para qualquer fim, com ou sem custo, sem nem precisar
-manter crédito. Veja o arquivo `LICENSE` (o software é fornecido "como está",
-sem garantias).
+**0BSD** (BSD Zero Clause) — the most permissive possible: you may use, copy,
+modify and distribute for any purpose, with or without cost, without even needing
+to keep credit. See the `LICENSE` file (software is provided "as is",
+without warranties).
 
-## 12. Versionamento
+## 12. Versioning
 
-Rolling release no branch `rolling-release`: cada commit é uma versão, no
-formato `AAAA.MM.DD+r<commits>.g<sha>[.dirty]`, exibida em *Sobre* e enviada
-no user-agent do protocolo. Sem repositório git, mostra `0.0.0+unknown`.
+Rolling release on branch `rolling-release`: each commit is a version, in
+format `YYYY.MM.DD+r<commits>.g<sha>[.dirty]`, displayed in *About* and sent
+in the protocol user-agent. Without a git repository, it shows `0.0.0+unknown`.
 
-## Atualizações (via `git pull`)
+## Updates (via `git pull`)
 
-O programa atualiza pelo próprio git, sem baixar nada de outro lugar:
+The program updates via git itself, without downloading anything from elsewhere:
 
-- Ao abrir, ele confere em segundo plano se há commits novos no remoto e
-  **avisa com uma janela** quando houver, mostrando quantos são.
-- Menu ☰ → **Verificar atualizações** faz a mesma checagem na hora (avisa
-  se já está atualizado, se não há rede ou se a cópia não tem git).
-- Aceitando, ele executa o equivalente a `git pull --ff-only`: só avança se
-  for avanço direto — **nunca cria merge nem toca em alterações locais**; se
-  você mexeu no código, ele recusa e explica.
-- Aplicada a atualização, o programa **reinicia sozinho** na nova versão.
+- On launch, it checks in the background whether there are new commits on the remote and
+  **notifies with a window** when there are, showing how many.
+- Menu ☰ → **Check for updates** does the same check immediately (notifies
+  if already up to date, if there is no network or if the copy has no git).
+- If accepted, it runs the equivalent of `git pull --ff-only`: it only moves forward if
+  it is a fast-forward — **never creates a merge nor touches local changes**; if
+  you have modified code, it refuses and explains.
+- Once the update is applied, the program **restarts automatically** to the new version.
 
-Comandos equivalentes no terminal, a partir da pasta do projeto:
+Equivalent commands in the terminal, from the project folder:
 
 ```bash
-git pull --ff-only   # atualiza (só avanço direto)
-python3 run.py       # abre de novo
+git pull --ff-only   # update (only fast-forward)
+python3 run.py       # open again
 ```
 
-## Solução de problemas
+## Troubleshooting
 
-Ordem para investigar qualquer coisa (do mais comum ao mais raro):
+Order to investigate anything (from most common to rarest):
 
-- **Mensagem presa no relógio**: abra a conversa e leia a legenda do
-  contato. `aguardando chave pública…` = o outro lado ainda não respondeu
-  ao pedido de chave (ele precisa estar online e sincronizado; o pedido é
-  republicado sozinho a cada 10 min). `PoW: N` no rodapé com N > 0 = cálculo
-  em andamento, aguarde.
-- **Mensagem não chega ao destino**: confira se a sua saiu do relógio para
-  `✓✓` (publicada) e depois `✓✓` azul (entregue ao programa dele). Sem
-  `✓✓` azul, o problema está do seu lado (itens acima). Com `✓✓` azul e
-  nada lá, o problema está no outro cliente.
-- **Rede zerada (`Rede: 0/X`)**: sem internet, firewall bloqueando saída,
-  proxy errado ou DNS indisponível (as sementes DNS precisam resolver).
-  Teste alternar entre conexão direta e Tor.
-- **Relógio divergente**: o diagnóstico acusa `DIVERGENTE` quando seu
-  relógio difere mais de 1h — os nós derrubam a conexão. Acerte data e hora
-  do sistema.
-- **Primeira sincronização lenta**: dezenas de milhares de objetos;
-  acompanhe `Objetos` crescendo no rodapé. Não use *Apagar objetos* no meio
-  dela (recomeça os downloads).
-- **Programa fechou no meio do envio**: o PoW em curso é cancelado, mas a
-  mensagem pendente tenta de novo sozinha ao reabrir.
-- **Nada resolveu**: copie *Ver log* e *Diagnóstico de rede* e envie ao
-  suporte (menu ☰ → *Suporte…*), junto com o que você esperava que
-  acontecesse.
+- **Message stuck on clock**: open the conversation and read the contact legend.
+  `awaiting public key…` = the other side has not yet responded
+  to the key request (they need to be online and synced; the request is
+  republished automatically every 10 min). `PoW: N` in the footer with N > 0 = computation
+  in progress, wait.
+- **Message does not reach destination**: check if yours left the clock for
+  `✓✓` (published) and then `✓✓` blue (delivered to their program). Without
+  blue `✓✓`, the problem is on your side (items above). With blue `✓✓` and
+  nothing there, the problem is in the other client.
+- **Network zero (`Network: 0/X`)**: no internet, firewall blocking outbound,
+  wrong proxy or unavailable DNS (DNS seeds need to resolve).
+  Try switching between direct and Tor.
+- **Divergent clock**: diagnostics reports `DIVERGENT` when your
+  clock differs by more than 1h — nodes drop the connection. Fix system date and time.
+- **Slow first sync**: tens of thousands of objects;
+  watch `Objects` growing in the footer. Do not use *Delete objects* in the middle
+  of it (it restarts downloads).
+- **Program closed mid-send**: the PoW in progress is cancelled, but the
+  pending message retries on its own when reopened.
+- **Nothing worked**: copy *View log* and *Network diagnostics* and send to
+  support (menu ☰ → *Support…*), along with what you expected to
+  happen.
