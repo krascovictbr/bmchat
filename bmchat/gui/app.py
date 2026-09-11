@@ -1286,7 +1286,7 @@ class App(tk.Tk):
         self._typing_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
         self._typing_frame.grid_remove()
         tk.Label(
-            self._typing_frame, text="digitand", bg=CHAT_BG, fg=TEXT_GRAY, font=self.small_font
+            self._typing_frame, text="digitando", bg=CHAT_BG, fg=TEXT_GRAY, font=self.small_font
         ).pack(side="left", padx=(12, 2), pady=2)
         self._typing_dots_label = tk.Label(
             self._typing_frame, text="", bg=CHAT_BG, fg=TEXT_GRAY, font=self.small_font, width=4, anchor="w"
@@ -3534,7 +3534,7 @@ class App(tk.Tk):
                 return
             cx = width / 2
             cy = y + ROW_H / 2
-            oval = canvas.create_oval(cx - 10, cy - 10, cx + 10, cy + 10, fill="#419fd9", outline="", stipple="gray50")
+            oval = canvas.create_oval(cx - 10, cy - 10, cx + 10, cy + 10, fill=FAB_BG, outline="", stipple="gray50")
             canvas.tag_raise(oval)
 
             def expand(step=0):
