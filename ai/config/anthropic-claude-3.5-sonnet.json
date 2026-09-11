@@ -1,0 +1,29 @@
+{
+  "name": "Anthropic Claude 3.5 Sonnet",
+  "model": "claude-3-5-sonnet-20241022",
+  "provider": "anthropic",
+  "api_base": "https://api.anthropic.com",
+  "context_window": 200000,
+  "max_output_tokens": 8192,
+  "default_temperature": 0.2,
+  "top_p": 0.9,
+  "description": "Anthropic flagship for complex reasoning and long-context analysis — 200k context, excellent for security audits and cross-file review in bmchat. Knowledge cutoff 2024-04.",
+  "capabilities": ["long-context", "reasoning", "security-audit", "code-review", "tool-use"],
+  "recommended_use": "Best for security audits (crypto/protocol), long-context code review across bmchat/core+net+gui, and when you need careful, step-by-step reasoning with 200k window.",
+  "system_prompt": "You are Claude 3.5 Sonnet, an expert AI assistant specialized in optimizing bmchat — a Telegram-style P2P messenger over Bitmessage (Python 3.10+, Tkinter, zero servers). Protocol: PoW 1000/1000 min (ProcessPoolExecutor step 1<<20, StandardPoWStrategy/MockPoWStrategy), ECIES ECDH secp256k1+AES-256-CBC+HMAC-SHA256, ECDSA DER/SHA256 secp256k1 (never P-256), objects getpubkey/pubkey v4/msg v1+broadcast v5, streams default 1, MAGIC 0xE9BEB4D9 port 8444 ver 3, inventory 8000. Architecture: crypto/ecc-ecies-keys-pow/strategy, protocol/const-packets-objects-address-factory, net/proxy-peers-manager-peer-mock, core/database-client-events/repositories/models, gui/app-dialogs-theme-tooltip-notification-commands, util/base58-hashing-varint. 7 patterns: Strategy, Observer (EventEmitter), Command (+history), State (MessageState), Factory (ProtocolObjectFactory), Repository, DI (run.py:create_client). 554 tests >95% logic (unit/integration/stress, MockPoW/MockNet). Rules: NEVER break pytest -q, keep EN/PT-BR sync, ruff+ mypy --ignore-missing-imports 0, preserve PyBitmessage wire compat, security: WIF 32B 1<=int<ORDER 0o600, DB 0o600/dir 0o700, Pillow>=12.3.0 allowlist PNG/JPEG/GIF/BMP/WEBP, MAX_OBJECT_LENGTH+64, target // int, varint error, caps 50k/1k, rate-limit. Be precise, cite file:line, verify via pytest.",
+  "prompts": {
+    "performance": "Thorough performance audit of bmchat (200k context — read entire bmchat/core+gui+net). Identify hotspots: app.py _redraw_chat 161 lines, _build_widgets 196, manager.py snapshot 55 lines, _prune depth4, ecies decode. Propose: virtual scroll + cache, batch DB, FIFO eviction, DNS parallel, pow step. Include before/after metrics, keep 554 tests green.",
+    "security": "Deep security audit vs SECURITY.md (33 CVEs, 5 Pillow affected). Review: ecc point validation on-curve+low-S, ecies invalid-curve leak, keys WIF+chan nullprefix, pow float target, objects bounds+ntpb/eb, packets truncation+checksum, Image allowlist bypass, DB perms+lockfile PID, ack replay, Sybil peer flood. Use CWE, provide PoC inofensiva + fix with test. Never hallucinate CVE.",
+    "refactor": "Principled refactor using 7 patterns: show current violation (e.g., SQL in Client), propose Repository move, keep compat (client.db still works), add State transition, Factory validation, Observer bridge, DI injection. Document fallback (objects.*) and compat. No new deps, ruff/mypy clean.",
+    "testing": "Design test plan for >95% logic: enumerate missing branches (crypto encrypted_db except:pass, gui virtual scroll, net proxy DNS leak, manager known_hashes 200k). Add unit+integration+stress with MockPoW/MockNet/FakeApp, tempdir, deterministic, <30s. Show coverage report include.",
+    "documentation": "Write precise EN/PT-BR docs: keep branch.md history (add section at end), update ARCHITECTURE with new AI Integration, SECURITY with AI audit note, README with ai/ usage. Keep TOC, badges, CalVer, 0BSD, no hallucination.",
+    "code_review": "Long-context review: read 3 files + their callers, check wire compat, test coverage, EN/PT-BR, ruff/mypy, caps, perms, edge (self-chat strict from==self AND to==self, v2/v3 unsupported, .onion direct block). Cite file:line, be objective, disagree if needed."
+  },
+  "bmchat_specific": {
+    "bottlenecks": ["200k window lets you read all 28 bmchat files at once — use it", "gui/app.py 4649 lines 14% coverage needs FakeApp helpers", "manager.py 1045 lines 77% — resolve/maintenance via mock", "crypto 100% but ecies curve check critical"],
+    "rules": ["Cite file:line", "Verify via pytest before claiming", "Never invent CVE", "Keep EN/PT-BR", "Preserve wire compat", "554 tests contract"]
+  },
+  "version": "1.0.0",
+  "last_updated": "2026-09-10",
+  "maintained_by": "bmchat ai/ — branch feat/ai-llm-config-20260910"
+}

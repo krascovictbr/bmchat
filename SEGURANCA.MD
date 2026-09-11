@@ -1,3 +1,9 @@
+## 🤖 Auditoria com AI
+
+> Veja `ai/README.pt-BR.md` § LLMs Suportados e `ai/prompts/security-audit.md` + `ai/skills/bmchat-optimizer.md`.
+
+AI pode ajudar a auditar o bmchat: 9 configs de LLM (`ai/config/` alias `ai/llms/` — OpenAI, Anthropic, Google, Meta, Mistral, DeepSeek, Cohere) cada uma com `system_prompt` + `prompts.security` (33 CVEs, W1). O prompt ensina verificar via `grep` + `pip-audit` + NVD API sem alucinar, e a skill lista checklists `arquivo:linha`. Ainda exige `pytest -q` (554 testes) + `flake8` + `mypy` + `pip-audit`.
+
 ## CVE-2024-23342
 - ID: CVE-2024-23342
 - Descrição: Ataque de temporização Minerva contra a curva P-256 no pacote ecdsa via `SigningKey.sign_digest()`; a medição do tempo de assinatura vaza o nonce interno e pode revelar a chave privada. Verificação de assinatura não é afetada; sem correção planejada (canais laterais fora do escopo do projeto).

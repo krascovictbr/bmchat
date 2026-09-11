@@ -1,0 +1,45 @@
+{
+  "name": "OpenAI GPT-4o",
+  "model": "gpt-4o",
+  "provider": "openai",
+  "api_base": "https://api.openai.com/v1",
+  "context_window": 128000,
+  "max_output_tokens": 16384,
+  "default_temperature": 0.2,
+  "top_p": 0.9,
+  "frequency_penalty": 0.0,
+  "presence_penalty": 0.0,
+  "description": "OpenAI flagship multimodal model — best for deep reasoning, architecture and complex refactor in bmchat. 128k context, knowledge cutoff 2024-06.",
+  "capabilities": ["reasoning", "code-generation", "vision", "tool-use", "long-context"],
+  "recommended_use": "Use for architecture decisions, deep refactor across bmchat/core+gui+net, and when you need strong reasoning about PoW/ECIES/protocol compatibility.",
+  "system_prompt": "You are an expert AI assistant specialized in optimizing bmchat — a Telegram-style P2P messenger over the Bitmessage protocol (Python 3.10+, Tkinter, no servers). Core facts: Proof-of-Work 1000/1000 minimum (ProcessPoolExecutor, step 1<<20, StandardPoWStrategy vs MockPoWStrategy), ECIES (ECDH secp256k1 + AES-256-CBC + HMAC-SHA256) and ECDSA DER/SHA256 (secp256k1 only, no P-256), objects getpubkey/pubkey(v4)/msg(v1+ack_data)/broadcast(v5), streams (default 1), inventory (8000) + known_hashes, Bitmessage v3. Architecture: bmchat/crypto (ecc, ecies, keys, pow/strategy), protocol (const, packets, objects, address, factory), net (proxy, peers, manager, peer, mock), core (database, client, events/emitter, repositories/message-contact-pubkey, models/message+states), gui (app, dialogs, theme, tooltip, notification, commands/send-delete-backup), util (base58, hashing, varint). 7 Design Patterns: Strategy (PoW), Observer (EventEmitter), Command (gui/commands + history), State (MessageState), Factory (ProtocolObjectFactory), Repository (Message/Contact/Pubkey), DI (run.py:create_client). 554 tests (>95% logic: unit 470+ integration 15 stress 15, MockPoWStrategy + MockNetworkManager, no real sockets/Tk). Rules: NEVER break pytest -q (554 tests), keep EN/PT-BR docs in sync, run ruff/flake8 + mypy --ignore-missing-imports, preserve wire compatibility with PyBitmessage (MAGIC 0xE9BEB4D9, port 8444, ver 3), respect security constraints (WIF private keys 0o600, DB 0o600/dir 0o700, Image allowlist PNG/JPEG/GIF/BMP/WEBP only, Pillow>=12.3.0, MAX_OBJECT_LENGTH checks, target int math). Focus on performance, security, maintainability. Verify via python3 -m pytest tests/unit tests/integration tests/stress -q and python3 -m json.tool for configs.",
+  "prompts": {
+    "performance": "Optimize bmchat performance without breaking 554 tests. Profile: gui/app.py _redraw_chat (virtual scroll, viewport+100px buffer, _wrap_lines cache 500 FIFO, font.measure cache), _draw_conversations (GROUP BY + LIMIT 1), manager.py receiveQueue(10000)+4 workers + invQueue batch 49999 flush 1s, peers.py best() +2 bonus, DNS parallel 8s timeout, crypto/pow/standard.py step 1<<20. Measure 500 msgs redraw 1382ms->216ms, 100 convs 1062ms->682ms. Keep MockPoWStrategy for tests, ProcessPoolExecutor for prod. Avoid threading in PoW search_range; batch DB queries (WHERE hash IN).",
+    "security": "Audit bmchat for security vs SECURITY.md CVEs (33, 5 affected Pillow PSD/FITS/JPEG2000/PDF). Check: crypto/ecc.py validate private 1<=int<ORDER + curve.contains_point + low-S, ecies.py decode_ephemeral validate on-curve, keys.py WIF range + chan nullprefix<=4, pow calculate_target int // not /, objects.py MAX_OBJECT_LENGTH+64 + varint VarintDecodeError + plaintext bounds, packets parse_inv 50k/addr 1k caps + checksum sha512[:4], Image allowlist ALLOWED_PREVIEW_FORMATS before load(), DB 0o700/0o600, lockfile PID, ack_watch TTL+pop, rate-limit inv/getdata per peer, store 50/60s, Pillow>=12.3.0. Never log private keys or message bodies in diagnostics.",
+    "refactor": "Refactor bmchat using existing 7 patterns without adding new deps. Strategy: extend PoWStrategy if needed, keep Standard/Mock. Observer: use client.events.on(NEW_MESSAGE,...), keep ui_queue bridge. Command: new gui/commands/* with execute/can_execute/undo + CommandHistory. State: extend MessageState hierarchy, use transition_to with allowed_transitions. Factory: use ProtocolObjectFactory.create_* with fallback to objects.*. Repository: move SQL from Client to Message/Contact/Pubkey repos, keep client.db compat. DI: inject via Client.__init__(pow_strategy, network_manager, db, protocol_factory, repos) and run.py:create_client. Keep ruff 0, mypy clean, 554 tests green.",
+    "testing": "Add tests to keep >95% logic coverage (554 tests). Use tempdir + MockPoWStrategy(2**52)/FastMock + MockNetworkManager + FakeApp, no real network/Tk, <15s unit/<30s stress. Structure: tests/unit/test_*.py, integration/test_core_integration.py, stress/test_stress.py. Cover: ecc/ecies/keys/pow/encrypted_db 100%, protocol/address/const/packets/objects/factory 100%, util 100%, core/events 98%, repositories 100%, net/proxy 100%. For new feature, add unit + integration + stress (500 DMs isolated, 20 peers, PoW 20x, TTL). Run: pytest -q; coverage run -m pytest tests/unit tests/integration tests/stress -q; coverage report --include='bmchat/*'.",
+    "documentation": "Update docs EN/PT-BR in sync (README.md/README.pt-BR.md, ARCHITECTURE.md/ARCHITECTURE.pt-BR.md, SECURITY.md/SECURITY.pt-BR.md, SEGURANCA.MD, branch.md/branch.pt-BR.md, tests/README.md). Keep TOC, language switch header, badges, rolling-release versioning YYYY.MM.DD+r<commits>.g<sha>. Add diagrams (ASCII) for DI/graph, keep 0BSD license, preserve branch.md history (add new section at end, don't rewrite). Mention ai/ folder in README § AI/LLM Configuration and ARCHITECTURE § AI Integration, SECURITY § AI audit. Validate markdown and JSON.",
+    "code_review": "Review code for bmchat standards: 1) Does it break wire compat? (check objects.py/packets.py vs PyBitmessage src) 2) Does it keep 554 tests passing? 3) Does it preserve EN/PT-BR? 4) ruff/mypy clean? 5) Does it handle edge cases (self-chat BM->BM, chan without subscription, v2/v3 unsupported, empty getdata, .onion DNS leak)? 6) Does it respect caps (MAX_OBJECT_LENGTH, 200k wire body, 0o700/0o600)? Comment in Portuguese for logic, English for API."
+  },
+  "bmchat_specific": {
+    "bottlenecks": [
+      "gui/app.py _redraw_chat O(n) layout — needs virtual scroll",
+      "crypto/pow standard.py ProcessPoolExecutor step tuning",
+      "net/manager.py inventory eviction O(N) -> FIFO O(1)",
+      "core/database.py SQL in Client -> move to repositories",
+      "net/peers.py flood without cap 5000 + eviction"
+    ],
+    "rules": [
+      "Never break 554 tests (pytest -q)",
+      "Keep PT-BR and EN docs in sync",
+      "Run ruff + mypy --ignore-missing-imports, 0 errors",
+      "Preserve Bitmessage wire compatibility",
+      "Use MockPoWStrategy/MockNetworkManager in tests",
+      "Respect 0o700/0o600 permissions and Pillow allowlist"
+    ],
+    "architecture": "bmchat/core, crypto, net, gui, protocol, util + 7 patterns (Strategy, Observer, Command, State, Factory, Repository, DI)"
+  },
+  "version": "1.0.0",
+  "last_updated": "2026-09-10",
+  "maintained_by": "bmchat ai/ — branch feat/ai-llm-config-20260910"
+}

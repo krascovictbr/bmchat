@@ -1470,4 +1470,30 @@ Merge `refactor/design-patterns + test/bateria-95-20260910` trouxe 4452 erros fl
 - `ruff format` + `autopep8` + 22 `noqa C901`/`E402`/`mypy` em 55 arquivos; bateria 554 testes `>95%` agora `python -m flake8` 0 em ambos comandos e `mypy` limpo.
 
 ## Verificação
-- Commit `00b76bc` + merge `b5566c2` na raiz; `554 passed`.
+- Commit `00b76bc` + merge `b5566c2` na raiz; `554 passed`.---
+# AI / LLM Configuration — branch feat/ai-llm-config-20260910 (2026-09-10)
+
+Branch created from `rolling-release@139feea` + `feat` docs, no Python code change (only docs/configs). Purpose: dedicated `ai/` hub for any LLM to optimize bmchat without hallucination.
+
+## Added
+- `ai/` folder: `ai/README.md` (EN) / `ai/README.pt-BR.md`, `ai/.gitkeep`, `ai/config/` (alias `ai/llms/` symlink) with 9 JSON configs for 7 families: OpenAI `gpt-4o`/`gpt-4o-mini` (128k, 0.20), Anthropic `claude-3-5-sonnet` (200k, 0.20), Google `gemini-1.5-pro` (2M) / `flash` (1M) (0.25), Meta `llama-3.1` 405B/70B/8B (128k, 0.30, self-hosted Ollama/vLLM), Mistral `mistral-large` (128k, 0.25, PT-BR), DeepSeek `deepseek-v3` V3/R1 (128k, 0.20), Cohere `command-r-plus` (128k, 0.30, RAG). Each JSON: `name/model/provider/context_window/max_output_tokens/temperature/top_p/system_prompt` (bmchat-tuned: P2P Bitmessage, PoW 1000/1000, ECIES secp256k1, 7 patterns, 554 tests) + `prompts(performance/security/refactor/testing/docs)` + `recommended_use` + `bmchat_specific` (bottlenecks/rules/arch) + `version/last_updated`. All `python3 -m json.tool` valid.
+- `ai/prompts/` 6 markdowns: `performance.md` (virtual scroll, receiveQueue 10000+4, FIFO, metrics 1382→216ms), `security-audit.md` (33 CVEs + W1, NVD API, CWE, grep checklist), `refactor.md` (7 patterns with Problem/Solution/Benefit + DI graph), `testing.md` (554 >95% unit/integration/stress MockPoW/MockNet/FakeApp), `documentation.md` (EN/PT-BR sync, branch.md append), `code-review.md` (8 checklist sections + file:line + hypotheses).
+- `ai/skills/bmchat-optimizer.md` with frontmatter `name: bmchat-optimizer` (OpenCode auto-discover): What is bmchat (P2P, PoW, ECIES/ECDSA, streams, inventory, no servers, 0o700/0o600, allowlist), Architecture (crypto/protocol/net/core/gui/util + 7 patterns diagram), Bottlenecks table (file:line + before/after), Rules (554 tests, PT-BR/EN, ruff/mypy, wire compat, temporaries /tmp/opencode/).
+
+## Changed
+- `README.md` + `README.pt-BR.md`: TOC + § 🤖 AI / LLM Configuration (usage `cat ai/config/*.json | jq`, skill, 554 tests) + Code Structure tree updated `tests: 209→554` + `ai/` added.
+- `ARCHITECTURE.md` + `ARCHITECTURE.pt-BR.md`: § 🤖 AI Integration (9 configs + 6 prompts + skill + DI graph, 554 tests), Tests line `209→554` + `mypy` note.
+- `SECURITY.md` + `SECURITY.pt-BR.md` + `SEGURANCA.MD`: § 🤖 AI-Assisted Audit / Auditoria com AI (9 LLMs, security-audit prompt, NVD API, skill checklist, still requires pytest/flake8/mypy/pip-audit).
+- `branch.md` + `branch.pt-BR.md`: this section (short, history preserved).
+
+## Verification
+- `for f in ai/config/*.json; do python3 -m json.tool "$f" > /dev/null && echo "$f OK"; done` — 9 OK (also via `ai/llms/` symlink)
+- `head -20 ai/skills/bmchat-optimizer.md` — frontmatter `name: bmchat-optimizer` + description
+- `ls -R ai/` — `ai/.gitkeep` + `ai/config/` 9 JSON + `ai/llms` → `config` + `ai/prompts/` 6 md + `ai/skills/` 1 md = 18 files
+- `grep -c "AI / LLM" README.md README.pt-BR.md ARCHITECTURE.md ARCHITECTURE.pt-BR.md` — 1 each; `grep -c "AI" SECURITY.md SECURITY.pt-BR.md` — 1 each + `SEGURANCA.MD`
+- `python3 -m pytest tests/unit tests/integration tests/stress -q` — 554 passed expected (no Python touched, docs only) — run on CI before merge
+- `py_compile` not needed (no .py change), `flake8`/`mypy` still 0 on existing 55 files, markdown links verified
+
+## Notes
+- No new deps, no `requirements.txt` change, no wire break, 0BSD kept, EN/PT-BR synced, `branch.md` history never rewritten (append only), temporaries `/tmp/opencode/` respected, `ai/.gitkeep` kept empty.
+- Merge: `git checkout rolling-release && git merge --no-ff feat/ai-llm-config-20260910 && python3 -m pytest tests/unit tests/integration tests/stress -q`

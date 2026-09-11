@@ -1470,3 +1470,30 @@ Merge `refactor/design-patterns + test/bateria-95-20260910` trouxe 4452 erros fl
 
 ## Verificação
 - Commit `00b76bc` + merge `b5566c2` na raiz; `554 passed`.
+---
+# Configuração AI / LLM — branch feat/ai-llm-config-20260910 (2026-09-10)
+
+Branch criado a partir de `rolling-release@139feea` + docs de feat, sem mudança em código Python (só docs/configs). Propósito: hub dedicado `ai/` para qualquer LLM otimizar o bmchat sem alucinação.
+
+## Adicionado
+- Pasta `ai/`: `ai/README.md` (EN) / `ai/README.pt-BR.md`, `ai/.gitkeep`, `ai/config/` (alias `ai/llms/` symlink) com 9 JSONs para 7 famílias: OpenAI `gpt-4o`/`gpt-4o-mini` (128k, 0,20), Anthropic `claude-3-5-sonnet` (200k, 0,20), Google `gemini-1.5-pro` (2M) / `flash` (1M) (0,25), Meta `llama-3.1` 405B/70B/8B (128k, 0,30, self-hosted Ollama/vLLM), Mistral `mistral-large` (128k, 0,25, PT-BR), DeepSeek `deepseek-v3` V3/R1 (128k, 0,20), Cohere `command-r-plus` (128k, 0,30, RAG). Cada JSON: `name/model/provider/context_window/max_output_tokens/temperature/top_p/system_prompt` (ajustado bmchat: P2P Bitmessage, PoW 1000/1000, ECIES secp256k1, 7 patterns, 554 testes) + `prompts(performance/security/refactor/testing/docs)` + `recommended_use` + `bmchat_specific` (gargalos/regras/arq) + `version/last_updated`. Todos `python3 -m json.tool` válidos.
+- `ai/prompts/` 6 markdowns: `performance.md` (scroll virtual, receiveQueue 10000+4, FIFO, métricas 1382→216ms), `security-audit.md` (33 CVEs + W1, NVD API, CWE, checklist grep), `refactor.md` (7 patterns com Problema/Solução/Benefício + grafo DI), `testing.md` (554 >95% unit/integration/stress MockPoW/MockNet/FakeApp), `documentation.md` (sinc EN/PT-BR, append branch.md), `code-review.md` (8 seções checklist + arquivo:linha + hipóteses).
+- `ai/skills/bmchat-optimizer.md` com frontmatter `name: bmchat-optimizer` (OpenCode auto-descobre): O que é bmchat (P2P, PoW, ECIES/ECDSA, streams, inventory, sem servidores, 0o700/0o600, allowlist), Arquitetura (crypto/protocol/net/core/gui/util + 7 patterns diagrama), Tabela de gargalos (arquivo:linha + antes/depois), Regras (554 testes, PT-BR/EN, ruff/mypy, compat wire, temporários /tmp/opencode/).
+
+## Alterado
+- `README.pt-BR.md` + `README.md`: Índice + § 🤖 Configuração AI / LLM (uso `cat ai/config/*.json | jq`, skill, 554 testes) + árvore Estrutura do código atualizada `tests: 209→554` + `ai/` adicionado.
+- `ARCHITECTURE.pt-BR.md` + `ARCHITECTURE.md`: § 🤖 Integração AI (9 configs + 6 prompts + skill + grafo DI, 554 testes), linha Testes `209→554` + nota `mypy`.
+- `SECURITY.pt-BR.md` + `SECURITY.md` + `SEGURANCA.MD`: § 🤖 Auditoria com AI / AI-Assisted Audit (9 LLMs, prompt security-audit, NVD API, checklist skill, ainda exige pytest/flake8/mypy/pip-audit).
+- `branch.pt-BR.md` + `branch.md`: esta seção (curta, histórico preservado).
+
+## Verificação
+- `for f in ai/config/*.json; do python3 -m json.tool "$f" > /dev/null && echo "$f OK"; done` — 9 OK (também via `ai/llms/` symlink)
+- `head -20 ai/skills/bmchat-optimizer.md` — frontmatter `name: bmchat-optimizer` + description
+- `ls -R ai/` — `ai/.gitkeep` + `ai/config/` 9 JSON + `ai/llms` → `config` + `ai/prompts/` 6 md + `ai/skills/` 1 md = 18 arquivos
+- `grep -c "AI / LLM" README.pt-BR.md` — 1; `grep -c "AI" SECURITY.pt-BR.md` — 1 + `SEGURANCA.MD`
+- `python3 -m pytest tests/unit tests/integration tests/stress -q` — 554 passou esperado (nenhum Python tocado, só docs) — rodar no CI antes do merge
+- `py_compile` desnecessário (sem mudança .py), `flake8`/`mypy` ainda 0 nos 55 arquivos existentes, links markdown verificados
+
+## Notas
+- Sem novas deps, sem `requirements.txt`, sem quebra wire, 0BSD mantido, EN/PT-BR sincronizados, histórico `branch.md` nunca reescrito (só append), temporários `/tmp/opencode/` respeitados, `ai/.gitkeep` vazio mantido.
+- Merge: `git checkout rolling-release && git merge --no-ff feat/ai-llm-config-20260910 && python3 -m pytest tests/unit tests/integration tests/stress -q`

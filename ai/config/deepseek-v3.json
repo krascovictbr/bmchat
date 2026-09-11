@@ -1,0 +1,34 @@
+{
+  "name": "DeepSeek V3 / R1",
+  "model": "deepseek-chat",
+  "provider": "deepseek",
+  "api_base": "https://api.deepseek.com",
+  "variants": ["deepseek-chat (V3)", "deepseek-reasoner (R1)"],
+  "context_window": 128000,
+  "max_output_tokens": 8192,
+  "default_temperature": 0.2,
+  "top_p": 0.9,
+  "description": "DeepSeek cost-efficient code specialist — V3 chat + R1 reasoner, 128k context, strong Python/code generation, cheapest for bmchat heavy code tasks. Knowledge cutoff 2024-07.",
+  "capabilities": ["code-specialist", "reasoning-R1", "cost-efficient", "python-expert"],
+  "recommended_use": "Heavy code generation, cost-sensitive bmchat optimization, Python-specific refactor. Use R1 for reasoning, V3 for generation.",
+  "system_prompt": "You are DeepSeek V3/R1, expert AI for bmchat — Telegram-style P2P Bitmessage messenger (Python 3.10+, Tkinter, no servers). PoW 1000/1000 min (ProcessPoolExecutor step 1<<20, StandardPoWStrategy vs MockPoWStrategy), ECIES ECDH secp256k1+AES-256-CBC+HMAC, ECDSA DER/SHA256 secp256k1 only, objects getpubkey/pubkey(v4)/msg(v1+ack_data)/broadcast(v5), streams default 1, MAGIC 0xE9BEB4D9 port 8444 ver3, inventory 8000. Architecture: crypto/ecc-ecies-keys-pow/strategy, protocol/const-packets-objects-address-factory, net/proxy-peers-manager-peer-mock, core/database-client-events-repositories-models, gui/app-dialogs-theme-tooltip-notification-commands, util/base58-hashing-varint. 7 patterns: Strategy, Observer(EventEmitter), Command(+history), State(MessageState), Factory(ProtocolObjectFactory), Repository, DI(run.py:create_client). 554 tests >95% logic (unit 470+ integration15 stress15, MockPoW 2**52, MockNet, FakeApp). Rules: NEVER break pytest -q, keep EN/PT-BR sync, ruff/mypy --ignore-missing-imports 0, preserve wire compat PyBitmessage, security: WIF 32B 1<=int<ORDER 0o600, DB 0o600/dir 0o700, Pillow>=12.3.0 allowlist PNG/JPEG/GIF/BMP/WEBP, MAX_OBJECT_LENGTH+64, target // int, varint VarintDecodeError, caps 50k/1k, rate-limit 50/60s, lockfile PID. Be concise, cite file:line, verify via pytest. Use R1 chain-of-thought for complex bugs, V3 for generation.",
+  "prompts": {
+    "performance": "DeepSeek code-heavy optimization: read bmchat/crypto/pow/standard.py + gui/app.py + net/manager.py, generate Python diff for virtual scroll, FIFO O(1), batch queries, step tuning. Show before/after metrics, keep 554 tests, use MockPoW for tests.",
+    "security": "Code-focused audit: grep for vulnerable patterns (float target, missing curve check, WIF 0, bounds, caps, allowlist, perms). Map to CWE, provide Python fix diff + test using MockPoW/MockNet, verify Pillow allowlist before Image.open().load().",
+    "refactor": "Pythonic refactor using 7 patterns: generate diff that moves SQL from Client to repositories, keeps client.db compat, adds State transition, Factory validation. Keep legacy wrappers (PowExecutor, ui_queue bridge). ruff/mypy clean, no new deps.",
+    "testing": "Generate Python tests: unit/integration/stress using pytest, tempdir, MockPoWStrategy, MockNetworkManager, FakeApp, no real sockets/Tk. Cover edge: self-chat strict, v3 unsupported, chan without sub, empty getdata, .onion leak. Show coverage report.",
+    "documentation": "Generate bilingual docs: update README/ARCHITECTURE/SECURITY/branch.md EN/PT-BR, keep TOC, badges, CalVer, ai/ section, preserve history. Use Python to validate JSON/markdown.",
+    "code_review": "Code-centric review: check Python idioms, wire compat, 554 tests, EN/PT-BR, ruff/mypy, caps/perms, edge cases. Provide diff suggestions, cite file:line, objective."
+  },
+  "bmchat_specific": {
+    "bottlenecks": ["DeepSeek cheapest: ~$0.14/M input vs GPT-4o $5/M — use for bulk code gen", "R1 reasoner best for bug hunt, V3 for generation", "Python expert — leverage for crypto/pow/protocol"],
+    "rules": ["Generate valid Python diff", "Cite file:line", "554 tests", "EN/PT-BR", "Verify JSON"]
+  },
+  "reasoning_mode": {
+    "R1": "Use 'deepseek-reasoner' for complex debugging (self-chat isolation, PoW hang, peer rotation)",
+    "V3": "Use 'deepseek-chat' for generation (new feature, docs, tests)"
+  },
+  "version": "1.0.0",
+  "last_updated": "2026-09-10",
+  "maintained_by": "bmchat ai/ — branch feat/ai-llm-config-20260910"
+}

@@ -256,9 +256,27 @@ ARCHITECTURE.md        # este arquivo
 ## Compatibilidade e Testes
 
 - **Nenhuma API quebrada:** `from bmchat.crypto.pow import PowExecutor, calculate_target` continua; `Client(data_dir)` continua; `App(data_dir)` continua
-- **Testes:** `python3 -m pytest tests/ -q` — 209 testes coletados; suíte principal (`test_integration`, `test_interop`) 19 passed
-- **PEP 8:** `ruff` / `flake8` sem erros novos; type hints em novos módulos
+- **Testes:** `python3 -m pytest tests/unit tests/integration tests/stress -q` — **554 testes** (>95% lógica: unit 470+ integration 15 stress 15) — `python3 -m pytest tests/ -q` continua funcionando
+- **PEP 8:** `ruff` / `flake8` sem erros novos; type hints em novos módulos; `mypy --ignore-missing-imports` limpo
 - **Performance:** `MockPoWStrategy` acelera testes; `StandardPoWStrategy` mantém mesma performance (step 1<<20, ProcessPoolExecutor)
+
+## 🤖 Integração AI
+
+> Veja [`ai/README.pt-BR.md`](ai/README.pt-BR.md) e [`ai/skills/bmchat-optimizer.md`](ai/skills/bmchat-optimizer.md) (branch `feat/ai-llm-config-20260910`).
+
+O bmchat agora inclui pasta `ai/` dedicada para qualquer LLM raciocinar sobre a arquitetura sem alucinar:
+
+- **9 configs** (`ai/config/` alias `ai/llms/`) para 7 famílias: OpenAI GPT-4o/mini (128k), Anthropic Claude 3.5 Sonnet (200k), Google Gemini 1.5 Pro (2M)/Flash (1M), Meta Llama 3.1 (128k self-hosted), Mistral Large 2 (128k PT-BR), DeepSeek V3/R1 (128k) e Cohere Command R+ (128k). Cada JSON tem `model/provider/context_window/temperature/system_prompt/prompts` ajustados para bmchat (PoW/ECIES/streams/inventory/554 testes).
+- **6 prompts** (`ai/prompts/`): `performance.md` (scroll virtual, receiveQueue 10000+4 workers), `security-audit.md` (33 CVEs + W1), `refactor.md` (7 patterns), `testing.md` (>95% lógica), `documentation.md` (EN/PT-BR), `code-review.md` (checklist arquivo:linha).
+- **Skill** `ai/skills/bmchat-optimizer.md` (frontmatter `name: bmchat-optimizer`) — ensina qualquer agente: o que é bmchat (P2P Bitmessage, PoW 1000/1000, ECIES/ECDSA, streams, sem servidores), arquitetura acima, gargalos conhecidos (ex.: `gui/app.py:_redraw_chat` 161 linhas, `manager.py` filas, `peers.py` flood) e regras (554 testes, EN/PT-BR, ruff/mypy, compat wire, 0o700/0o600, allowlist Pillow).
+
+**Grafo DI com AI:** agentes devem usar `run.py:create_client()` para injetar `MockPoWStrategy`/`MockNetworkManager`/`ProtocolObjectFactory`/`MessageRepository` etc., mantendo compat `client.db`. O bridge Observer (`ui_queue` ↔ `EventEmitter`) e o wrapper legado `PowExecutor` permanecem.
+
+```bash
+cat ai/config/openai-gpt4o.json | jq .system_prompt
+cat ai/prompts/refactor.md
+for f in ai/config/*.json; do python3 -m json.tool "$f" > /dev/null && echo "$f OK"; done
+```
 
 ## Próximos Passos
 

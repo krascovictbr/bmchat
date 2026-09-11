@@ -35,6 +35,7 @@ to exchange messages, with a Tkinter graphical interface.
 11. [Known Limitations and Risks](#11-known-limitations-and-risks)
 12. [Versioning](#12-versioning)
 - [Troubleshooting](#troubleshooting)
+- [🤖 AI / LLM Configuration](#-ai--llm-configuration)
 
 ## 1. What is bmchat
 
@@ -235,7 +236,11 @@ bmchat/
       send_message.py, delete_contact.py, backup_keys.py
 run.py                   # DI: create_client() builds the graph
 ARCHITECTURE.md          # diagram and pattern description
-tests/                   # 209 tests (integration, network, interop)
+tests/                   # 554 tests (>95% logic: unit 470+ integration 15 stress 15)
+ai/                      # 🤖 AI/LLM configs, prompts, skill (see ai/README.md)
+  config/ (llms/)        # 9 JSON for OpenAI/Anthropic/Google/Meta/Mistral/DeepSeek/Cohere
+  prompts/               # performance, security-audit, refactor, testing, docs, code-review
+  skills/bmchat-optimizer.md  # OpenCode skill with bmchat context & guardrails
 ```
 
 ## Support
@@ -311,6 +316,43 @@ iteratively. By using it, assume that:
 If you find something wrong, report it with the contents of *View log* and
 *Network diagnostics* (built-in copy buttons) — without that data there is almost
 no way to investigate.
+
+## 🤖 AI / LLM Configuration
+
+> See [`ai/README.md`](ai/README.md) for the full hub. Branch `feat/ai-llm-config-20260910`.
+
+bmchat ships a dedicated `ai/` folder to make any LLM productive on this codebase:
+
+```
+ai/
+├── config/ (alias llms/) — 9 JSON configs for 7 LLM families
+│   ├── openai-gpt4o.json / openai-gpt4o-mini.json
+│   ├── anthropic-claude-3.5-sonnet.json (200k)
+│   ├── google-gemini-1.5-pro.json (2M) / flash.json (1M)
+│   ├── meta-llama-3.1.json (128k, self-hosted)
+│   ├── mistral-large.json (128k, PT-BR native)
+│   ├── deepseek-v3.json (128k, cost-efficient)
+│   └── cohere-command-r-plus.json (128k, RAG/tool-use)
+├── prompts/ — performance, security-audit, refactor, testing, documentation, code-review
+└── skills/bmchat-optimizer.md — OpenCode skill (frontmatter) with bmchat context, 7 patterns, bottlenecks, rules
+```
+
+Each config (`ai/config/*.json`) is valid JSON (YAML-compatible) with `name/model/provider/context_window/temperature/top_p/system_prompt/prompts(performance/security/refactor/testing/docs)` tuned for bmchat (PoW ECIES secp256k1, streams, inventory, 554 tests). Example:
+
+```bash
+cat ai/config/anthropic-claude-3.5-sonnet.json | jq .system_prompt
+cat ai/llms/openai-gpt4o.json | jq .prompts.performance
+cat ai/prompts/security-audit.md   # copy-paste ready
+```
+
+The skill `ai/skills/bmchat-optimizer.md` teaches any agent: what is bmchat (P2P Bitmessage, no servers, PoW 1000/1000, ECIES/ECDSA, streams), architecture (`bmchat/core,crypto,net,gui,protocol,util` + Strategy/Observer/Command/State/Factory/Repository/DI), known bottlenecks (e.g., `gui/app.py:_redraw_chat` virtual scroll, `crypto/pow/standard.py` step 1<<20, `net/manager.py` receiveQueue 10000+4 workers) and rules (never break 554 tests, keep EN/PT-BR sync, ruff/mypy 0, wire compat, 0o700/0o600, Pillow allowlist). For OpenCode the frontmatter makes it auto-discoverable.
+
+```bash
+for f in ai/config/*.json; do python3 -m json.tool "$f" > /dev/null && echo "$f OK"; done
+python3 -m pytest tests/unit tests/integration tests/stress -q  # 554 passed >95% logic
+```
+
+See also `ARCHITECTURE.md` § AI Integration and `SECURITY.md` § AI audit.
 
 ## License
 

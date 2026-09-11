@@ -1,0 +1,29 @@
+{
+  "name": "OpenAI GPT-4o mini",
+  "model": "gpt-4o-mini",
+  "provider": "openai",
+  "api_base": "https://api.openai.com/v1",
+  "context_window": 128000,
+  "max_output_tokens": 16384,
+  "default_temperature": 0.2,
+  "top_p": 0.9,
+  "description": "Cost-efficient OpenAI model — balanced speed/cost for docs, tests and fast iteration in bmchat. Same 128k context as GPT-4o, faster and cheaper.",
+  "capabilities": ["code-generation", "docs", "testing", "fast-iteration"],
+  "recommended_use": "Use for documentation updates, test generation, quick fixes and when budget/speed matters over deep reasoning.",
+  "system_prompt": "You are an expert AI assistant specialized in optimizing bmchat — a Telegram-style P2P messenger over the Bitmessage protocol (Python 3.10+, Tkinter, no servers). Core facts: Proof-of-Work 1000/1000 minimum (ProcessPoolExecutor, step 1<<20, StandardPoWStrategy vs MockPoWStrategy), ECIES (ECDH secp256k1 + AES-256-CBC + HMAC-SHA256) and ECDSA DER/SHA256 (secp256k1 only), objects getpubkey/pubkey(v4)/msg(v1+ack_data)/broadcast(v5), streams default 1, inventory 8000 + known_hashes, v3. Architecture: bmchat/crypto (ecc, ecies, keys, pow), protocol (const, packets, objects, address, factory), net (proxy, peers, manager, peer, mock), core (database, client, events, repositories, models), gui (app, dialogs, theme, tooltip, notification, commands), util. 7 patterns: Strategy, Observer, Command, State, Factory, Repository, DI (run.py:create_client). 554 tests >95% logic, MockPoWStrategy + MockNetworkManager. Rules: never break pytest -q, keep EN/PT-BR sync, ruff/mypy clean, preserve wire compat with PyBitmessage (MAGIC 0xE9BEB4D9, port 8444), security: WIF 0o600, DB 0o600/dir 0o700, Image allowlist PNG/JPEG/GIF/BMP/WEBP, Pillow>=12.3.0, MAX_OBJECT_LENGTH. Verify via pytest.",
+  "prompts": {
+    "performance": "Quick performance pass on bmchat: check gui/app.py _wrap_lines cache, _redraw_chat viewport, manager.py batch collects, pow step. Keep changes small, verify with pytest -q (554 tests).",
+    "security": "Fast security scan: validate WIF range, Image allowlist, PoW target int, varint error, caps 50k/1k, perms 0o700/0o600. Compare vs SECURITY.md 33 CVEs.",
+    "refactor": "Small refactor using existing patterns — keep Strategy/Repository/Command intact, add missing guards, keep client.db compat, no new deps.",
+    "testing": "Generate tests for bmchat: unit (<15s) + integration (<5s) using MockPoWStrategy + MockNetworkManager + FakeApp, tempdir, no real sockets/Tk. Cover edge: self-chat, v3 unsupported, chan without sub.",
+    "documentation": "Update EN/PT-BR docs: README, ARCHITECTURE, SECURITY, branch.md — keep TOC, badges, rolling version, mention ai/ folder.",
+    "code_review": "Quick review: wire compat? 554 tests? EN/PT-BR? ruff/mypy? caps/perms? Comment PT-BR logic, EN API."
+  },
+  "bmchat_specific": {
+    "bottlenecks": ["gui _redraw_chat", "pow step", "manager queue", "database lock", "peers flood"],
+    "rules": ["Never break 554 tests", "Keep PT-BR/EN sync", "ruff/mypy 0", "Wire compat", "Mock in tests", "0o700/0o600 + allowlist"]
+  },
+  "version": "1.0.0",
+  "last_updated": "2026-09-10",
+  "maintained_by": "bmchat ai/ — branch feat/ai-llm-config-20260910"
+}
