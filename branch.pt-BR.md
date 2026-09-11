@@ -22,6 +22,7 @@
 - [rotação de pares / sync do zero (2026-09-08, ramo principal)](#rotação-de-pares--ramo-principal-2026-09-08)
 - [bootstrap rápido / lista fresca (2026-09-08, ramo principal)](#bootstrap-rápido--ramo-principal-2026-09-08)
 - [CVEs e CVSS — fix/security-20260908](#cves-e-cvss--fixsecurity-20260908)
+- [sync do zero rápido (2026-09-10, pow/network)](#sync-do-zero-rápido-2026-09-10)
 - [optimize/object-reception-20260909 (2026-09-09)](#optimizeobject-reception-20260909)
 - [sync header inv grande (2026-09-09)](#sync-header-inv-grande-2026-09-09)
 - [fix/ci-flaky-sync (2026-09-09)](#fixci-flaky-sync-2026-09-09)

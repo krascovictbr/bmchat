@@ -223,15 +223,30 @@ class PeerConnection(threading.Thread):
                 self._log_command_error(command, exc)
 
     def _read_header(self):
-        from ..protocol.const import MAX_MESSAGE_SIZE
+        from ..protocol.const import MAX_MESSAGE_SIZE, MAX_OBJECT_LENGTH, MAX_ADDR_COUNT
         from ..protocol.packets import HEADER_SIZE
 
         blob = self._recv_exact(self.sock, HEADER_SIZE)
         magic, command, length, checksum = packets.parse_header(blob)
         if magic != packets.MAGIC:
             raise ValueError("magic inválido")
-        if length > MAX_MESSAGE_SIZE:
-            raise ValueError("comprimento excessivo")
+        # R-CRIT-01: clamp por comando (evita OOM 1.6M genérico)
+        cmd = command.rstrip("\x00")
+        if cmd == "object":
+            # objeto: nonce(8)+expires(8)+type(4)+varints+payload ≤262208
+            if length > MAX_OBJECT_LENGTH + 64:
+                raise ValueError("object muito grande")
+        elif cmd == "addr":
+            # addr: 38 bytes por entrada, max 1000 -> ~38k
+            if length > MAX_ADDR_COUNT * 38 + 10:
+                raise ValueError("addr muito grande")
+        elif cmd in ("inv", "dinv", "getdata"):
+            if length > MAX_MESSAGE_SIZE:
+                raise ValueError("inv/getdata muito grande")
+            # inv com 50k*32=1.6M já é limite; não precisa reduzir
+        else:
+            if length > MAX_MESSAGE_SIZE:
+                raise ValueError("comprimento excessivo")
         return magic, command, length, checksum
 
     _PAYLOAD_COMMANDS = {
@@ -379,8 +394,13 @@ class PeerConnection(threading.Thread):
             now = time.time()
             if timestamp > now + 3600 or timestamp < now - 3 * 24 * 3600:
                 continue
+            # R-MÉDIO-01: filtra por interseção com theirstreams (evita flood de stream estranho)
             try:
                 if stream not in mine:
+                    continue
+                # Só aceita addr cujo stream está nos streams anunciados pelo peer que enviou
+                theirs = set(getattr(self, "their_streams", []) or [])
+                if theirs and stream not in theirs:
                     continue
             except Exception:
                 pass

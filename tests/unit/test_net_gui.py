@@ -929,9 +929,13 @@ class TestNetworkManager:
             mgr.known_hashes.add(h2)
             wanted = mgr._collect_wanted([h1, h2, h3])
             assert wanted == [h3]
-            # cap 1000
+            # P0-R1: cap dinâmico 50k quando pending<200k, 1k quando pending>200k
             many = [os.urandom(32) for _ in range(1500)]
+            assert len(mgr._collect_wanted(many)) == 1500
+            # simula pending cheio -> cap 1k
+            mgr.pending_getdata = {os.urandom(32): [time.time(), time.time(), None] for _ in range(200001)}
             assert len(mgr._collect_wanted(many)) == 1000
+            mgr.pending_getdata.clear()
 
             # _should_delay_getdata
             class Conn:

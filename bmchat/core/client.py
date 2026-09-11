@@ -46,7 +46,7 @@ from .repositories import MessageRepository, ContactRepository, PubkeyRepository
 
 
 class Client:
-    def __init__(
+    def __init__(  # noqa: C901
         self,
         data_dir,
         pow_strategy: PoWStrategy | None = None,
@@ -83,14 +83,56 @@ class Client:
         self.pubkey_repo = pubkey_repo or PubkeyRepository(self.db)
         import queue as _queue
 
-        self.ui_queue = _queue.Queue()  # type: ignore[var-annotated]
+        self.ui_queue = _queue.Queue(maxsize=1000)  # type: ignore[var-annotated]
         # Observer Pattern: EventEmitter para desacoplar Client da GUI
         self.events = EventEmitter()
         # Bridge: todo put na ui_queue também emite via EventEmitter
-        _orig_put = self.ui_queue.put
+        # A-MÉDIO-01: bounded 1000 + put_nowait com drop + coalesce (pow-progress)
+        _orig_q = self.ui_queue
 
         def _put_and_emit(item, block=True, timeout=None):  # noqa: C901
-            result = _orig_put(item, block, timeout)
+            # Coalesce pow-progress: remove antiga do mesmo token para não floodar
+            try:
+                if isinstance(item, tuple) and item and item[0] == "pow-progress" and len(item) > 1:
+                    token = item[1]
+                    with _orig_q.mutex:
+                        try:
+                            # queue é deque; filtra
+                            lst = list(_orig_q.queue)
+                            filtered = [
+                                x
+                                for x in lst
+                                if not (isinstance(x, tuple) and x and x[0] == "pow-progress" and len(x) > 1 and x[1] == token)  # noqa: E501
+                            ]
+                            if len(filtered) != len(lst):
+                                _orig_q.queue.clear()
+                                _orig_q.queue.extend(filtered)
+                                _orig_q.unfinished_tasks = len(_orig_q.queue)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
+                # Usa método base para evitar recursão (put foi monkey-patched)
+                _queue.Queue.put(_orig_q, item, block=False)
+            except _queue.Full:
+                # Se for coalescível, descarta o novo em vez de bloquear
+                if isinstance(item, tuple) and item and item[0] in ("pow-progress", "log"):
+                    pass
+                else:
+                    try:
+                        _queue.Queue.get(_orig_q, block=False)
+                        try:
+                            _orig_q.task_done()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                    try:
+                        _queue.Queue.put(_orig_q, item, block=False)
+                    except Exception:
+                        pass
+            result = None
             try:
                 if isinstance(item, tuple) and item:
                     legacy = item[0]
@@ -126,6 +168,8 @@ class Client:
         self._threads = []  # type: ignore[var-annotated]
         # A2: workers de PoW/relay rastreados para join no stop().
         self._workers = []  # type: ignore[var-annotated]
+        # P-CRIT-02: semaphore global para limitar PoW concorrente (fork-bomb)
+        self._pow_semaphore = threading.Semaphore(3)  # type: ignore[var-annotated]
         # A11: dedupe de ACKs recentes + pool limitado.
         self._ack_seen = collections.OrderedDict()  # type: ignore[var-annotated]
         self._ack_pool = None
@@ -239,6 +283,10 @@ class Client:
         self._write_own_lock()
         self._load_identities()
         self._load_pubkeys()
+        try:
+            self._load_ack_watch()
+        except Exception:
+            pass
         streams = self._participating_streams()
         self.net.start(streams)
         self.started = True
@@ -252,6 +300,9 @@ class Client:
         scheduled = threading.Thread(target=self._scheduled_sender_loop, daemon=True, name="client-scheduled")
         scheduled.start()
         self._threads.append(scheduled)
+        ack_sweep = threading.Thread(target=self._ack_watch_sweep_loop, daemon=True, name="client-ack-sweep")
+        ack_sweep.start()
+        self._threads.append(ack_sweep)
 
     def _cancel_all_pow(self):
         self.cancel_all_pow()
@@ -357,7 +408,7 @@ class Client:
         return [r["to_address"] for r in rows if r["to_address"]]
 
     def _sweep_ack_watch(self, now=None):  # noqa: C901
-        """M1: expira watches antigos (TTL) — unificado."""
+        """M1: expira watches antigos (TTL) — unificado. A-CRIT-02: persiste após sweep."""
         try:
             from ..protocol.const import MSG_TTL
         except Exception:
@@ -378,6 +429,63 @@ class Client:
                     dead.append(key)
             for key in dead:
                 self._ack_watch.pop(key, None)
+        if dead:
+            try:
+                self._save_ack_watch()
+            except Exception:
+                pass
+
+    def _load_ack_watch(self):
+        """A-CRIT-02: carrega ack_watch persistido (evita leak/replay após restart)."""
+        try:
+            data = self.db.get_json("ack_watch", {})
+            if not isinstance(data, dict):
+                return
+            with self._lock:
+                for hex_key, val in data.items():
+                    try:
+                        key = bytes.fromhex(str(hex_key))
+                        if isinstance(val, (list, tuple)) and len(val) >= 1:
+                            mid = int(val[0])
+                            exp = int(val[1]) if len(val) >= 2 else int(time.time())
+                            self._ack_watch[key] = (mid, exp)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    def _save_ack_watch(self):
+        """A-CRIT-02: persiste ack_watch atomicamente."""
+        try:
+            with self._lock:
+                data = {k.hex(): list(v) if isinstance(v, tuple) else v for k, v in self._ack_watch.items()}
+            self.db.set_json("ack_watch", data)
+        except Exception:
+            pass
+
+    def _ack_watch_sweep_loop(self):  # noqa: C901
+        """A-CRIT-02: varre ack_watch a cada 30s (antes só a cada 600s)."""
+        while self.started:
+            for _ in range(30):
+                if not self.started:
+                    return
+                time.sleep(1)
+            if not self.started:
+                return
+            try:
+                pruned = self._prune_ack_watch()
+                # _prune já persiste; sweep também
+                self._sweep_ack_watch()
+                if pruned:
+                    try:
+                        self._save_ack_watch()
+                    except Exception:
+                        pass
+            except Exception as exc:
+                try:
+                    self._log("rede", "ack sweep: %r" % exc)
+                except Exception:
+                    pass
 
     def _retry_stuck_sending(self):
         """A2: 'sending' preso p/ sempre volta a 'awaiting-pubkey'."""
@@ -517,6 +625,49 @@ class Client:
                 pass
         # Nunca anuncie lista vazia: nós reais derrubam pares sem stream
         return sorted(streams) or [1]
+
+    def _get_pow_workers(self):
+        """P-ALTO-01: workers correto (antes regressão para 1)."""
+        try:
+            raw = self.db.get_int("pow_workers", 0)
+        except Exception:
+            raw = 0
+        try:
+            raw_int = int(raw) if raw is not None else 0
+        except Exception:
+            raw_int = 0
+        if raw_int and raw_int > 0:
+            return max(1, min(raw_int, 16))
+        try:
+            cpu = os.cpu_count() or 2
+        except Exception:
+            cpu = 2
+        return max(2, cpu)
+
+    def _clamp_pow_difficulty(self, ntpb, eb):
+        """P-ALTO-02: limita dificuldade para evitar DoS (1M -> 8000) com aviso."""
+        orig_ntpb, orig_eb = ntpb, eb
+        try:
+            ntpb_i = int(ntpb) if ntpb is not None else 1000
+        except Exception:
+            ntpb_i = 1000
+        try:
+            eb_i = int(eb) if eb is not None else 1000
+        except Exception:
+            eb_i = 1000
+        clamped = False
+        if ntpb_i > 8000:
+            ntpb_i = 8000
+            clamped = True
+        if eb_i > 8000:
+            eb_i = 8000
+            clamped = True
+        if clamped:
+            try:
+                self._log("rede", "dificuldade PoW clamped 8000 (original ntpb=%s eb=%s)" % (orig_ntpb, orig_eb))
+            except Exception:
+                pass
+        return ntpb_i, eb_i
 
     # ---------- identidades ----------
 
@@ -762,7 +913,15 @@ class Client:
             noncetrials, extrabytes = 1000, 1000
         return noncetrials, extrabytes
 
-    def import_keys_dat(self, text):
+    def import_keys_dat(self, text):  # noqa: C901
+        # A-ALTO-03: limita DoS CPU (texto ≤1M, seções ≤100)
+        if text is None:
+            text = ""
+        try:
+            if len(text) > 1_000_000:
+                return {"imported": 0, "skipped": 0, "errors": 1, "addresses": []}
+        except Exception:
+            return {"imported": 0, "skipped": 0, "errors": 1, "addresses": []}
         parser = configparser.ConfigParser()
         parser.optionxform = str
         try:
@@ -770,7 +929,11 @@ class Client:
         except Exception:
             return {"imported": 0, "skipped": 0, "errors": 1, "addresses": []}
         result = {"imported": 0, "skipped": 0, "errors": 0, "addresses": []}
-        for section in parser.sections():
+        max_sections = 100
+        for idx, section in enumerate(parser.sections()):
+            if idx >= max_sections:
+                result["errors"] += 1
+                break
             if not section.startswith("BM-"):
                 continue
             self._import_keys_dat_section(parser, section, result)
@@ -844,12 +1007,32 @@ class Client:
 
     # ---------- contatos / canais ----------
 
-    def add_contact(self, address_text, label=None):
+    def add_contact(self, address_text, label=None):  # noqa: C901
         status, version, stream, ripe = addr_module.decode_address(address_text)
         if status != "success":
+            # A-ALTO-02: uniformiza erro de stream inválido
+            if status in ("versiontoohigh", "streamtoohigh", "tooshort"):
+                # mapeia variações para streaminvalid quando stream problemático
+                try:
+                    # Tenta validar stream separadamente
+                    if stream is not None and int(stream) < 1:
+                        return "streaminvalid", version
+                except Exception:
+                    pass
             return status, version
         if version < 3:
             return "unsupported", version
+        # A-ALTO-02: valida stream e endereço via encode (uniforme)
+        try:
+            if int(stream) < 1:
+                return "streaminvalid", version
+        except Exception:
+            return "streaminvalid", version
+        try:
+            # Valida que gera chave derivável (detecta ripe corrompido)
+            AddressKeys.from_address(address_text)
+        except Exception:
+            return "invalid", "endereço inválido"
         # Repository Pattern: delega ao ContactRepository
         self.contact_repo.add(address_text, label or address_text, stream=stream)
         self._refresh_streams()
@@ -875,6 +1058,16 @@ class Client:
     def subscribe(self, name_or_address, label=None, stream=1):
         status, _version, _stream, _ripe = addr_module.decode_address(name_or_address)
         if status == "success":
+            # A-ALTO-02: valida stream uniforme
+            try:
+                if int(_stream) < 1:
+                    return "streaminvalid", None
+            except Exception:
+                return "streaminvalid", None
+            try:
+                AddressKeys.from_address(name_or_address)
+            except Exception:
+                return "invalid", None
             self.db.add_subscription(name_or_address, label or name_or_address)
             self._refresh_streams()
             self.ui_queue.put(("subscribed", name_or_address, label))
@@ -918,13 +1111,19 @@ class Client:
         with self._lock:
             return list(self.identities.items())
 
-    def _maybe_mark_ack(self, parsed):
+    def _maybe_mark_ack(self, parsed):  # noqa: C901
         if parsed.object_type != OBJECT_MSG or parsed.version != 1:
             return
         try:
             key = bytes(parsed.raw[16:])
             with self._lock:
                 entry = self._ack_watch.pop(key, None)
+            # A-CRIT-02: persiste após pop (replay)
+            try:
+                if entry is not None:
+                    self._save_ack_watch()
+            except Exception:
+                pass
         except Exception:
             return
         if not entry:
@@ -1237,7 +1436,7 @@ class Client:
         return self.get_msg_ttl()
 
     def _prune_ack_watch(self, now=None):  # noqa: C901
-        """Descarta watches além da vida do objeto; vencidos viram ack-failed."""
+        """Descarta watches além da vida do objeto; vencidos viram ack-failed. A-CRIT-02 persiste."""
         moment = int(now) if now is not None else int(time.time())
         expired = []
         with self._lock:
@@ -1252,6 +1451,11 @@ class Client:
                     continue
             for key, _message_id in expired:
                 self._ack_watch.pop(key, None)
+        if expired:
+            try:
+                self._save_ack_watch()
+            except Exception:
+                pass
         for _key, message_id in expired:
             try:
                 rows = self.db.query("SELECT status FROM messages WHERE id=?", (message_id,))
@@ -1475,6 +1679,10 @@ class Client:
         with self._lock:
             self._msg_in_flight.discard(message_id)
             self._ack_watch.pop(watch, None)
+        try:
+            self._save_ack_watch()
+        except Exception:
+            pass
         self.ui_queue.put(("status", message_id, "ack-failed"))
 
     def _send_message_worker(  # noqa: C901
@@ -1501,6 +1709,10 @@ class Client:
                 self._sweep_ack_watch_locked()
             except Exception:
                 pass
+        try:
+            self._save_ack_watch()
+        except Exception:
+            pass
         wire_bytes = self._message_wire_body(message_id, body)
         if wire_bytes is None:
             return
@@ -1517,9 +1729,8 @@ class Client:
         unsigned = objects.build_msg_unsigned(
             expires, stream, keys, pub["encryption_public"], ripe, wire_bytes, encoding, ack_packet
         )
-        target = calculate_target(
-            pub["nonce_trials_per_byte"], pub["payload_length_extra_bytes"], len(unsigned) + 8, ttl
-        )
+        ntpb_c, eb_c = self._clamp_pow_difficulty(pub["nonce_trials_per_byte"], pub["payload_length_extra_bytes"])
+        target = calculate_target(ntpb_c, eb_c, len(unsigned) + 8, ttl)
 
         def done(complete, nonce):
             self._finish_message_send(message_id, complete)
@@ -1560,6 +1771,14 @@ class Client:
                 dead.append(key)
         for key in dead:
             self._ack_watch.pop(key, None)
+        # A-CRIT-02: persiste se houve limpeza (RLock permite reentrância)
+        if dead:
+            try:
+                # evita deadlock: salva sem adquirir novamente se já estamos com lock
+                data = {k.hex(): list(v) if isinstance(v, tuple) else v for k, v in self._ack_watch.items()}
+                self.db.set_json("ack_watch", data)
+            except Exception:
+                pass
 
     def _claim_resend_slot(self, message_id):
         with self._lock:
@@ -1779,9 +1998,12 @@ class Client:
             elif message_id is not None and meta.get("message_id") is None:
                 meta["message_id"] = message_id
 
-    def _fail_pow(self, token, message_id):
+    def _fail_pow(self, token, message_id):  # noqa: C901
+        # A-CRIT-01: se PoW falhar, não deixa órfão em sending; marca ack-failed
         self.ui_queue.put(("pow-cancelled", token))
+        target_id = None
         if message_id is not None:
+            target_id = message_id
             with self._lock:
                 self._msg_in_flight.discard(message_id)
         else:
@@ -1789,8 +2011,24 @@ class Client:
                 meta = self._pow_meta.get(token)
                 pending = meta.get("message_id") if meta else None
             if pending is not None:
+                target_id = pending
                 with self._lock:
                     self._msg_in_flight.discard(pending)
+        if target_id is not None:
+            try:
+                # Atomicamente tenta marcar ack-failed se ainda estava sending/awaiting
+                row = self.db.get_message(target_id)
+                if row and row["status"] in ("sending", "awaiting-pubkey"):
+                    try:
+                        self.db.set_message_status(target_id, "ack-failed")
+                    except Exception:
+                        pass
+                    try:
+                        self.ui_queue.put(("status", target_id, "ack-failed"))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         self._untrack_pow(token)
 
     def _run_pow_and_done(  # noqa: C901, E501
@@ -1803,58 +2041,79 @@ class Client:
             if stop_event is None:
                 stop_event = threading.Event()
         self._ensure_pow_entry(token, stop_event, message_id)
-        # Strategy Pattern: usa PoWStrategy injetada se disponível
-        strat = getattr(self, "pow_strategy", None)
-        if strat is not None and hasattr(strat, "solve") and not isinstance(strat, type):
-            # Tenta usar estratégia injetada; se for Standard, respeita workers do DB
-            # via criação de instância temporária com workers dinâmicos
-            try:
-                # Se strat é StandardPoWStrategy, recria com workers atuais para refletir config
-                from ..crypto.pow.standard import StandardPoWStrategy
+        # P-CRIT-02: limita concorrência global (semaphore) — fila única
+        # Tenta adquirir sem bloquear indefinidamente; se lotado, falha rápido
+        acquired = False
+        try:
+            acquired = self._pow_semaphore.acquire(timeout=10)
+        except Exception:
+            acquired = False
+        if not acquired:
+            self._fail_pow(token, message_id)
+            return
+        try:
+            # Strategy Pattern: usa PoWStrategy injetada se disponível
+            strat = getattr(self, "pow_strategy", None)
+            if strat is not None and hasattr(strat, "solve") and not isinstance(strat, type):
+                # Tenta usar estratégia injetada; se for Standard, respeita workers do DB
+                # via criação de instância temporária com workers dinâmicos
+                try:
+                    # Se strat é StandardPoWStrategy, recria com workers atuais para refletir config
+                    from ..crypto.pow.standard import StandardPoWStrategy
 
-                if isinstance(strat, StandardPoWStrategy):
-                    workers = max(1, self.db.get_int("pow_workers", 0) or 0) or max(
-                        1, __import__("os").cpu_count() or 2
-                    )
-                    tmp = StandardPoWStrategy(workers=workers)
-                    nonce = tmp.solve(
-                        initial_hash_of(unsigned), target, progress_cb=self._pow_progress(token), stop_event=stop_event
-                    )
-                else:
-                    nonce = strat.solve(
-                        initial_hash_of(unsigned), target, progress_cb=self._pow_progress(token), stop_event=stop_event
-                    )
-                # Sucesso via strategy
+                    if isinstance(strat, StandardPoWStrategy):
+                        workers = self._get_pow_workers()
+                        tmp = StandardPoWStrategy(workers=workers)
+                        nonce = tmp.solve(
+                            initial_hash_of(unsigned),
+                            target,
+                            progress_cb=self._pow_progress(token),
+                            stop_event=stop_event,
+                        )
+                    else:
+                        nonce = strat.solve(
+                            initial_hash_of(unsigned),
+                            target,
+                            progress_cb=self._pow_progress(token),
+                            stop_event=stop_event,
+                        )
+                    # Sucesso via strategy
+                    complete = objects.complete_object(unsigned, nonce)
+                    self._untrack_pow(token)
+                    if done_cb is not None:
+                        done_cb(complete, nonce)
+                    return
+                except NotImplementedError:
+                    pass
+                except Exception:
+                    self._fail_pow(token, message_id)
+                    return
+            # Fallback legado: PowExecutor
+            try:
+                executor = PowExecutor(
+                    workers=self._get_pow_workers(),
+                    progress_cb=self._pow_progress(token),
+                    stop_event=stop_event,
+                )
+                try:
+                    nonce = executor.run(initial_hash_of(unsigned), target)
+                except Exception:
+                    self._fail_pow(token, message_id)
+                    return
                 complete = objects.complete_object(unsigned, nonce)
                 self._untrack_pow(token)
                 if done_cb is not None:
                     done_cb(complete, nonce)
                 return
-            except NotImplementedError:
-                pass
             except Exception:
                 self._fail_pow(token, message_id)
                 return
-        # Fallback legado: PowExecutor
-        try:
-            executor = PowExecutor(
-                workers=max(1, self.db.get_int("pow_workers", 0) or 0) or max(1, __import__("os").cpu_count() or 2),
-                progress_cb=self._pow_progress(token),
-                stop_event=stop_event,
-            )
-            try:
-                nonce = executor.run(initial_hash_of(unsigned), target)
-            except Exception:
-                self._fail_pow(token, message_id)
-                return
-            complete = objects.complete_object(unsigned, nonce)
-            self._untrack_pow(token)
-            if done_cb is not None:
-                done_cb(complete, nonce)
-            return
-        except Exception:
-            self._fail_pow(token, message_id)
-            return
+        finally:
+            if acquired:
+                try:
+                    self._pow_semaphore.release()
+                except Exception:
+                    pass
 
     def _pow_progress(self, token):
         def progress(tried, rate):
@@ -1972,7 +2231,8 @@ class Client:
         ttl = self.get_msg_ttl()
         expires = int(time.time()) + ttl
         unsigned = objects.build_broadcast_unsigned(expires, keys.stream, keys, body.encode("utf-8"), encoding)
-        target = calculate_target(keys.nonce_trials_per_byte, keys.payload_length_extra_bytes, len(unsigned) + 8, ttl)
+        ntpb_c, eb_c = self._clamp_pow_difficulty(keys.nonce_trials_per_byte, keys.payload_length_extra_bytes)
+        target = calculate_target(ntpb_c, eb_c, len(unsigned) + 8, ttl)
 
         def done(complete, nonce):
             self.net.announce_object(complete)
@@ -2042,7 +2302,8 @@ class Client:
         ttl = self.get_msg_ttl()
         expires = int(time.time()) + ttl
         unsigned = objects.build_broadcast_unsigned(expires, keys.stream, keys, body.encode("utf-8"), encoding)
-        target = calculate_target(keys.nonce_trials_per_byte, keys.payload_length_extra_bytes, len(unsigned) + 8, ttl)
+        ntpb_c, eb_c = self._clamp_pow_difficulty(keys.nonce_trials_per_byte, keys.payload_length_extra_bytes)
+        target = calculate_target(ntpb_c, eb_c, len(unsigned) + 8, ttl)
 
         def done(complete, nonce):
             self.net.announce_object(complete)
@@ -2072,9 +2333,8 @@ class Client:
     def _publish_pubkey(self, keys, stream=None, force=False):
         now = int(time.time())
         unsigned = objects.build_pubkey_unsigned(now + PUBKEY_TTL, stream or keys.stream, keys)
-        target = calculate_target(
-            keys.nonce_trials_per_byte, keys.payload_length_extra_bytes, len(unsigned) + 8, PUBKEY_TTL
-        )
+        ntpb_c, eb_c = self._clamp_pow_difficulty(keys.nonce_trials_per_byte, keys.payload_length_extra_bytes)
+        target = calculate_target(ntpb_c, eb_c, len(unsigned) + 8, PUBKEY_TTL)
 
         def done(complete, nonce):
             self.net.announce_object(complete)

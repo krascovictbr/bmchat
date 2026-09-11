@@ -297,6 +297,19 @@ class PeerStore:
                 result.append((Peer(host, int(port)), info))
         return result
 
+    def invalidate_backoff(self, keys):
+        """R-ALTO-03: limpa backoff para peers derrubados no wipe."""
+        for key in keys or []:
+            try:
+                host, port = key
+                info = self.entries.get((host, int(port)))
+                if info is not None:
+                    info["last_try"] = 0
+                    info["fail_count"] = 0
+                    # Não mexe no rating para não favorecer morto, só libera cooldown
+            except Exception:
+                continue
+
     @staticmethod
     def _effective_rating(info):
         """Rating + bônus limitado por produtividade − falha seguida.
