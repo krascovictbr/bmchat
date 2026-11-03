@@ -1588,7 +1588,21 @@ class NetworkManager:
         except Exception:
             return 10
 
-    def snapshot(self):
+    def _snapshot_productive(self):
+        try:
+            return sum(1 for info in self.peers.entries.values() if int(info.get("inv_count", 0) or 0) > 0)
+        except Exception:
+            return 0
+
+    def _snapshot_version(self):
+        try:
+            from ..version import __version__ as _ver
+
+            return str(_ver)
+        except Exception:
+            return "—"
+
+    def snapshot(self):  # noqa: C901
         import struct as _struct
 
         now = time.time()
@@ -1621,6 +1635,11 @@ class NetworkManager:
                     handshake_for = max(0, int(now - float(connection.started_at)))
                 except Exception:
                     handshake_for = None
+            info = self.peers.entries.get((connection.peer.host, connection.peer.port), {}) or {}
+            try:
+                inv_cnt = int(info.get("inv_count", 0) or 0)
+            except Exception:
+                inv_cnt = 0
             rows.append(
                 {
                     "host": connection.peer.host,
@@ -1630,13 +1649,14 @@ class NetworkManager:
                     "services": connection.their_services,
                     "streams": list(connection.their_streams),
                     "time_offset": connection.time_offset,
-                    "rating": self.peers.entries.get((connection.peer.host, connection.peer.port), {}).get("rating", 0),
+                    "rating": info.get("rating", 0),
                     "bytes_sent": connection.bytes_sent,
                     "bytes_received": connection.bytes_received,
                     "age": max(0, int(now - base)),
                     "silent_for": silent_for,
                     "handshake_for": handshake_for,
                     "has_useful": last_useful is not None,
+                    "inv_count": inv_cnt,
                 }
             )
         proxy = self.proxy.describe() if self.proxy else "Direto"
@@ -1648,12 +1668,15 @@ class NetworkManager:
         uptime = int(now - self.started_at) if self.started_at else 0
         established = sum(1 for c in connections if c.established)
         peers_backoff = self._snapshot_backoff(now)
+        peers_productive = self._snapshot_productive()
         connect_timeout = self._snapshot_connect_timeout()
+        app_version = self._snapshot_version()
         return {
             "proxy": proxy,
             "streams": list(self.streams),
             "running": self.running,
             "uptime": uptime,
+            "version": app_version,
             "stats": stats_copy,
             "net_state": self._describe_net_state(
                 established, len(connections), inventory_size, pending_size, stats_copy
@@ -1661,6 +1684,7 @@ class NetworkManager:
             "connection_count": len(connections),
             "peers_stored": peers_stored,
             "peers_backoff": peers_backoff,
+            "peers_productive": peers_productive,
             "inventory": inventory_size,
             "known_hashes": known_size,
             "objects_stored": objects_stored,

@@ -8,6 +8,7 @@ from tkinter import filedialog
 from tkinter import font as tkfont
 
 from . import dialogs
+from . import strings as _strings
 from .theme import get_theme, Theme
 from .tooltip import ToolTip
 from .notification import notify
@@ -304,17 +305,67 @@ def _snap_timeouts(snapshot):
     return (_snap_int(timeouts.get("handshake", 20), 20), _snap_int(timeouts.get("silent", 60), 60))
 
 
-def _state_line(snapshot, established, stats):
-    """Estado honesto: distingue "procurando" de "parado" (0 invs)."""
+def _fmt_progress_bar(done, total, width=10):
+    """Barra visual para progresso (█░); segura para total 0."""
+    try:
+        done = int(done)
+        total = int(total)
+        width = int(width)
+    except Exception:
+        return ""
+    if total <= 0 or width <= 0:
+        return ""
+    pct = max(0, min(100, int(done * 100 / total))) if total else 0
+    filled = int(pct * width / 100)
+    empty = max(0, width - filled)
+    bar = _strings.DIAG_PROGRESS_BAR_FULL * filled
+    bar += _strings.DIAG_PROGRESS_BAR_EMPTY * empty
+    return "%s %d%%" % (bar, pct)
+
+
+def _diag_stored(snapshot):
+    try:
+        value = snapshot.get("objects_stored")
+        if value is None:
+            value = snapshot.get("inventory", 0)
+        return _snap_int(value, 0)
+    except Exception:
+        return 0
+
+
+def _diag_progress_text(snapshot):
+    """Texto humano 'Sincronizando: X de Y (P pendentes) — N% █░░'."""
+    try:
+        stored = _diag_stored(snapshot)
+        pending = _snap_int(snapshot.get("pending_getdata", 0), 0)
+        total = stored + pending
+        if pending == 0:
+            bar = _fmt_progress_bar(total, total if total else 1)
+            return _strings.DIAG_PROGRESS_SINCRONIZADO.format(total=total, bar=bar)
+        pct = int(stored * 100 / total) if total else 0
+        bar = _fmt_progress_bar(stored, total)
+        return _strings.DIAG_PROGRESS_SINCRONIZANDO.format(
+            done=stored, total=total, pending=pending, pct=pct, bar=bar
+        )
+    except Exception:
+        return ""
+
+
+def _state_line(snapshot, established, stats):  # noqa: C901
+    """Estado honesto com ícones e progresso legível."""
     state = snapshot.get("net_state")
     handshake, silent = _snap_timeouts(snapshot)
     invs = _snap_int(stats.get("invs", 0))
     pending = _snap_int(snapshot.get("pending_getdata", 0))
     uptime = _fmt_uptime(snapshot.get("uptime", 0))
     if state == "parado":
-        return "Estado: rede parada."
+        return _strings.STATE_PARADO
     if state == "procurando-pares":
-        return "Estado: procurando pares… (nenhuma conexão; girando a lista e re-consultando as sementes DNS)"
+        known = _snap_int(snapshot.get("peers_stored", 0))
+        backoff = _snap_int(snapshot.get("peers_backoff", 0))
+        attempts = _snap_int((snapshot.get("stats") or {}).get("dial_attempts", 0))
+        total_try = attempts or _snap_int(snapshot.get("connection_count", 0))
+        return _strings.STATE_PROCURANDO.format(total=total_try, known=known, backoff=backoff)
     if state == "negociando":
         return "Estado: negociando com %d par(es)… (sem version/verack há ~%ds o handshake fecha e tenta outro)" % (
             snapshot["connection_count"],
@@ -327,6 +378,13 @@ def _state_line(snapshot, established, stats):
             silent,
         )
     if state == "sincronizando":
+        prog = _diag_progress_text(snapshot)
+        if prog:
+            try:
+                prog_low = prog[:1].lower() + prog[1:] if prog else prog
+            except Exception:
+                prog_low = prog
+            return prog_low
         return "Estado: sincronizando: %d objeto(s) pendente(s)…" % pending
     if invs == 0 and not snapshot.get("inventory"):
         return "Estado: conectado, mas nenhum inventário chegou ainda (0 invs em %s)." % uptime
@@ -362,7 +420,7 @@ def _search_counts(snap):
     return attempts, known, ignored
 
 
-def _status_state_part(snap, established):
+def _status_state_part(snap, established):  # noqa: C901
     """Trecho honesto da barra de status ('' = nada a acrescentar)."""
     resync = snap.get("resync") or {}
     if resync.get("active"):
@@ -385,67 +443,241 @@ def _status_state_part(snap, established):
     if invs == 0 and not snap.get("inventory"):
         return "aguardando inventário… (0 invs)"
     if _snap_int(snap.get("pending_getdata", 0)) > 0:
-        return "sincronizando: %d pendente(s)" % _snap_int(snap.get("pending_getdata", 0))
+        pending = _snap_int(snap.get("pending_getdata", 0))
+        stored = _diag_stored(snap)
+        total = stored + pending
+        pct = int(stored * 100 / total) if total else 0
+        return "sincronizando: %d de %d (%d pendentes) — %d%%" % (stored, total, pending, pct)
     return ""
 
 
-def _diagnostics_report(snapshot):
+def _format_conn_row(conn, snapshot):  # noqa: C901
+    """Linha de tabela mono para uma conexão."""
+    try:
+        host_port = "%s:%s" % (conn["host"], conn["port"])
+        if len(host_port) > 19:
+            host_port = host_port[:19]
+        version = conn["version"] if conn["version"] is not None else "?"
+        streams = ",".join(str(s) for s in conn["streams"]) or "?"
+        services = str(conn.get("services", "?"))
+        rating = "%.0f" % conn.get("rating", 0)
+        offset = conn.get("time_offset")
+        if offset is None:
+            clock = _strings.DIAG_CLOCK_UNKNOWN
+        else:
+            try:
+                off = int(offset)
+            except Exception:
+                clock = _strings.DIAG_CLOCK_UNKNOWN
+            else:
+                if abs(off) > 3600:
+                    clock = _strings.DIAG_CLOCK_DIVERGENT.format(offset=off)
+                else:
+                    clock = _strings.DIAG_CLOCK_OK.format(offset=off)
+        inv = str(conn.get("inv_count", 0))
+        age = str(conn.get("age", 0))
+        if not conn["established"]:
+            status = "🟡 negociando"
+        elif not conn.get("has_useful", False):
+            status = "🟡 silenciosa"
+        elif conn.get("time_offset") is not None and abs(int(conn.get("time_offset") or 0)) > 3600:
+            status = "🔴 divergente"
+        else:
+            status = "🟢 ok"
+        extra = _conn_extra(conn, snapshot)
+        return _strings.DIAG_CONNECTION_ROW.format(
+            host_port=host_port,
+            version=version,
+            streams=streams,
+            services=services,
+            rating=rating,
+            clock=clock,
+            inv=inv,
+            age=age,
+            status=status + extra,
+        )
+    except Exception:
+        return "%s:%s — erro ao formatar" % (conn.get("host", "?"), conn.get("port", "?"))
+
+
+def _diagnostics_report(snapshot):  # noqa: C901
     established = sum(1 for c in snapshot["connections"] if c["established"])
     stats = snapshot.get("stats") or {}
     up_bytes = sum(c["bytes_sent"] for c in snapshot["connections"])
     down_bytes = sum(c["bytes_received"] for c in snapshot["connections"])
-    lines = [
-        "Proxy: %s" % snapshot["proxy"],
-        "Streams: %s" % (", ".join(str(s) for s in snapshot["streams"]) or "—"),
-        "Ativo há: %s" % _fmt_uptime(snapshot.get("uptime", 0)),
-        "Conexões: %d estabelecidas de %d" % (established, snapshot["connection_count"]),
-        "Tráfego total: ↑ %s  ↓ %s" % (_fmt_bytes(up_bytes), _fmt_bytes(down_bytes)),
-        "Pares conhecidos: %d" % snapshot["peers_stored"],
-        "Objetos guardados: %d"
-        % (snapshot.get("objects_stored") if snapshot.get("objects_stored") is not None else snapshot["inventory"]),
-        "Hashes conhecidos: %d" % snapshot["known_hashes"],
-        "Sessão: %d objetos recebidos, %d anunciados, %d invs, %d getdatas"
-        % (
-            stats.get("objects_received", 0),
-            stats.get("objects_announced", 0),
-            stats.get("invs", 0),
-            stats.get("getdatas", 0),
-        ),
-        _state_line(snapshot, established, stats),
-        "",
-    ]
-    if not snapshot["connections"]:
-        lines.append("Nenhuma conexão. Verifique a internet ou o proxy.")
-    for conn in snapshot["connections"]:
-        state = "estabelecida" if conn["established"] else "negociando"
-        version = conn["version"] if conn["version"] is not None else "?"
-        streams = ",".join(str(s) for s in conn["streams"]) or "?"
-        offset = conn.get("time_offset")
-        if offset is None:
-            clock = "relógio ?"
-        else:
-            clock = "relógio %+ds" % offset
-            if abs(offset) > 3600:
-                clock += " (DIVERGENTE: ajuste o relógio!)"
+    negotiating = snapshot["connection_count"] - established
+    try:
+        silent = sum(1 for c in snapshot["connections"] if c["established"] and not c.get("has_useful", False))
+    except Exception:
+        silent = 0
+    stored = _diag_stored(snapshot)
+    pending = _snap_int(snapshot.get("pending_getdata", 0), 0)
+    total_objs = stored + pending
+    lines = []
+    try:
+        when = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        when = "—"
+    lines.append(_strings.DIAG_TITLE + " — " + when)
+    try:
+        ver = snapshot.get("version") or BMCHAT_VERSION
+    except Exception:
+        ver = BMCHAT_VERSION
+    lines.append(_strings.DIAG_LABEL_VERSAO.format(version=ver))
+    lines.append("")
+    lines.append(_strings.DIAG_SECTION_RESUMO)
+    lines.append("  • %s" % _state_line(snapshot, established, stats))
+    lines.append("  • %s" % _strings.DIAG_LABEL_ATIVO_HA.format(uptime=_fmt_uptime(snapshot.get("uptime", 0))))
+    lines.append("  • %s" % _strings.DIAG_LABEL_PROXY.format(proxy=snapshot["proxy"]))
+    streams_txt = ", ".join(str(s) for s in snapshot["streams"]) or "—"
+    lines.append("  • %s" % _strings.DIAG_LABEL_STREAMS.format(streams=streams_txt))
+    lines.append("")
+    lines.append(_strings.DIAG_SECTION_REDE)
+    lines.append(
+        "  • %s"
+        % _strings.DIAG_LABEL_CONEXOES_DETALHE.format(
+            established=established,
+            total=snapshot["connection_count"],
+            negotiating=negotiating,
+            silent=silent,
+        )
+    )
+    lines.append("  • %s" % _strings.DIAG_LABEL_TRAFEGO.format(up=_fmt_bytes(up_bytes), down=_fmt_bytes(down_bytes)))
+    lines.append("")
+    lines.append(_strings.DIAG_SECTION_INVENTARIO)
+    lines.append("  • %s" % _strings.DIAG_LABEL_OBJETOS.format(count=stored))
+    if pending > 0:
+        pct = int(stored * 100 / total_objs) if total_objs else 0
+        bar = _fmt_progress_bar(stored, total_objs)
         lines.append(
-            "%s:%s — %s, versão %s, streams [%s], serviços %s, nota %.0f, "
-            "%s%s"
-            % (
-                conn["host"],
-                conn["port"],
-                state,
-                version,
-                streams,
-                conn["services"],
-                conn.get("rating", 0),
-                clock,
-                _conn_extra(conn, snapshot),
+            "  • %s"
+            % _strings.DIAG_PROGRESS_SINCRONIZANDO.format(
+                done=stored, total=total_objs, pending=pending, pct=pct, bar=bar
             )
         )
-        lines.append(
-            "  ↑ %s  ↓ %s  há %ds" % (_fmt_bytes(conn["bytes_sent"]), _fmt_bytes(conn["bytes_received"]), conn["age"])
+    else:
+        if total_objs > 0:
+            bar = _fmt_progress_bar(stored, total_objs)
+            lines.append("  • %s" % _strings.DIAG_PROGRESS_SINCRONIZADO.format(total=total_objs, bar=bar))
+    lines.append("  • %s" % _strings.DIAG_LABEL_HASHES.format(count=snapshot["known_hashes"]))
+    lines.append("  • %s" % _strings.DIAG_LABEL_INVENTARIO_MEM.format(count=snapshot["inventory"]))
+    lines.append("  • %s" % _strings.DIAG_LABEL_PENDENTES.format(count=pending))
+    lines.append(
+        "  • %s"
+        % _strings.DIAG_LABEL_SESSAO.format(
+            received=stats.get("objects_received", 0),
+            announced=stats.get("objects_announced", 0),
+            invs=stats.get("invs", 0),
+            getdatas=stats.get("getdatas", 0),
         )
+    )
+    lines.append("")
+    lines.append(_strings.DIAG_SECTION_PARES)
+    lines.append("  • %s" % _strings.DIAG_LABEL_PARES_CONHECIDOS.format(count=snapshot["peers_stored"]))
+    lines.append("  • %s" % _strings.DIAG_LABEL_PARES_BACKOFF.format(count=snapshot["peers_backoff"]))
+    productive = _snap_int(snapshot.get("peers_productive", 0), 0)
+    lines.append("  • %s" % _strings.DIAG_LABEL_PARES_PRODUTIVOS.format(count=productive))
+    lines.append("")
+    lines.append(_strings.DIAG_SECTION_CONEXOES)
+    if not snapshot["connections"]:
+        lines.append("  %s" % _strings.DIAG_NO_CONNECTIONS)
+    else:
+        lines.append("  %s" % _strings.DIAG_TABLE_HEADER)
+        lines.append("  %s" % _strings.DIAG_TABLE_SEPARATOR)
+        for conn in snapshot["connections"]:
+            lines.append("  %s" % _format_conn_row(conn, snapshot))
+            lines.append(
+                "    ↑ %s  ↓ %s  há %ds"
+                % (_fmt_bytes(conn["bytes_sent"]), _fmt_bytes(conn["bytes_received"]), conn["age"])
+            )
+        lines.append("")
+        lines.append("  %s" % _strings.DIAG_LEGEND)
     return "\n".join(lines)
+
+
+def _human_status_main(snap, established):  # noqa: C901
+    """Frase humana curta para a statusbar (com ícone)."""
+    try:
+        state = snap.get("net_state")
+        total = _snap_int(snap.get("connection_count", 0), 0)
+        stored = _diag_stored(snap)
+        pending = _snap_int(snap.get("pending_getdata", 0), 0)
+        total_objs = stored + pending
+        peers = _snap_int(snap.get("peers_stored", 0), 0)
+        if not snap.get("running", True):
+            return "🔴 rede parada — clique para diagnóstico"
+        if state == "procurando-pares" and established == 0 and total == 0:
+            attempts, known, ignored = _search_counts(snap)
+            return "🟡 procurando pares… %d tentativa(s), %d conhecido(s), %d em pausa" % (
+                attempts,
+                known,
+                ignored,
+            )
+        if state == "negociando":
+            return "🟡 negociando com %d par(es)…" % total
+        if state == "aguardando-inv":
+            return "🟡 aguardando inventário… (%d ativas, 0 invs)" % established
+        if state == "sincronizando" or pending > 0:
+            pct = int(stored * 100 / total_objs) if total_objs else 0
+            return "🔵 sincronizando: %d de %d (%d pendentes) — %d%%" % (
+                stored,
+                total_objs,
+                pending,
+                pct,
+            )
+        resync = snap.get("resync") or {}
+        if resync.get("active"):
+            return "🔵 Re-sync: %d pendentes (há %s)" % (
+                _snap_int(resync.get("pending", 0)),
+                _fmt_uptime(resync.get("elapsed", 0)),
+            )
+        if established > 0:
+            return "🟢 conectado — %d de %d ativas · %d objetos · %d pares" % (
+                established,
+                total,
+                stored,
+                peers,
+            )
+        return "🟡 conectando…"
+    except Exception:
+        return "🟡 conectando…"
+
+
+def _status_tooltip_text(snap, established):
+    """Texto longo para tooltip da statusbar."""
+    try:
+        stored = _diag_stored(snap)
+        pending = _snap_int(snap.get("pending_getdata", 0), 0)
+        total = _snap_int(snap.get("connection_count", 0), 0)
+        try:
+            silent = sum(1 for c in snap["connections"] if c["established"] and not c.get("has_useful", False))
+        except Exception:
+            silent = 0
+        peers = _snap_int(snap.get("peers_stored", 0), 0)
+        backoff = _snap_int(snap.get("peers_backoff", 0), 0)
+        productive = _snap_int(snap.get("peers_productive", 0), 0)
+        up = _fmt_bytes(sum(c["bytes_sent"] for c in snap["connections"]))
+        down = _fmt_bytes(sum(c["bytes_received"] for c in snap["connections"]))
+        uptime = _fmt_uptime(snap.get("uptime", 0))
+        streams = ", ".join(str(s) for s in snap.get("streams", [])) or "—"
+        proxy = snap.get("proxy", "—")
+        return _strings.STATUS_TOOLTIP_TEMPLATE.format(
+            established=established,
+            total=total,
+            silent=silent,
+            stored=stored,
+            pending=pending,
+            peers=peers,
+            backoff=backoff,
+            productive=productive,
+            up=up,
+            down=down,
+            proxy=proxy,
+            streams=streams,
+            uptime=uptime,
+        )
+    except Exception:
+        return _strings.TOOLTIP_STATUSBAR
 
 
 def _avatar_color(key):
@@ -1043,7 +1275,7 @@ class App(tk.Tk):
             command=self._hamburger_menu,
         )
         self.hamburger_btn.pack(side="left", padx=6)
-        ToolTip(self.hamburger_btn, "Menu principal (Ctrl+,)")
+        ToolTip(self.hamburger_btn, _strings.TOOLTIP_HAMBURGER + " (Ctrl+,)")
         tk.Label(self.left_header, text="bmchat", fg=HEADER_FG, bg=HEADER_BG, font=self.title_font).pack(side="left")
         self.search_btn = tk.Button(
             self.left_header,
@@ -1058,7 +1290,7 @@ class App(tk.Tk):
             command=self._toggle_search,
         )
         self.search_btn.pack(side="right", padx=6)
-        ToolTip(self.search_btn, "Buscar conversas (Ctrl+F)")
+        ToolTip(self.search_btn, _strings.TOOLTIP_SEARCH)
 
         self.search_frame = tk.Frame(self.left, bg=PANEL_BG)
         self.search_var = tk.StringVar()
@@ -1104,7 +1336,7 @@ class App(tk.Tk):
         self.fab.create_oval(2, 2, 54, 54, fill=FAB_BG, outline=FAB_BG)
         self.fab.create_text(28, 28, text="✎", fill="white", font=("", 20))
         self.fab.bind("<Button-1>", lambda _e: self._compose_menu())
-        ToolTip(self.fab, "Nova conversa (Ctrl+N)")
+        ToolTip(self.fab, _strings.TOOLTIP_FAB + " (Ctrl+N)")
 
         # ---- identity row ----
         id_row = tk.Frame(self.left, bg=PANEL_BG, highlightthickness=0)
@@ -1125,7 +1357,7 @@ class App(tk.Tk):
         )
         self.identity_menu["menu"].configure(bg=PANEL_BG, fg=TEXT_INK)
         self.identity_menu.pack(side="left", padx=4, fill="x", expand=True)
-        ToolTip(self.identity_menu, "Selecionar identidade (1 clique p/ trocar)")
+        ToolTip(self.identity_menu, _strings.TOOLTIP_IDENTITY_MENU)
         self.new_identity_btn = tk.Button(
             inner,
             text="+",
@@ -1137,7 +1369,7 @@ class App(tk.Tk):
             font=self.preview_font,
         )
         self.new_identity_btn.pack(side="left")
-        ToolTip(self.new_identity_btn, "Nova identidade")
+        ToolTip(self.new_identity_btn, _strings.TOOLTIP_NEW_IDENTITY)
         self.backup_btn = tk.Button(
             inner,
             text="Backup",
@@ -1149,7 +1381,7 @@ class App(tk.Tk):
             font=self.small_font,
         )
         self.backup_btn.pack(side="left", padx=(4, 0))
-        ToolTip(self.backup_btn, "Backup de identidade")
+        ToolTip(self.backup_btn, _strings.TOOLTIP_BACKUP)
         self._build_identity_indicator(id_row)
         try:
             self.identity_var.trace_add("write", self._on_identity_var_changed)
@@ -1168,7 +1400,7 @@ class App(tk.Tk):
         self.identity_indicator_label.pack(side="left", padx=(6, 0), fill="x", expand=True)
         self.identity_indicator_label.bind("<Button-1>", lambda _e: self._copy_current_identity_address())
         self._identity_tooltip = ToolTip(self.identity_indicator_label, "")
-        ToolTip(self.identity_avatar, "Clique p/ copiar o endereço")
+        ToolTip(self.identity_avatar, _strings.TOOLTIP_IDENTITY_AVATAR)
         self.manage_identities_btn = tk.Button(
             box,
             text="⚙",
@@ -1180,7 +1412,7 @@ class App(tk.Tk):
             width=3,
         )
         self.manage_identities_btn.pack(side="right")
-        ToolTip(self.manage_identities_btn, "Gerenciar identidades")
+        ToolTip(self.manage_identities_btn, _strings.TOOLTIP_MANAGE_ID)
 
     def _build_widgets_right(self):
         # Segunda metade: cabeçalho/chat/input/statusbar (roda no próximo idle).
@@ -1219,7 +1451,7 @@ class App(tk.Tk):
         self.identity_badge_label.pack(side="left", padx=(6, 0))
         self.identity_badge_label.bind("<Button-1>", lambda _e: self._copy_current_identity_address())
         self._badge_tooltip = ToolTip(self.identity_badge_label, "")
-        ToolTip(self.identity_badge_avatar, "Identidade atual (clique p/ copiar)")
+        ToolTip(self.identity_badge_avatar, _strings.TOOLTIP_BADGE)
 
         # ---- chat canvas ----
         self.chat_frame = tk.Frame(self.right, bg=CHAT_BG)
@@ -1279,14 +1511,14 @@ class App(tk.Tk):
             command=lambda: self.chat_canvas.yview_moveto(1.0),
         )
         self.jump_btn.place_forget()
-        ToolTip(self.jump_btn, "Ir para mensagens mais recentes")
+        ToolTip(self.jump_btn, _strings.TOOLTIP_JUMP)
 
         # Typing indicator 3 dots (simulated if no hook)
         self._typing_frame = tk.Frame(self.chat_frame, bg=CHAT_BG)
         self._typing_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
         self._typing_frame.grid_remove()
         tk.Label(
-            self._typing_frame, text="digitand", bg=CHAT_BG, fg=TEXT_GRAY, font=self.small_font
+            self._typing_frame, text="digitando", bg=CHAT_BG, fg=TEXT_GRAY, font=self.small_font
         ).pack(side="left", padx=(12, 2), pady=2)
         self._typing_dots_label = tk.Label(
             self._typing_frame, text="", bg=CHAT_BG, fg=TEXT_GRAY, font=self.small_font, width=4, anchor="w"
@@ -1309,7 +1541,7 @@ class App(tk.Tk):
             command=self._copy_my_address,
         )
         self.welcome_copy_btn.place_forget()
-        ToolTip(self.welcome_copy_btn, "Copiar seu endereço")
+        ToolTip(self.welcome_copy_btn, _strings.TOOLTIP_WELCOME_COPY)
 
         # ---- input bar ----
         self.input_frame = tk.Frame(self.right, bg=PANEL_BG)
@@ -1333,7 +1565,7 @@ class App(tk.Tk):
             command=self._attach_file,
         )
         self.attach_btn.grid(row=1, column=0, padx=(6, 2), pady=8)
-        ToolTip(self.attach_btn, "Anexar arquivo")
+        ToolTip(self.attach_btn, _strings.TOOLTIP_ATTACH)
         self.emoji_btn = tk.Button(
             self.input_frame,
             text="☺",
@@ -1346,7 +1578,7 @@ class App(tk.Tk):
             command=self._emoji_popup,
         )
         self.emoji_btn.grid(row=1, column=1, padx=(2, 2), pady=8)
-        ToolTip(self.emoji_btn, "Emojis")
+        ToolTip(self.emoji_btn, _strings.TOOLTIP_EMOJI)
         self.input_var = tk.StringVar()
         # Telegram pill input: rounded rect 35px height, radius 18, subtle shadow
         self.field_box = tk.Canvas(
@@ -1393,7 +1625,7 @@ class App(tk.Tk):
         self._send_arrow = self.send_btn.create_text(18, 18, text="➤", fill="white", font=("", 14))
         self._input_enabled = True
         self.send_btn.bind("<Button-1>", lambda _e: self._send())
-        ToolTip(self.send_btn, "Enviar (Enter)")
+        ToolTip(self.send_btn, _strings.TOOLTIP_SEND)
 
         # Schedule button
         self.schedule_btn = tk.Button(
@@ -1408,7 +1640,7 @@ class App(tk.Tk):
             command=self._schedule_message,
         )
         self.schedule_btn.grid(row=1, column=4, padx=(0, 8), pady=6)
-        ToolTip(self.schedule_btn, "Agendar envio")
+        ToolTip(self.schedule_btn, _strings.TOOLTIP_SCHEDULE)
 
         self._set_input_enabled(False)
 
@@ -1422,6 +1654,13 @@ class App(tk.Tk):
             font=self.small_font,
         )
         self.statusbar.grid(row=1, column=0, sticky="ew")
+        try:
+            ToolTip(self.statusbar, _strings.TOOLTIP_STATUSBAR)
+            self.statusbar.bind("<Button-1>", lambda _e: self._network_diagnostics())
+            self.statusbar.configure(cursor="hand2")
+            self._status_click_bound = True
+        except Exception:
+            self._status_click_bound = False
 
     def _draw_input_pill(self):  # noqa: C901
         """Render pill background: shadow + rounded rect 18 radius, 35px height."""
@@ -2198,7 +2437,7 @@ class App(tk.Tk):
         # Truncate body for notification
         clean_body = body.split("[attachment:")[0].strip()
         preview = clean_body[:100] + ("…" if len(clean_body) > 100 else "")
-        self._flash_status("Mensagem recebida")
+        self._flash_status(_strings.FLASH_MSG_RECEIVED)
         self._schedule_refresh()
         # Desktop notification
         try:
@@ -2207,7 +2446,7 @@ class App(tk.Tk):
             pass
 
     def _on_broadcast_event(self, _event):
-        self._flash_status("Nova postagem no canal")
+        self._flash_status(_strings.FLASH_BROADCAST)
         self._schedule_refresh()
         try:
             notify("Novo post no canal", "Nova mensagem em canal inscrito")
@@ -2225,7 +2464,7 @@ class App(tk.Tk):
             return
         self._pow_last[token] = now
         try:
-            self.statusbar.config(text="POW %d: %.0f hashes/s" % (token, rate))
+            self.statusbar.config(text=_strings.FLASH_POW_PROGRESS.format(token=token, rate=rate))
         except Exception:
             pass
 
@@ -2243,7 +2482,7 @@ class App(tk.Tk):
         auto = bool(_get_update_flag(self, "_update_auto", False))
         _set_update_flag(self, "_update_auto", False)
         if ok:
-            self._flash_status("Atualizado! Reiniciando…")
+            self._flash_status(_strings.FLASH_UPDATE_DONE)
             self.after(800, self._restart_after_update)
         elif auto:
             try:
@@ -2262,12 +2501,12 @@ class App(tk.Tk):
         elif kind == "broadcast":
             self._on_broadcast_event(event)
         elif kind == "pubkey":
-            self._flash_status("Chave pública recebida")
+            self._flash_status(_strings.FLASH_PUBKEY_RECEIVED)
             self._schedule_refresh()
         elif kind == "status":
             self._schedule_refresh()
         elif kind == "ack":
-            self._flash_status("Mensagem entregue (ACK recebido)")
+            self._flash_status(_strings.FLASH_ACK_RECEIVED)
             self._reload_chat()
         elif kind == "identity-created":
             self._refresh_identity_menu()
@@ -2288,7 +2527,7 @@ class App(tk.Tk):
         elif kind == "pow-progress":
             self._on_pow_progress(event)
         elif kind == "pow-cancelled":
-            self.statusbar.config(text="POW cancelado")
+            self.statusbar.config(text=_strings.FLASH_POW_CANCELLED)
         elif kind == "update-available":
             _, behind = event
             self._offer_update(behind)
@@ -2298,7 +2537,7 @@ class App(tk.Tk):
         elif kind == "update-result":
             self._on_update_result(event)
 
-    def _tick_status(self):
+    def _tick_status(self):  # noqa: C901
         # Item 6: para de reagendar após _on_close.
         if getattr(self, "_closed", False):
             self._tick_after = None
@@ -2306,21 +2545,35 @@ class App(tk.Tk):
         try:
             snap = self.client.net.snapshot()
             established = sum(1 for c in snap["connections"] if c["established"])
-            stored = snap.get("objects_stored")
-            if stored is None:
-                stored = snap["inventory"]
-            parts = [
-                "Rede: %d/%d" % (established, snap["connection_count"]),
-                "Objetos: %d" % stored,
-                "Pares: %d" % snap["peers_stored"],
-                "PoW: %d" % len(self.client._pow_stops),
-                "Pendentes: %d" % len(self.client._awaiting_addresses()),
-                "Proxy: %s" % snap["proxy"],
-            ]
-            state_part = _status_state_part(snap, established)
-            if state_part:
-                parts.append(state_part)
-            self.statusbar.config(text=" | ".join(parts))
+            main = _human_status_main(snap, established)
+            try:
+                pow_n = len(self.client._pow_stops)
+            except Exception:
+                pow_n = 0
+            if pow_n > 0:
+                main += _strings.STATUS_POW_SUFFIX.format(count=pow_n)
+            self.statusbar.config(text=main)
+            try:
+                tip = _status_tooltip_text(snap, established)
+                bar = getattr(self, "statusbar", None)
+                if bar is not None:
+                    tt = getattr(self, "_status_tooltip", None)
+                    if tt is None:
+                        self._status_tooltip = ToolTip(bar, tip)
+                    else:
+                        try:
+                            tt.update_text(tip)
+                        except Exception:
+                            self._status_tooltip = ToolTip(bar, tip)
+                    if not getattr(self, "_status_click_bound", False):
+                        try:
+                            bar.bind("<Button-1>", lambda _e: self._network_diagnostics())
+                            bar.configure(cursor="hand2")
+                            self._status_click_bound = True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         except Exception:
             pass
         if getattr(self, "_closed", False):
@@ -2378,7 +2631,7 @@ class App(tk.Tk):
         if saved in self.client.identities:
             return
         label = self._identity_label(current)
-        self._flash_status("Identidade anterior não encontrada; usando %s (sem popup)" % label)
+        self._flash_status(_strings.FLASH_FALLBACK_IDENTITY.format(label=label))
 
     def _on_identity_var_changed(self, *_args):
         if getattr(self, "_updating_identity", False):
@@ -2410,7 +2663,7 @@ class App(tk.Tk):
                 self._redraw_chat()
         except Exception:
             pass
-        self._flash_status("Enviando como %s (%s)" % (label, _short_address(address)))
+        self._flash_status(_strings.FLASH_IDENTITY_SWITCH.format(label=label, short=_short_address(address)))
 
     def _set_current_identity(self, address):
         if not address or address not in self.client.identities:
@@ -2572,7 +2825,7 @@ class App(tk.Tk):
             self.clipboard_append(address)
         except Exception:
             return
-        self._flash_status("Endereço copiado: %s" % _short_address(address))
+        self._flash_status(_strings.FLASH_COPY_ADDRESS.format(short=_short_address(address)))
 
     def _identity_stats(self, address):
         try:
@@ -2640,7 +2893,7 @@ class App(tk.Tk):
             dialogs.warn(self, "Renomear", error or status)
             return False
         self._refresh_after_identity_change()
-        self._flash_status("Identidade renomeada para %s" % new_label)
+        self._flash_status(_strings.FLASH_IDENTITY_RENAMED.format(label=new_label))
         return True
 
     def _set_identity_enabled_ui(self, address, enabled):
@@ -2659,9 +2912,9 @@ class App(tk.Tk):
         except Exception:
             current, label = "", ""
         if enabled:
-            self._flash_status("Identidade ativada: %s" % label)
+            self._flash_status(_strings.FLASH_IDENTITY_ENABLED.format(label=label))
         else:
-            self._flash_status("Identidade desativada; enviando como %s" % label)
+            self._flash_status(_strings.FLASH_IDENTITY_DISABLED.format(label=label))
         return True
 
     def _delete_identity(self, address):
@@ -2700,7 +2953,7 @@ class App(tk.Tk):
             label_now = self._identity_label(current) if current else ""
         except Exception:
             label_now = ""
-        self._flash_status("Identidade excluída; enviando como %s" % label_now)
+        self._flash_status(_strings.FLASH_IDENTITY_DELETED.format(label=label_now))
         return True
 
     def _copy_identity_address(self, address):
@@ -2709,7 +2962,7 @@ class App(tk.Tk):
             self.clipboard_append(address)
         except Exception:
             return
-        self._flash_status("Endereço copiado: %s" % _short_address(address))
+        self._flash_status(_strings.FLASH_COPY_ADDRESS.format(short=_short_address(address)))
 
     def _show_identity_details(self, address):
         row = self._identity_row(address)
@@ -3534,7 +3787,7 @@ class App(tk.Tk):
                 return
             cx = width / 2
             cy = y + ROW_H / 2
-            oval = canvas.create_oval(cx - 10, cy - 10, cx + 10, cy + 10, fill="#419fd9", outline="", stipple="gray50")
+            oval = canvas.create_oval(cx - 10, cy - 10, cx + 10, cy + 10, fill=FAB_BG, outline="", stipple="gray50")
             canvas.tag_raise(oval)
 
             def expand(step=0):
@@ -3731,7 +3984,7 @@ class App(tk.Tk):
     def _copy_address(self, address):
         self.clipboard_clear()
         self.clipboard_append(address)
-        self._flash_status("Endereço copiado")
+        self._flash_status(_strings.FLASH_ADDRESS_COPIED_SIMPLE)
 
     def _on_conv_select(self, _event):
         selection = self.conv_list.curselection()
@@ -3754,12 +4007,11 @@ class App(tk.Tk):
     def _contact_header(self, address):
         row = self.client.db.get_contact(address)
         label = row["label"] if row else address
-        # Bitmessage não tem presença: o único estado real que
-        # conhecemos do contato é se já temos a chave pública dele.
+        # Bitmessage não tem presença: único estado real é ter a chave
         if self.client.has_pubkey(address):
-            status = "chave pública conhecida"
+            status = _strings.CHAT_STATUS_PUBKEY_KNOWN
         else:
-            status = "aguardando chave pública…"
+            status = _strings.CHAT_STATUS_AWAITING_PUBKEY
         return label, status
 
     def _channel_header(self, address):
@@ -3770,7 +4022,7 @@ class App(tk.Tk):
             row = None
         if row:
             label = (row.get("name") or row.get("label")) or address
-            return "# " + label, "canal Bitmessage (broadcast)"
+            return "# " + label, _strings.CHAT_STATUS_CHANNEL
         try:
             ident = self.client.db.get_identity(address)
         except Exception:
@@ -3779,7 +4031,7 @@ class App(tk.Tk):
             label = "# " + ((ident.get("chan_label") or ident.get("label")) or address)
         else:
             label = "# " + address
-        return label, "canal Bitmessage (broadcast)"
+        return label, _strings.CHAT_STATUS_CHANNEL
 
     def _fallback_header(self, address):
         row = self.client.db.get_contact(address)
@@ -3973,21 +4225,31 @@ class App(tk.Tk):
     def _sender_label(self, row):
         return ""
 
-    def _draw_welcome(self, canvas, width, height):
+    def _draw_welcome(self, canvas, width, height):  # noqa: C901
         canvas.create_rectangle(0, 0, width, height, fill=CHAT_BG, outline=CHAT_BG)
         addresses = list(self.client.identities.keys())
         mine = self._current_identity() if addresses else ""
         title_font = getattr(self, "welcome_title_font", None) or getattr(self, "title_font", None) or self.msg_font
-        lines = [
-            ("Bem-vindo ao bmchat", title_font, TEXT_INK),
-            ("Minha identidade — envie este endereço aos seus contatos:", self.preview_font, TEXT_GRAY),
-        ]
-        addr_lines = _wrap_lines(self.sender_font, mine, 380) if mine else ["(crie uma identidade no menu ☰)"]
-        for line in addr_lines:
-            lines.append((line, self.sender_font, HEADER_BG))
-        lines.append(
-            ("Copie o endereço e envie por qualquer meio: e-mail, mensagem, papel.", self.preview_font, TEXT_GRAY)
-        )
+        lines = []
+        lines.append((_strings.WELCOME_TITLE, title_font, TEXT_INK))
+        for sub in _wrap_lines(self.preview_font, _strings.WELCOME_SUBTITLE_IDENTITY, 400):
+            lines.append((sub, self.preview_font, TEXT_GRAY))
+        for sub in _wrap_lines(self.preview_font, _strings.WELCOME_EXPLAIN_ID, 400):
+            lines.append((sub, self.preview_font, TEXT_GRAY))
+        if mine:
+            for sub in _wrap_lines(self.preview_font, _strings.WELCOME_ADDRESS_LABEL, 400):
+                lines.append((sub, self.preview_font, TEXT_GRAY))
+            addr_lines = _wrap_lines(self.sender_font, mine, 380)
+            for line in addr_lines:
+                lines.append((line, self.sender_font, HEADER_BG))
+            for sub in _wrap_lines(self.preview_font, _strings.WELCOME_COPY_HINT, 400):
+                lines.append((sub, self.preview_font, TEXT_GRAY))
+        else:
+            lines.append((_strings.WELCOME_NO_IDENTITY, self.preview_font, TEXT_GRAY))
+        for sub in _wrap_lines(self.preview_font, _strings.WELCOME_BACKUP_WARN, 400):
+            lines.append((sub, self.preview_font, TEXT_GRAY))
+        for sub in _wrap_lines(self.preview_font, _strings.WELCOME_START_HINT, 400):
+            lines.append((sub, self.preview_font, TEXT_GRAY))
         try:
             connected = self.client.net.connection_count
         except Exception:
@@ -3997,7 +4259,16 @@ class App(tk.Tk):
             proxy = proxy_obj.describe() if proxy_obj else "Direto"
         except Exception:
             proxy = "Direto"
-        lines.append(("Rede: %d conexões | Proxy: %s" % (connected, proxy), self.small_font, TEXT_GRAY))
+        try:
+            snap = self.client.net.snapshot()
+            state = _human_status_main(snap, sum(1 for c in snap["connections"] if c["established"]))
+        except Exception:
+            state = "—"
+        net_hint = _strings.WELCOME_NETWORK_HINT.format(connections=connected, proxy=proxy, state=state)
+        for sub in _wrap_lines(self.small_font, net_hint, 400):
+            lines.append((sub, self.small_font, TEXT_GRAY))
+        for sub in _wrap_lines(self.small_font, _strings.WELCOME_HELP_FOOTER, 400):
+            lines.append((sub, self.small_font, TEXT_GRAY))
         line_h = self.preview_font.metrics("linespace")
         title_h = title_font.metrics("linespace")
         addr_h = self.sender_font.metrics("linespace")
@@ -4259,24 +4530,20 @@ class App(tk.Tk):
         status = row["status"]
         if row["direction"] == "in":
             if status == "read":
-                return "Recebida e lida"
-            return "Recebida"
+                return _strings.TICK_STATUS_RECEIVED_READ
+            return _strings.TICK_STATUS_RECEIVED
         if status == "awaiting-pubkey":
-            return "Aguardando chave pública do destinatário — a mensagem ainda não foi publicada na rede"
+            return _strings.TICK_STATUS_AWAITING
         if status == "sending":
-            return "Enviando — calculando a prova de trabalho e publicando na rede"
+            return _strings.TICK_STATUS_SENDING
         if status == "sent":
-            return "Publicada na rede — aguardando a confirmação (ACK) do destinatário"
+            return _strings.TICK_STATUS_SENT
         if status == "ackreceived":
-            return "Entregue — confirmação (ACK) recebida do destinatário"
+            return _strings.TICK_STATUS_ACKRECEIVED
         if status == "ack-failed":
-            return (
-                "Sem confirmação (ACK não recebido antes da expiração) — "
-                "o destinatário pode não ter recebido. "
-                "Clique com o botão direito → Reenviar (até 3 tentativas)."
-            )
+            return _strings.TICK_STATUS_ACKFAILED
         if status == "sending":
-            return "Enviando — calculando prova de trabalho (PoW)…"
+            return _strings.TICK_STATUS_SENDING
         return str(status)
 
     @staticmethod
@@ -5381,6 +5648,8 @@ class App(tk.Tk):
         status, error = self.client.broadcast_chan(self.current_address, body)
         if status != "success":
             dialogs.warn(self, "Canal", error or status)
+        else:
+            self._flash_status(_strings.FLASH_CHANNEL_SENT)
 
     def _send_to_contact(self, identity, body):
         if self.client.db.get_contact(self.current_address) is None:
@@ -5395,6 +5664,8 @@ class App(tk.Tk):
         status, error = self._command_history.execute(cmd)
         if status != "success":
             dialogs.warn(self, "Erro", error or status)
+        else:
+            self._flash_status(_strings.FLASH_MSG_SENT)
 
     def _send(self):
         try:
@@ -6123,7 +6394,7 @@ class App(tk.Tk):
 
     def _network_diagnostics(self):
         # Item 5: casca aparece já; Text + relatório em after_idle.
-        window = self._dialog_shell("Diagnóstico de rede", "660x500")
+        window = self._dialog_shell("Diagnóstico de rede", "740x580")
         try:
             window.after_idle(lambda: self._fill_diagnostics(window))
         except Exception:
@@ -6169,7 +6440,7 @@ class App(tk.Tk):
         # Tinta inicial sempre (ver comentário em _fill_log).
         self._refresh_diagnostics(window, text, force=True)
 
-    def _refresh_diagnostics(self, window, text, force=False):
+    def _refresh_diagnostics(self, window, text, force=False):  # noqa: C901
         try:
             reschedule = None if force else lambda: self._refresh_diagnostics(window, text)
             if not self._refresh_window_visible(window, reschedule):
@@ -6178,7 +6449,68 @@ class App(tk.Tk):
                 report = _diagnostics_report(self.client.net.snapshot())
             except Exception as exc:
                 report = "(erro ao gerar diagnóstico: %s)" % exc
-            self._paint_text_window(window, text, report, lambda: self._refresh_diagnostics(window, text))
+            try:
+                text.config(state="normal")
+                text.delete("1.0", "end")
+                try:
+                    if not getattr(text, "_diag_tags_done", False):
+                        text.tag_configure("diag_header", foreground=TEXT_INK, font=self.title_font)
+                        text.tag_configure("diag_section", foreground=_c("accent"), font=self.title_font)
+                        mono = tkfont.Font(family="Courier", size=9)
+                        text.tag_configure("diag_mono", font=mono)
+                        text.tag_configure("diag_ok", foreground=_theme.success)
+                        text.tag_configure("diag_warn", foreground=_theme.warning)
+                        text.tag_configure("diag_err", foreground=_theme.error)
+                        text.tag_configure("diag_dim", foreground=TEXT_GRAY)
+                        text._diag_tags_done = True  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                for line in report.split("\n"):
+                    tag = None
+                    if line.startswith("📊") or line.startswith("🌐") or line.startswith("📦"):
+                        tag = "diag_section"
+                    elif line.startswith("👥") or line.startswith("🔗"):
+                        tag = "diag_section"
+                    elif line.startswith("DIAGNÓSTICO"):
+                        tag = "diag_header"
+                    elif "Host:porta" in line or "───" in line:
+                        tag = "diag_mono"
+                    elif "🟢" in line:
+                        tag = "diag_ok"
+                    elif "🟡" in line or "silenciosa" in line:
+                        tag = "diag_warn"
+                    elif "🔴" in line or "DIVERGENTE" in line:
+                        tag = "diag_err"
+                    try:
+                        if tag:
+                            text.insert("end", line + "\n", tag)
+                        else:
+                            if line.startswith("  ") and ":" in line and "—" in line:
+                                text.insert("end", line + "\n", "diag_mono")
+                            else:
+                                text.insert("end", line + "\n")
+                    except Exception:
+                        try:
+                            text.insert("end", line + "\n")
+                        except Exception:
+                            pass
+                text.config(state="disabled")
+                try:
+                    text.see("1.0")
+                except Exception:
+                    pass
+            except Exception:
+                try:
+                    text.config(state="normal")
+                    text.delete("1.0", "end")
+                    text.insert("1.0", report)
+                    text.config(state="disabled")
+                except Exception:
+                    pass
+            try:
+                window._refresh_after = window.after(5000, lambda: self._refresh_diagnostics(window, text))
+            except Exception:
+                pass
         except Exception:
             pass
 
