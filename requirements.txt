@@ -1,4 +1,4 @@
 PySocks>=1.7.1
-pycryptodome>=3.19.1
+pycryptodome>=4.3.0
 ecdsa>=0.19.2
-Pillow>=12.3.0
+Pillow>=13.0.0
